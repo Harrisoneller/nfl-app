@@ -28,3 +28,7 @@ out/
 *.db
 .cache/
 data_cache/
+
+# Deploy artifacts (kept in env, not committed)
+.vercel/
+.railway/
