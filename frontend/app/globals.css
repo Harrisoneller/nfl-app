@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0d10;
+  --panel: #11151a;
+  --border: #1f242b;
+  --muted: #9ba3af;
+  --text: #e5e7eb;
+  --team-primary: #1f6feb;
+  --team-secondary: #2ea043;
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #d8dde3;
+  --muted: #4b5563;        /* darker for WCAG AA against light bg */
+  --text: #0b0d10;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+
+.team-banner {
+  background: linear-gradient(135deg, var(--team-primary) 0%, var(--team-secondary) 120%);
+  box-shadow: 0 2px 30px rgba(0,0,0,0.2);
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.divider { border-color: var(--border); }
+
+/* Recharts adjustments for light mode — text + grid contrast */
+:root[data-theme="light"] .recharts-cartesian-grid line { stroke: rgba(0,0,0,0.08) !important; }
+:root[data-theme="light"] .recharts-polar-grid path { stroke: rgba(0,0,0,0.08) !important; }
+:root[data-theme="light"] .recharts-text { fill: #1f2937 !important; }
+
+/* Responsive: tighten radar/banner padding on narrow screens */
+@media (max-width: 640px) {
+  .team-banner { padding: 1rem !important; }
+  .team-banner h1 { font-size: 1.5rem !important; }
+}
+
+/* Accessibility: visible focus ring for keyboard users */
+*:focus-visible {
+  outline: 2px solid var(--team-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

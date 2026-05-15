@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.local
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.log
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# DB / data
+*.sqlite3
+*.db
+.cache/
+data_cache/
