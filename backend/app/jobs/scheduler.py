@@ -28,14 +28,16 @@ from ..db import SessionLocal
 from ..logging_config import get_logger
 from ..services import (
     analytics_service,
+    awards_service,
     elo_service,
     news_service,
     odds_service,
     players_service,
+    predictions_service,
     scores_service,
     teams_service,
 )
-from ..utils.seasons import available_seasons, latest_completed_season
+from ..utils.seasons import available_seasons, current_or_upcoming_season, latest_completed_season
 
 log = get_logger(__name__)
 _scheduler: AsyncIOScheduler | None = None
@@ -89,6 +91,22 @@ async def _job_rebuild_elo() -> None:
         await elo_service.rebuild_history(db, list(range(latest - 5, latest + 1)))
     except Exception as e:  # noqa: BLE001
         log.warning("scheduler_elo_rebuild_failed", error=str(e))
+    finally:
+        db.close()
+
+
+async def _job_warmup_predictions() -> None:
+    """Pre-run the heavy Monte Carlo and award computations so cache is hot.
+
+    First /standings/projected request after a cold start does ~10k sims;
+    pre-warming during boot moves that cost off the user's request path.
+    """
+    db = SessionLocal()
+    try:
+        await predictions_service.simulate_season(db, current_or_upcoming_season())
+        await awards_service.award_leaderboards()
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler_predictions_warmup_failed", error=str(e))
     finally:
         db.close()
 
@@ -156,6 +174,15 @@ def start_scheduler() -> None:
     sched.add_job(_job_warmup_analytics, "date", run_date=_soon(10))
     # Elo rebuild after analytics warmup — uses schedules already loaded by warmup
     sched.add_job(_job_rebuild_elo, "date", run_date=_soon(45))
+    # Predictions cache warmup after Elo is built
+    sched.add_job(_job_warmup_predictions, "date", run_date=_soon(75))
+    # Weekly re-run of Monte Carlo + awards in case rosters/standings shift
+    sched.add_job(
+        _job_warmup_predictions,
+        IntervalTrigger(hours=24),
+        next_run_time=_soon(60 * 60 * 24),
+        id="predictions_daily", coalesce=True, max_instances=1,
+    )
     # Weekly recompute during the season
     sched.add_job(
         _job_rebuild_elo,

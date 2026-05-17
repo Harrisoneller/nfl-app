@@ -401,8 +401,30 @@ async def _position_percentile_table(season: int, position: str) -> dict[str, np
 async def player_profile(
     player_id: str, full_name: str, position: str, season: int
 ) -> dict[str, Any]:
-    """PlayerProfiler-style profile. Uses pre-computed peer distributions for speed."""
+    """PlayerProfiler-style profile. Uses pre-computed peer distributions for speed.
+
+    Caching: result is memoized per (player_id, season). First miss does the
+    DataFrame scan; subsequent calls are ~1ms cache lookups.
+
+    Season fallback: if the requested season has no data (e.g. current season
+    in offseason before nflverse publishes), transparently fall back to the
+    most recent completed season and mark `fallback_from`.
+    """
+    # Cache key includes player_id + season so we can serve hot in O(1).
+    cache_key = f"player_profile:{player_id}:{season}"
+    if (cached := cache.get(cache_key)) is not None:
+        return cached
+
     df = await _seasonal_player_table(season)
+    fallback_from: int | None = None
+    if df is None or len(df) == 0:
+        # Walk back up to 3 seasons looking for data.
+        for fallback in range(season - 1, season - 4, -1):
+            df = await _seasonal_player_table(fallback)
+            if df is not None and len(df) > 0:
+                fallback_from = season
+                season = fallback
+                break
     if df is None or len(df) == 0:
         return {"player_id": player_id, "season": season, "error": "no data"}
 
@@ -442,7 +464,7 @@ async def player_profile(
             "higher_is_better": higher_better,
         }
 
-    return {
+    result = {
         "player_id": player_id,
         "season": season,
         "position": pos,
@@ -450,6 +472,10 @@ async def player_profile(
         "peer_count": peer_count,
         "metrics": metrics_out,
     }
+    if fallback_from is not None:
+        result["fallback_from"] = fallback_from
+    cache.set(cache_key, result, CACHE_TTL_LONG)
+    return result
 
 
 async def player_gamelog(player_id: str, full_name: str, season: int) -> list[dict[str, Any]]:
@@ -517,4 +543,41 @@ async def warmup(seasons: list[int]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:  # noqa: BLE001
         log.warning("analytics_warmup_partial_failure", error=str(e))
+
+    # Pre-compute top fantasy-relevant players per position so the first
+    # player-page load is a cache hit, not a 1-2s DataFrame scan.
+    for s in seasons:
+        await _precompute_popular_players(s, per_position=100)
+
     log.info("analytics_warmup_complete", seasons=seasons)
+
+
+async def _precompute_popular_players(season: int, per_position: int = 100) -> None:
+    """Cache profile results for the most relevant players in a season.
+
+    Uses fantasy_points_ppr as the relevance ranking. Iterates the position
+    DataFrame in sorted order; each call to player_profile populates that
+    player's `player_profile:{id}:{season}` cache entry.
+    """
+    df = await _seasonal_player_table(season)
+    if df is None or len(df) == 0:
+        return
+    name_col = "player_display_name" if "player_display_name" in df.columns else "player_name"
+    relevance = "fantasy_points_ppr" if "fantasy_points_ppr" in df.columns else None
+    total = 0
+    for pos in ("QB", "RB", "WR", "TE"):
+        sub = df[df["position"] == pos]
+        if relevance and relevance in sub.columns:
+            sub = sub.sort_values(relevance, ascending=False)
+        sub = sub.head(per_position)
+        for _, row in sub.iterrows():
+            pid = row.get("player_id")
+            if not pid:
+                continue
+            full_name = row.get(name_col) or ""
+            try:
+                await player_profile(pid, full_name, pos, season)
+                total += 1
+            except Exception:  # noqa: BLE001
+                continue
+    log.info("popular_players_precomputed", season=season, total=total)

@@ -5,7 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
-from ..services import elo_service, ml_predictions_service, predictions_service
+from ..services import (
+    awards_service,
+    backtest_service,
+    elo_service,
+    ml_predictions_service,
+    player_predictions_service,
+    predictions_service,
+)
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 
 router = APIRouter()
@@ -56,6 +63,38 @@ async def team_season(
     }
 
 
+@router.get("/teams/{team_id}/remaining-schedule")
+async def team_remaining_schedule(
+    team_id: str,
+    season: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Every game in the team's season with predicted win prob + spread + cumulative wins."""
+    return await predictions_service.team_remaining_schedule_predictions(
+        db, team_id.upper(), season,
+    )
+
+
+@router.get("/players/{player_id}/games")
+async def player_game_predictions(
+    player_id: str,
+    season: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Stat-line predictions for the player's next ~8 games."""
+    return await player_predictions_service.player_game_predictions(db, player_id, season)
+
+
+@router.get("/players/{player_id}/season")
+async def player_season_projection(
+    player_id: str,
+    season: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """YTD totals + projected remaining + final-season totals with confidence bands."""
+    return await player_predictions_service.player_season_projection(db, player_id, season)
+
+
 @router.get("/teams/{team_id}/elo-history")
 def elo_history(team_id: str, seasons: str | None = None, db: Session = Depends(get_db)):
     """Per-week Elo for one team across one or more seasons.
@@ -77,6 +116,44 @@ def elo_history(team_id: str, seasons: str | None = None, db: Session = Depends(
 @router.get("/standings/projected")
 async def projected_standings(season: int | None = None, db: Session = Depends(get_db)):
     return await predictions_service.projected_standings(db, season)
+
+
+@router.get("/backtest")
+async def backtest(db: Session = Depends(get_db)):
+    """Elo + ML out-of-sample evaluation."""
+    return await backtest_service.backtest_summary(db)
+
+
+@router.get("/backtest/elo")
+async def backtest_elo(seasons: str | None = None, db: Session = Depends(get_db)):
+    season_list = None
+    if seasons:
+        try:
+            season_list = [int(s) for s in seasons.split(",") if s.strip()]
+        except ValueError:
+            pass
+    return await backtest_service.backtest_elo(db, season_list)
+
+
+@router.get("/backtest/ml")
+async def backtest_ml_endpoint(
+    test_season: int | None = None,
+    train_seasons: str | None = None,
+    db: Session = Depends(get_db),
+):
+    ts = None
+    if train_seasons:
+        try:
+            ts = [int(s) for s in train_seasons.split(",") if s.strip()]
+        except ValueError:
+            pass
+    return await backtest_service.backtest_ml(db, test_season, ts)
+
+
+@router.get("/awards")
+async def awards(season: int | None = None):
+    """MVP + OPOY leaderboards from composite percentile scores."""
+    return await awards_service.award_leaderboards(season)
 
 
 @router.get("/elo/current")

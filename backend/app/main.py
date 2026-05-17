@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
@@ -16,13 +17,16 @@ from .config import get_settings
 from .jobs.scheduler import start_scheduler, stop_scheduler
 from .logging_config import configure_logging, get_logger
 from .middleware.access_log import AccessLogMiddleware
+from .middleware.cache_control import CacheControlMiddleware
 from .middleware.request_id import RequestIDMiddleware
 from .rate_limits import limiter
 from .routers import (
     admin,
     ai,
     auth,
+    betting,
     fantasy,
+    h2h,
     health,
     meta,
     news,
@@ -82,8 +86,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Order matters: request ID → access log → CORS → routers.
+    # Middleware order (Starlette executes the LAST-added middleware first):
+    #   request → CORS → RequestID → CacheControl → AccessLog → GZip → handler
+    # Gzip last so it sees the final body; AccessLog wraps the handler call;
+    # CacheControl runs before the response leaves; CORS handles preflights.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(CacheControlMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -117,6 +126,8 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix="/ai", tags=["ai"])
     app.include_router(widgets.router, prefix="/widgets", tags=["widgets"])
     app.include_router(predictions.router, prefix="/predictions", tags=["predictions"])
+    app.include_router(betting.router, prefix="/betting", tags=["betting"])
+    app.include_router(h2h.router, prefix="/h2h", tags=["h2h"])
     app.include_router(admin.router, prefix="/admin", tags=["admin"])
 
     return app

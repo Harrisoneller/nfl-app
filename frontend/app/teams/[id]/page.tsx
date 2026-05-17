@@ -20,6 +20,10 @@ import { WinProbBar } from "@/components/predictions/WinProbBar";
 import { PredictionCard } from "@/components/predictions/PredictionCard";
 import { SeasonOdds } from "@/components/predictions/SeasonOdds";
 import { EloHistoryChart } from "@/components/predictions/EloHistoryChart";
+import { TeamRemainingScheduleCard } from "@/components/predictions/TeamRemainingSchedule";
+import { BettingHistoryCard } from "@/components/betting/BettingHistoryCard";
+import { TeamEdgeCard } from "@/components/betting/EdgeBoard";
+import { LeagueBestBetsCard } from "@/components/betting/LeagueBestBets";
 import { pickColor } from "@/lib/colors";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
 import { readOverlayParams, syncUrlOverlays } from "@/lib/overlay-url";
@@ -38,6 +42,7 @@ const TABS = [
   { id: "performance", label: "Performance" },
   { id: "schedule", label: "Schedule" },
   { id: "predictions", label: "Predictions" },
+  { id: "betting", label: "Betting" },
   { id: "news", label: "News" },
 ];
 
@@ -77,6 +82,11 @@ export default function TeamPage({ params }: { params: { id: string } }) {
   const { data: weekPreds } = useSWR(
     ["all-week-preds"],
     () => api.predictGames(undefined, undefined, true),
+    { revalidateOnFocus: false },
+  );
+  const { data: teamSchedule } = useSWR(
+    ["team-remaining-schedule", id],
+    () => api.teamRemainingSchedule(id),
     { revalidateOnFocus: false },
   );
 
@@ -131,13 +141,49 @@ export default function TeamPage({ params }: { params: { id: string } }) {
     }
   }, [tab, season, trendMetric, coloredOverlays]);
 
-  // Find this team's next unplayed game
+  // Find this team's next unplayed game. Prefer the current-week predictions
+  // (richer data), fall back to remaining-schedule when offseason / current
+  // week is empty for this team.
   const nextGame: GamePrediction | undefined = useMemo(() => {
-    if (!weekPreds?.games) return undefined;
-    return weekPreds.games.find(
-      (g) => (g.home_team_id === id || g.away_team_id === id) && g.home_score == null,
-    );
-  }, [weekPreds, id]);
+    if (weekPreds?.games) {
+      const fromWeek = weekPreds.games.find(
+        (g) => (g.home_team_id === id || g.away_team_id === id) && g.home_score == null,
+      );
+      if (fromWeek) return fromWeek;
+    }
+    // Fallback: synthesize a minimal GamePrediction from remaining-schedule
+    if (teamSchedule?.games) {
+      const upcoming = teamSchedule.games.find((g) => !g.played);
+      if (upcoming) {
+        const isHome = upcoming.is_home;
+        const homeId = isHome ? id : upcoming.opponent;
+        const awayId = isHome ? upcoming.opponent : id;
+        const myProb = upcoming.win_prob;
+        const spread = isHome ? upcoming.predicted_spread_for_team : -upcoming.predicted_spread_for_team;
+        return {
+          id: upcoming.id,
+          season: teamSchedule.season,
+          week: upcoming.week ?? 0,
+          gameday: upcoming.gameday,
+          home_team_id: homeId,
+          away_team_id: awayId,
+          home_score: null,
+          away_score: null,
+          home_elo: 1500,
+          away_elo: upcoming.opp_elo,
+          prediction: {
+            home_win_prob: isHome ? myProb : 1 - myProb,
+            away_win_prob: isHome ? 1 - myProb : myProb,
+            predicted_spread: spread,
+            predicted_total: upcoming.predicted_total,
+            predicted_home_score: (upcoming.predicted_total / 2) + (-spread / 2),
+            predicted_away_score: (upcoming.predicted_total / 2) - (-spread / 2),
+          },
+        };
+      }
+    }
+    return undefined;
+  }, [weekPreds, teamSchedule, id]);
 
   if (!team) return <p className="text-sm text-muted">Loading…</p>;
 
@@ -206,6 +252,12 @@ export default function TeamPage({ params }: { params: { id: string } }) {
             eloHistory={eloHistory}
             weekPreds={weekPreds}
           />
+        </TabPanel>
+
+        <TabPanel active={tab} value="betting">
+          <TeamEdgeCard teamId={id} />
+          <BettingHistoryCard teamId={id} />
+          <LeagueBestBetsCard />
         </TabPanel>
 
         <TabPanel active={tab} value="news">
@@ -372,6 +424,8 @@ function PredictionsTab({
         </p>
         <EloHistoryChart points={eloHistory?.history ?? []} color={team.primary_color} />
       </Card>
+
+      <TeamRemainingScheduleCard teamId={id} />
 
       <Card title="Upcoming games — Elo + ML predictions">
         {myUpcoming.length === 0 ? (

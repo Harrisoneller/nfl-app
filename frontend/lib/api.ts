@@ -128,11 +128,177 @@ export type GamePrediction = {
     predicted_total: number;
     predicted_home_score: number;
     predicted_away_score: number;
+    game_script?: string;
+    inputs?: PredictionInputs;
   };
   ml_prediction?: {
     predicted_spread: number;
     predicted_home_margin: number;
   };
+};
+
+export type PredictionInputs = {
+  home_elo: number;
+  away_elo: number;
+  home_field_advantage_elo: number;
+  neutral_site: boolean;
+  home_off_ppg: number;
+  away_off_ppg: number;
+  home_def_ppg_allowed: number;
+  away_def_ppg_allowed: number;
+  expected_home_pts: number;
+  expected_away_pts: number;
+};
+
+export type BacktestRow = {
+  season?: number;
+  n_games: number;
+  spread_mae: number;
+  spread_rmse: number;
+  classifier_accuracy_pct: number;
+  brier_score: number;
+  high_confidence_accuracy_pct: number | null;
+  high_confidence_n: number;
+  ats_picks_n: number;
+  ats_correct_pct: number | null;
+};
+
+export type CalibrationBin = {
+  bin_lo: number;
+  bin_hi: number;
+  n: number;
+  predicted_avg: number | null;
+  actual_win_rate: number | null;
+};
+
+export type EloBacktest = {
+  seasons: number[];
+  n_games: number;
+  overall: BacktestRow;
+  per_season: Array<BacktestRow & { season: number }>;
+  calibration: CalibrationBin[];
+};
+
+export type MLBacktest = {
+  available: boolean;
+  reason?: string;
+  train_seasons?: number[];
+  test_season?: number;
+  n_train?: number;
+  n_test?: number;
+  spread_mae?: number;
+  spread_rmse?: number;
+  classifier_accuracy_pct?: number;
+  feature_importance?: Array<{ feature: string; importance: number }>;
+};
+
+export type BettingRecord = {
+  games: number;
+  su: { wins: number; losses: number; ties: number };
+  ats: { wins: number; losses: number; pushes: number; win_pct: number };
+  ou: { overs: number; unders: number; pushes: number; over_pct: number };
+  as_favorite: { games: number; wins: number; losses: number; win_pct: number };
+  as_underdog: { games: number; wins: number; losses: number; win_pct: number };
+  home_split: { games: number; wins: number; losses: number; win_pct: number };
+  away_split: { games: number; wins: number; losses: number; win_pct: number };
+};
+
+export type TeamBettingHistory = {
+  team_id: string;
+  seasons: number[];
+  lifetime: BettingRecord;
+  last20: BettingRecord;
+};
+
+export type EdgeGame = GamePrediction & {
+  market?: { market_spread_home: number | null; market_total: number | null; books: number } | null;
+  edge_spread?: number | null;
+  edge_total?: number | null;
+  recommendation?: string | null;
+};
+
+export type AwardCandidate = {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  composite_score: number;
+  odds_pct: number;
+};
+
+export type AwardsResponse = {
+  season: number;
+  mvp: AwardCandidate[];
+  opoy: AwardCandidate[];
+};
+
+export type H2HMatchup = {
+  team_a: string;
+  team_b: string;
+  season: number;
+  elo: { a: number; b: number };
+  grade: { a: string; b: string };
+  record: { a: { wins: number; losses: number; ties: number }; b: { wins: number; losses: number; ties: number }; season: number };
+  predicted_matchup: {
+    home_team: string;
+    away_team: string;
+    week: number | null;
+    gameday: string | null;
+    neutral_site?: boolean;
+    hypothetical?: boolean;
+    played?: boolean;
+    home_score?: number | null;
+    away_score?: number | null;
+    prediction: GamePrediction["prediction"];
+  } | null;
+  profile: {
+    a: any;
+    b: any;
+    deltas: Array<{
+      metric: string;
+      a_value: number; b_value: number;
+      a_percentile: number | null; b_percentile: number | null;
+      higher_is_better: boolean;
+      winner: "a" | "b" | null;
+      delta: number;
+    }>;
+  };
+  history: {
+    a_wins: number; b_wins: number; ties: number;
+    games: Array<{
+      season: number; week: number | null; gameday: string;
+      home_team: string; away_team: string;
+      home_score: number; away_score: number;
+      winner: string | null;
+      spread_line: number | null; total_line: number | null;
+    }>;
+  };
+  elo_history: { a: EloHistoryPoint[]; b: EloHistoryPoint[] };
+  matchup_breakdown: {
+    when_a_has_ball: MatchupSide;
+    when_b_has_ball: MatchupSide;
+  };
+  error?: string;
+};
+
+export type MatchupSide = {
+  offense: string;
+  defense: string;
+  rows: MatchupRow[];
+  advantage_count: number;
+  metrics_count: number;
+};
+
+export type MatchupRow = {
+  metric: string;
+  label: string;
+  off_value: number;
+  def_value: number;
+  expected: number;
+  delta: number;
+  offense_has_edge: boolean;
+  off_percentile: number | null;
+  def_percentile_for_offense: number | null;
 };
 
 export type TeamSeasonOutlook = {
@@ -163,6 +329,75 @@ export type ProjectedDivision = {
     division_winner_pct: number;
     sb_appearance_pct: number;
   }>;
+};
+
+export type TeamRemainingGame = {
+  id: string;
+  week: number | null;
+  gameday: string;
+  opponent: string;
+  is_home: boolean;
+  played: boolean;
+  outcome: "W" | "L" | "T" | null;
+  my_score: number | null;
+  opp_score: number | null;
+  win_prob: number;
+  predicted_spread_for_team: number;
+  predicted_total: number;
+  cumulative_projected_wins: number;
+  opp_elo: number;
+};
+
+export type TeamRemainingSchedule = {
+  team_id: string;
+  season: number;
+  games: TeamRemainingGame[];
+  banked_wins: number;
+  projected_remaining_wins: number;
+  projected_total_wins: number;
+};
+
+export type PlayerGamePrediction = {
+  week: number | null;
+  gameday: string;
+  home: string;
+  away: string;
+  opponent: string;
+  is_home: boolean;
+  opponent_def_z: number;
+  matchup_grade: "A" | "B" | "C" | "D" | "F";
+  predicted: Record<string, { predicted: number; low: number; high: number; n_games_baseline: number }>;
+};
+
+export type PlayerGamePredictions = {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string;
+  season: number;
+  baseline_window: number;
+  games: PlayerGamePrediction[];
+  error?: string;
+};
+
+export type PlayerSeasonProjection = {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  season: number;
+  games_played: number;
+  games_remaining: number;
+  baseline_source_season: number;
+  stats: Record<string, {
+    ytd: number;
+    per_game_pace: number;
+    projected_remaining: number;
+    projected_final: number;
+    low_final: number;
+    high_final: number;
+  }>;
+  error?: string;
 };
 
 export type SeasonInfo = {
@@ -317,6 +552,44 @@ export const api = {
     req<{ season: number; divisions: ProjectedDivision[] }>(
       `/predictions/standings/projected${season ? `?season=${season}` : ""}`,
     ),
+  teamRemainingSchedule: (teamId: string, season?: number) =>
+    req<TeamRemainingSchedule>(
+      `/predictions/teams/${teamId}/remaining-schedule${season ? `?season=${season}` : ""}`,
+    ),
+  playerGamePredictions: (playerId: string, season?: number) =>
+    req<PlayerGamePredictions>(
+      `/predictions/players/${playerId}/games${season ? `?season=${season}` : ""}`,
+    ),
+  playerSeasonProjection: (playerId: string, season?: number) =>
+    req<PlayerSeasonProjection>(
+      `/predictions/players/${playerId}/season${season ? `?season=${season}` : ""}`,
+    ),
+  awards: (season?: number) =>
+    req<AwardsResponse>(`/predictions/awards${season ? `?season=${season}` : ""}`),
+
+  // betting
+  teamBettingHistory: (teamId: string, seasons?: number[]) =>
+    req<TeamBettingHistory>(
+      `/betting/teams/${teamId}/history${seasons?.length ? `?seasons=${seasons.join(",")}` : ""}`,
+    ),
+  bettingEdge: (season?: number, week?: number) => {
+    const qs = new URLSearchParams();
+    if (season) qs.set("season", String(season));
+    if (week) qs.set("week", String(week));
+    return req<{ week: number | null; games: EdgeGame[] }>(`/betting/edge?${qs.toString()}`);
+  },
+  bestBets: (season?: number) =>
+    req<{ week: number | null; best_bets: EdgeGame[] }>(
+      `/betting/best-bets${season ? `?season=${season}` : ""}`,
+    ),
+
+  // head-to-head
+  h2h: (a: string, b: string, season?: number) =>
+    req<H2HMatchup>(`/h2h/${a}/${b}${season ? `?season=${season}` : ""}`),
+
+  // backtest
+  backtest: () =>
+    req<{ elo: EloBacktest; ml: MLBacktest }>(`/predictions/backtest`),
 
   // ai
   chat: (body: { message: string; session_id?: string; enable_tools?: boolean }) =>

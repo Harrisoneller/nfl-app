@@ -8,6 +8,7 @@ const links = [
   { href: "/teams", label: "Teams" },
   { href: "/players", label: "Players" },
   { href: "/compare", label: "Compare" },
+  { href: "/h2h/PHI/SF", label: "H2H" },
   { href: "/fantasy", label: "Fantasy" },
   { href: "/odds", label: "Odds" },
   { href: "/ai", label: "AI" },
@@ -21,7 +22,6 @@ export function Nav() {
   const cmd = isMac ? "⌘" : "Ctrl";
 
   const openPalette = () => {
-    // Dispatch a keyboard event so CommandPalette opens (it listens for ⌘K)
     window.dispatchEvent(
       new KeyboardEvent("keydown", { key: "k", metaKey: isMac, ctrlKey: !isMac }),
     );
@@ -52,7 +52,6 @@ export function Nav() {
           <ThemeToggle />
         </div>
       </div>
-      {/* Mobile nav row */}
       <nav className="md:hidden flex items-center gap-4 text-xs px-4 py-2 overflow-x-auto border-t divider">
         {links.map((l) => (
           <Link key={l.href} href={l.href} className="whitespace-nowrap hover:text-team-primary">

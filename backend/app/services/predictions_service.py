@@ -36,14 +36,36 @@ LEAGUE_AVG_POINTS_PER_TEAM = 22.0
 def predict_game(
     home_rating: float, away_rating: float,
     home_off_ppg: float | None = None, away_off_ppg: float | None = None,
+    home_def_ppg_allowed: float | None = None, away_def_ppg_allowed: float | None = None,
     neutral_site: bool = False,
 ) -> dict[str, Any]:
-    """Single-game predictor from Elo ratings (and optional scoring tendencies)."""
+    """Single-game predictor from Elo + scoring tendencies.
+
+    Total = (home_off + away_def_allowed) / 2 + (away_off + home_def_allowed) / 2
+    This blends each team's offensive output with what their opponent typically
+    allows, instead of a fixed league average.
+    """
     win_p = elo_service.win_probability(home_rating, away_rating, neutral_site)
     spread = elo_service.predicted_spread(home_rating, away_rating, neutral_site)
     h_off = home_off_ppg if home_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
     a_off = away_off_ppg if away_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
-    total = h_off + a_off
+    h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
+    a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
+    expected_home_pts = (h_off + a_def) / 2
+    expected_away_pts = (a_off + h_def) / 2
+    total = expected_home_pts + expected_away_pts
+    # Game-script label: shootout / methodical / defensive based on total + spread.
+    abs_spread = abs(spread)
+    if total >= 48:
+        script = "Shootout"
+    elif total <= 40:
+        script = "Defensive grind"
+    elif abs_spread >= 7:
+        script = "Blowout potential"
+    elif abs_spread <= 2.5:
+        script = "Toss-up"
+    else:
+        script = "Methodical"
     return {
         "home_win_prob": round(win_p, 3),
         "away_win_prob": round(1 - win_p, 3),
@@ -51,6 +73,20 @@ def predict_game(
         "predicted_total": round(total, 1),
         "predicted_home_score": round((total / 2) + (-spread / 2), 1),
         "predicted_away_score": round((total / 2) - (-spread / 2), 1),
+        "game_script": script,
+        # Surface every input so the UI can render an "explain this" popover
+        "inputs": {
+            "home_elo": round(home_rating, 1),
+            "away_elo": round(away_rating, 1),
+            "home_field_advantage_elo": 0 if neutral_site else 55.0,
+            "neutral_site": neutral_site,
+            "home_off_ppg": round(h_off, 1),
+            "away_off_ppg": round(a_off, 1),
+            "home_def_ppg_allowed": round(h_def, 1),
+            "away_def_ppg_allowed": round(a_def, 1),
+            "expected_home_pts": round(expected_home_pts, 1),
+            "expected_away_pts": round(expected_away_pts, 1),
+        },
     }
 
 
@@ -84,6 +120,10 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
         week = int(unplayed["week"].min())
 
     ratings = elo_service.current_ratings(db, season=season) or elo_service.current_ratings(db)
+    # Pull team scoring tendencies once for the season; fall back to previous if empty.
+    aggs = await analytics_service._team_pbp_aggregates(season)
+    if not aggs:
+        aggs = await analytics_service._team_pbp_aggregates(season - 1)
     games = sched[sched["week"] == week]
     out = []
     for _, g in games.iterrows():
@@ -92,7 +132,12 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             continue
         hr = ratings.get(h, elo_service.INITIAL_RATING)
         ar = ratings.get(a, elo_service.INITIAL_RATING)
-        pred = predict_game(hr, ar)
+        h_off = (aggs.get(h) or {}).get("points_per_game")
+        a_off = (aggs.get(a) or {}).get("points_per_game")
+        h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
+        a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
+        pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
+                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def)
         out.append({
             "id": str(g.get("game_id") or ""),
             "season": season,
@@ -243,6 +288,92 @@ async def team_season_outlook(db: Session, team_id: str, season: int | None = No
         "team_id": team_id,
         "season": season,
         **sim["teams"].get(team_id, {}),
+    }
+
+
+async def team_remaining_schedule_predictions(
+    db: Session, team_id: str, season: int | None = None,
+) -> dict[str, Any]:
+    """Predicted spread + win prob for every remaining game in the team's season.
+
+    Returns a list ordered by week with cumulative-wins projection so the UI
+    can chart the expected trajectory.
+    """
+    season = season or current_or_upcoming_season()
+    sched = await _season_schedule(season)
+    if sched is None:
+        return {"team_id": team_id, "season": season, "games": []}
+
+    team_games = sched[(sched["home_team"] == team_id) | (sched["away_team"] == team_id)]
+    team_games = team_games.sort_values("week")
+
+    ratings = elo_service.current_ratings(db, season=season) or elo_service.current_ratings(db)
+    aggs = await analytics_service._team_pbp_aggregates(season)
+    if not aggs:
+        aggs = await analytics_service._team_pbp_aggregates(season - 1)
+
+    out_games = []
+    cumulative_expected_wins = 0.0
+    banked_wins = 0
+    for _, g in team_games.iterrows():
+        h, a = g["home_team"], g["away_team"]
+        if not h or not a:
+            continue
+        is_home = h == team_id
+        opp = a if is_home else h
+        hs, as_ = g.get("home_score"), g.get("away_score")
+        played = pd.notna(hs) and pd.notna(as_)
+
+        hr = ratings.get(h, elo_service.INITIAL_RATING)
+        ar = ratings.get(a, elo_service.INITIAL_RATING)
+        h_off = (aggs.get(h) or {}).get("points_per_game")
+        a_off = (aggs.get(a) or {}).get("points_per_game")
+        h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
+        a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
+        pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
+                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def)
+        my_win_prob = pred["home_win_prob"] if is_home else pred["away_win_prob"]
+
+        outcome: str | None = None
+        if played:
+            if (hs > as_ and is_home) or (as_ > hs and not is_home):
+                outcome = "W"
+                banked_wins += 1
+            elif hs == as_:
+                outcome = "T"
+                banked_wins += 0.5
+            else:
+                outcome = "L"
+
+        if not played:
+            cumulative_expected_wins += my_win_prob
+        out_games.append({
+            "id": str(g.get("game_id") or ""),
+            "week": _safe_int(g.get("week")),
+            "gameday": str(g.get("gameday") or ""),
+            "opponent": opp,
+            "is_home": is_home,
+            "played": played,
+            "outcome": outcome,
+            "my_score": _safe_int(hs if is_home else as_),
+            "opp_score": _safe_int(as_ if is_home else hs),
+            "win_prob": round(my_win_prob, 3),
+            "predicted_spread_for_team": round(
+                pred["predicted_spread"] if is_home else -pred["predicted_spread"], 1
+            ),
+            "predicted_total": pred["predicted_total"],
+            "cumulative_projected_wins": round(banked_wins + cumulative_expected_wins, 2),
+            "opp_elo": round(ar if is_home else hr, 0),
+        })
+
+    final_projected = banked_wins + cumulative_expected_wins
+    return {
+        "team_id": team_id,
+        "season": season,
+        "games": out_games,
+        "banked_wins": banked_wins,
+        "projected_remaining_wins": round(cumulative_expected_wins, 2),
+        "projected_total_wins": round(final_projected, 2),
     }
 
 
