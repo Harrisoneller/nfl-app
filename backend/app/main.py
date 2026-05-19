@@ -39,6 +39,7 @@ from .routers import (
     widgets,
 )
 from .sentry_init import init_sentry
+from .startup_doctor import run as run_startup_doctor
 
 configure_logging()
 log = get_logger(__name__)
@@ -54,6 +55,12 @@ async def lifespan(app: FastAPI):
         llm_provider=settings.llm_provider,
         sentry=sentry_on,
     )
+    # Self-check: surfaces missing-table / missing-key issues in the boot
+    # logs so a degraded start is immediately visible rather than mysterious.
+    try:
+        run_startup_doctor()
+    except Exception as e:  # noqa: BLE001
+        log.warning("startup_doctor_crashed", error=str(e)[:200])
     start_scheduler()
     try:
         yield

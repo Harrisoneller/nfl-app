@@ -212,10 +212,25 @@ export type TeamBettingHistory = {
 };
 
 export type EdgeGame = GamePrediction & {
-  market?: { market_spread_home: number | null; market_total: number | null; books: number } | null;
+  market?: {
+    market_spread_home: number | null;
+    market_total: number | null;
+    market_home_win_prob?: number | null;
+    books: number;
+  } | null;
   edge_spread?: number | null;
   edge_total?: number | null;
+  edge_win_prob?: number | null;
   recommendation?: string | null;
+};
+
+export type TeamEdgeResponse = {
+  team_id: string;
+  season: number;
+  week: number | null;
+  opponent?: string;
+  games: EdgeGame[];
+  empty_reason?: string;
 };
 
 export type AwardCandidate = {
@@ -577,7 +592,13 @@ export const api = {
     const qs = new URLSearchParams();
     if (season) qs.set("season", String(season));
     if (week) qs.set("week", String(week));
-    return req<{ week: number | null; games: EdgeGame[] }>(`/betting/edge?${qs.toString()}`);
+    return req<{ season: number; week: number | null; games: EdgeGame[] }>(
+      `/betting/edge?${qs.toString()}`,
+    );
+  },
+  teamBettingEdge: (teamId: string, season?: number) => {
+    const qs = season ? `?season=${season}` : "";
+    return req<TeamEdgeResponse>(`/betting/teams/${teamId}/edge${qs}`);
   },
   bestBets: (season?: number) =>
     req<{ week: number | null; best_bets: EdgeGame[] }>(

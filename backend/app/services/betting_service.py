@@ -25,9 +25,9 @@ from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..adapters.data.odds_api import TheOddsApiAdapter
 from ..cache import cache
 from ..logging_config import get_logger
-from ..utils.seasons import latest_completed_season
+from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import elo_service, predictions_service
+from . import elo_service, odds_service, predictions_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -36,6 +36,14 @@ CACHE_TTL_LONG = 60 * 60 * 12  # 12h for historical records
 CACHE_TTL_SHORT = 60 * 5       # 5m for live market data
 
 EDGE_THRESHOLD = 2.0  # points difference flagged as a "value bet"
+WIN_PROB_EDGE_THRESHOLD = 0.04  # 4 percentage points on moneyline implied prob
+
+
+def _american_implied(price: int) -> float:
+    """Convert American odds to implied win probability (no vig removal)."""
+    if price < 0:
+        return (-price) / ((-price) + 100.0)
+    return 100.0 / (price + 100.0)
 
 
 # ---- Historical (nfl-data-py) -------------------------------------------- #
@@ -183,44 +191,106 @@ async def team_betting_history(team_id: str, seasons: list[int] | None = None) -
 # ---- Current-week market edge -------------------------------------------- #
 
 
-async def _current_market_odds() -> dict[str, dict[str, Any]]:
-    """Map of normalized {home_team, away_team} -> {spread, total} from Odds API.
-
-    Cached 5 min so it doesn't burn the free-tier quota.
-    """
-    key = "betting_current_market"
-    if (v := cache.get(key)) is not None:
-        return v
-    adapter = TheOddsApiAdapter()
-    try:
-        events = await adapter.fetch_game_odds(markets=("spreads", "totals"), regions="us")
-    finally:
-        await adapter.aclose()
+def _aggregate_market_from_events(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Map of 'Home Full Name|Away Full Name' -> consensus spread/total/ML."""
     out: dict[str, dict[str, Any]] = {}
     for ev in events:
         home = (ev.get("home_team") or "").strip()
         away = (ev.get("away_team") or "").strip()
         if not home or not away:
             continue
-        # Collect spread and total across books, then take median (the consensus line)
         spreads: list[float] = []
         totals: list[float] = []
+        home_ml: list[float] = []
         for bm in ev.get("bookmakers", []):
             for mk in bm.get("markets", []):
-                if mk.get("key") == "spreads":
+                key = mk.get("key")
+                if key == "spreads":
                     for outcome in mk.get("outcomes", []):
                         if outcome.get("name") == home and outcome.get("point") is not None:
                             spreads.append(float(outcome["point"]))
-                elif mk.get("key") == "totals":
+                elif key == "totals":
                     for outcome in mk.get("outcomes", []):
                         if outcome.get("name") == "Over" and outcome.get("point") is not None:
                             totals.append(float(outcome["point"]))
-        if spreads or totals:
+                elif key == "h2h":
+                    for outcome in mk.get("outcomes", []):
+                        price = outcome.get("price")
+                        if outcome.get("name") == home and price is not None:
+                            home_ml.append(_american_implied(int(price)))
+        if spreads or totals or home_ml:
             out[f"{home}|{away}"] = {
                 "market_spread_home": (float(np.median(spreads)) if spreads else None),
                 "market_total": (float(np.median(totals)) if totals else None),
+                "market_home_win_prob": (round(float(np.median(home_ml)), 3) if home_ml else None),
                 "books": len(ev.get("bookmakers", [])),
             }
+    return out
+
+
+def _market_odds_from_db(db: Session) -> dict[str, dict[str, Any]]:
+    """Build consensus lines from persisted odds_lines (Odds API refresh)."""
+    lines = odds_service.list_odds(db, limit=4000)
+    if not lines:
+        return {}
+    by_event: dict[str, dict[str, Any]] = {}
+    for row in lines:
+        home = (row.home_team or "").strip()
+        away = (row.away_team or "").strip()
+        if not home or not away:
+            continue
+        ev = by_event.setdefault(row.event_id, {
+            "home_team": home,
+            "away_team": away,
+            "bookmakers": [],
+        })
+        bm_title = row.bookmaker or "unknown"
+        bm = next((b for b in ev["bookmakers"] if b["title"] == bm_title), None)
+        if bm is None:
+            bm = {"title": bm_title, "markets": []}
+            ev["bookmakers"].append(bm)
+        mk = next((m for m in bm["markets"] if m["key"] == row.market), None)
+        if mk is None:
+            mk = {"key": row.market, "outcomes": []}
+            bm["markets"].append(mk)
+        outcome: dict[str, Any] = {"name": row.label}
+        if row.price is not None:
+            outcome["price"] = row.price
+        if row.point is not None:
+            outcome["point"] = row.point
+        mk["outcomes"].append(outcome)
+    return _aggregate_market_from_events(list(by_event.values()))
+
+
+async def _current_market_odds(db: Session | None = None) -> dict[str, dict[str, Any]]:
+    """Consensus spread/total/ML from Odds API, with DB snapshot as fallback."""
+    key = "betting_current_market"
+    if (v := cache.get(key)) is not None:
+        return v
+
+    out: dict[str, dict[str, Any]] = {}
+    adapter = TheOddsApiAdapter()
+    try:
+        events = await adapter.fetch_game_odds(
+            markets=("h2h", "spreads", "totals"), regions="us",
+        )
+        out = _aggregate_market_from_events(events)
+    except Exception as e:  # noqa: BLE001
+        log.warning("betting_market_live_failed", error=str(e))
+    finally:
+        await adapter.aclose()
+
+    if db is not None:
+        db_map = _market_odds_from_db(db)
+        for k, val in db_map.items():
+            if k not in out:
+                out[k] = val
+            else:
+                for field in ("market_spread_home", "market_total", "market_home_win_prob"):
+                    if out[k].get(field) is None and val.get(field) is not None:
+                        out[k][field] = val[field]
+                out[k]["books"] = max(out[k].get("books", 0), val.get("books", 0))
+
     cache.set(key, out, CACHE_TTL_SHORT)
     return out
 
@@ -236,53 +306,144 @@ def _full_name_to_id_map() -> dict[str, str]:
     return out
 
 
+def _lookup_market_entry(
+    market: dict[str, dict[str, Any]],
+    name_map: dict[str, str],
+    home_id: str,
+    away_id: str,
+) -> dict[str, Any] | None:
+    for key, val in market.items():
+        home_name, away_name = key.split("|", 1)
+        if name_map.get(home_name.lower()) == home_id and name_map.get(away_name.lower()) == away_id:
+            return val
+    return None
+
+
+def _enrich_game_with_edge(
+    g: dict[str, Any],
+    market: dict[str, dict[str, Any]],
+    name_map: dict[str, str],
+) -> dict[str, Any]:
+    """Attach market consensus + spread/total/win-prob edges vs our Elo prediction."""
+    home_id = g["home_team_id"]
+    away_id = g["away_team_id"]
+    market_entry = _lookup_market_entry(market, name_map, home_id, away_id)
+
+    edge_spread = None
+    edge_total = None
+    edge_win_prob = None
+    recommendation = None
+    pred = g.get("prediction") or {}
+
+    if market_entry:
+        ms = market_entry.get("market_spread_home")
+        mt = market_entry.get("market_total")
+        mw = market_entry.get("market_home_win_prob")
+        our_s = pred.get("predicted_spread")
+        our_t = pred.get("predicted_total")
+        our_wp = pred.get("home_win_prob")
+        if ms is not None and our_s is not None:
+            edge_spread = round(ms - our_s, 1)  # positive = market more home-favoring
+        if mt is not None and our_t is not None:
+            edge_total = round(our_t - mt, 1)  # positive = we expect higher total
+        if mw is not None and our_wp is not None:
+            edge_win_prob = round(mw - our_wp, 3)  # positive = market higher on home
+
+        if edge_spread is not None and abs(edge_spread) >= EDGE_THRESHOLD:
+            team = home_id if edge_spread > 0 else away_id
+            recommendation = f"{team} {('-' if edge_spread > 0 else '+')}{abs(edge_spread):.1f} spread edge"
+        elif edge_win_prob is not None and abs(edge_win_prob) >= WIN_PROB_EDGE_THRESHOLD:
+            team = home_id if edge_win_prob > 0 else away_id
+            recommendation = f"{team} {abs(edge_win_prob) * 100:.0f}pt ML edge"
+
+    return {
+        **g,
+        "market": market_entry,
+        "edge_spread": edge_spread,
+        "edge_total": edge_total,
+        "edge_win_prob": edge_win_prob,
+        "recommendation": recommendation,
+    }
+
+
 async def games_with_edge(
     db: Session, season: int | None = None, week: int | None = None,
 ) -> dict[str, Any]:
     """For each game in the upcoming week, attach market line + edge vs our prediction."""
-    base = await predictions_service.predict_week(db, season or 0, week)
+    season = season or current_or_upcoming_season()
+    base = await predictions_service.predict_week(db, season, week)
     if not base["games"]:
-        return {"week": base.get("week"), "games": []}
+        return {"season": season, "week": base.get("week"), "games": []}
 
-    market = await _current_market_odds()
+    market = await _current_market_odds(db)
     name_map = _full_name_to_id_map()
+    enriched = [_enrich_game_with_edge(g, market, name_map) for g in base["games"]]
+    return {"season": season, "week": base["week"], "games": enriched}
 
-    enriched = []
-    for g in base["games"]:
-        home_id = g["home_team_id"]
-        away_id = g["away_team_id"]
-        # Find the market entry by mapping full names back to ids
-        market_entry = None
-        for key, val in market.items():
-            home_name, away_name = key.split("|", 1)
-            if name_map.get(home_name.lower()) == home_id and name_map.get(away_name.lower()) == away_id:
-                market_entry = val
-                break
-        edge_spread = None
-        edge_total = None
-        recommendation = None
-        if market_entry:
-            ms = market_entry["market_spread_home"]
-            mt = market_entry["market_total"]
-            our_s = g["prediction"]["predicted_spread"]
-            our_t = g["prediction"]["predicted_total"]
-            if ms is not None:
-                edge_spread = round(ms - our_s, 1)  # positive = market is more home-favoring than us
-            if mt is not None:
-                edge_total = round(our_t - mt, 1)  # positive = we expect higher total than market
 
-            if edge_spread is not None and abs(edge_spread) >= EDGE_THRESHOLD:
-                # If our model says home should be more favored than market does, take home.
-                team = home_id if edge_spread > 0 else away_id
-                recommendation = f"{team} {('-' if edge_spread > 0 else '+')}{abs(edge_spread):.1f} edge"
-        enriched.append({
-            **g,
-            "market": market_entry,
-            "edge_spread": edge_spread,
-            "edge_total": edge_total,
-            "recommendation": recommendation,
-        })
-    return {"week": base["week"], "games": enriched}
+async def team_game_edge(
+    db: Session, team_id: str, season: int | None = None,
+) -> dict[str, Any]:
+    """Edge metrics for the team's next unplayed game (full-season order, not just current week)."""
+    tid = team_id.upper()
+    season = season or current_or_upcoming_season()
+    sched = await predictions_service.team_remaining_schedule_predictions(db, tid, season)
+    upcoming = [g for g in sched.get("games", []) if not g.get("played")]
+    if not upcoming:
+        return {
+            "team_id": tid,
+            "season": season,
+            "week": None,
+            "games": [],
+            "empty_reason": "season_complete",
+        }
+
+    next_row = upcoming[0]
+    week = next_row.get("week")
+    week_preds = await predictions_service.predict_week(db, season, week)
+    game = next(
+        (
+            g for g in week_preds.get("games", [])
+            if g["home_team_id"] == tid or g["away_team_id"] == tid
+        ),
+        None,
+    )
+    if game is None:
+        is_home = next_row.get("is_home", True)
+        opp = next_row["opponent"]
+        home_id = tid if is_home else opp
+        away_id = opp if is_home else tid
+        wp = next_row.get("win_prob", 0.5)
+        spread_for_team = next_row.get("predicted_spread_for_team", 0)
+        home_spread = spread_for_team if is_home else -spread_for_team
+        game = {
+            "id": next_row.get("id", ""),
+            "season": season,
+            "week": week,
+            "gameday": next_row.get("gameday", ""),
+            "home_team_id": home_id,
+            "away_team_id": away_id,
+            "home_score": None,
+            "away_score": None,
+            "prediction": {
+                "home_win_prob": wp if is_home else 1 - wp,
+                "away_win_prob": 1 - wp if is_home else wp,
+                "predicted_spread": home_spread,
+                "predicted_total": next_row.get("predicted_total"),
+            },
+        }
+
+    market = await _current_market_odds(db)
+    name_map = _full_name_to_id_map()
+    enriched = _enrich_game_with_edge(game, market, name_map)
+    opp = next_row["opponent"]
+    return {
+        "team_id": tid,
+        "season": season,
+        "week": week,
+        "opponent": opp,
+        "games": [enriched],
+    }
 
 
 async def best_bets(db: Session, season: int | None = None) -> dict[str, Any]:
@@ -290,4 +451,4 @@ async def best_bets(db: Session, season: int | None = None) -> dict[str, Any]:
     out = await games_with_edge(db, season)
     rated = [g for g in out["games"] if g.get("edge_spread") is not None]
     rated.sort(key=lambda g: abs(g["edge_spread"]), reverse=True)
-    return {"week": out.get("week"), "best_bets": rated[:8]}
+    return {"season": out.get("season"), "week": out.get("week"), "best_bets": rated[:8]}

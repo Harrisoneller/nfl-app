@@ -34,6 +34,16 @@ async def edge(
     return await betting_service.games_with_edge(db, season, week)
 
 
+@router.get("/teams/{team_id}/edge")
+async def team_edge(
+    team_id: str,
+    season: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Next upcoming game for a team with model vs market edge metrics."""
+    return await betting_service.team_game_edge(db, team_id.upper(), season)
+
+
 @router.get("/best-bets")
 async def best_bets(season: int | None = None, db: Session = Depends(get_db)):
     """League-wide top-edge games sorted by |edge_spread|."""

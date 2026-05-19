@@ -34,6 +34,7 @@ _RULES = [
     (re.compile(r"^/predictions/awards$"),                             (1800, True)),
     (re.compile(r"^/betting/teams/[A-Z]+/history$"),                   (3600, True)),
     (re.compile(r"^/betting/edge$"),                                   (300, True)),
+    (re.compile(r"^/betting/teams/[A-Z]+/edge$"),                      (300, True)),
     (re.compile(r"^/betting/best-bets$"),                              (300, True)),
     (re.compile(r"^/news$"),                                           (60, True)),
     (re.compile(r"^/odds$"),                                           (60, True)),

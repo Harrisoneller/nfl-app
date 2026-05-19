@@ -50,12 +50,20 @@ def _now() -> datetime:
 
 
 def get(db: Session, kind: str, key: str) -> dict | None:
-    """Return artifact payload if it exists and isn't expired, else None."""
-    row = db.execute(
-        select(ModelArtifact).where(
-            ModelArtifact.kind == kind, ModelArtifact.key == key,
-        )
-    ).scalar_one_or_none()
+    """Return artifact payload if it exists and isn't expired, else None.
+
+    Any error (missing table, DB unavailable, deserialization issue) returns
+    None so the caller falls through to recompute cleanly.
+    """
+    try:
+        row = db.execute(
+            select(ModelArtifact).where(
+                ModelArtifact.kind == kind, ModelArtifact.key == key,
+            )
+        ).scalar_one_or_none()
+    except Exception as e:  # noqa: BLE001
+        log.debug("artifact_get_failed", kind=kind, key=key, error=str(e)[:120])
+        return None
     if row is None:
         return None
     if row.valid_until is not None and row.valid_until < _now():
@@ -76,16 +84,22 @@ def set_(
         log.warning("artifact_payload_not_serializable", kind=kind, key=key, error=str(e))
         return
 
-    stmt = pg_insert(ModelArtifact).values(
-        kind=kind, key=key, payload=payload, valid_until=valid_until,
-    )
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["kind", "key"],
-        set_=dict(payload=stmt.excluded.payload, valid_until=stmt.excluded.valid_until,
-                  updated_at=_now()),
-    )
-    db.execute(stmt)
-    db.commit()
+    try:
+        stmt = pg_insert(ModelArtifact).values(
+            kind=kind, key=key, payload=payload, valid_until=valid_until,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["kind", "key"],
+            set_=dict(payload=stmt.excluded.payload, valid_until=stmt.excluded.valid_until,
+                      updated_at=_now()),
+        )
+        db.execute(stmt)
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        # Catch missing-table or any other DB error so the caller still gets
+        # its computed result. Cache failures should never bubble up.
+        db.rollback()
+        log.debug("artifact_set_failed", kind=kind, key=key, error=str(e)[:120])
 
 
 def invalidate(db: Session, kind: str, key: str | None = None) -> int:
@@ -165,14 +179,18 @@ def stats() -> dict[str, Any]:
     """Per-kind row counts + last-write timestamps. For admin dashboards."""
     db = SessionLocal()
     try:
-        rows = db.execute(
-            select(
-                ModelArtifact.kind,
-                ModelArtifact.id,
-                ModelArtifact.updated_at,
-                ModelArtifact.valid_until,
-            )
-        ).all()
+        try:
+            rows = db.execute(
+                select(
+                    ModelArtifact.kind,
+                    ModelArtifact.id,
+                    ModelArtifact.updated_at,
+                    ModelArtifact.valid_until,
+                )
+            ).all()
+        except Exception as e:  # noqa: BLE001
+            # Table likely doesn't exist yet — run `alembic upgrade head`.
+            return {"by_kind": {}, "error": f"table unavailable: {str(e)[:140]}"}
     finally:
         db.close()
 
@@ -198,13 +216,18 @@ def vacuum_expired(older_than_days: int = 7) -> int:
     cutoff = _now() - timedelta(days=older_than_days)
     db = SessionLocal()
     try:
-        n = (
-            db.query(ModelArtifact)
-            .filter(ModelArtifact.valid_until.isnot(None))
-            .filter(ModelArtifact.valid_until < cutoff)
-            .delete(synchronize_session=False)
-        )
-        db.commit()
-        return n
+        try:
+            n = (
+                db.query(ModelArtifact)
+                .filter(ModelArtifact.valid_until.isnot(None))
+                .filter(ModelArtifact.valid_until < cutoff)
+                .delete(synchronize_session=False)
+            )
+            db.commit()
+            return n
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            log.debug("artifact_vacuum_failed", error=str(e)[:120])
+            return 0
     finally:
         db.close()
