@@ -15,13 +15,7 @@ type Props = {
 export function Week1Schedule({ season, games }: Props) {
   if (games.length === 0) {
     return (
-      <div className="panel p-8 text-center border border-dashed divider">
-        <p className="text-sm font-medium">Week 1 schedule coming soon</p>
-        <p className="text-xs text-muted mt-2 max-w-md mx-auto">
-          The {season > 0 ? season : "upcoming"} regular-season slate will appear here once schedule data is
-          synced from nflverse (usually when the NFL releases it in May).
-        </p>
-      </div>
+      <EmptyState season={season} />
     );
   }
 
@@ -34,19 +28,32 @@ export function Week1Schedule({ season, games }: Props) {
   return (
     <div className="space-y-2">
       {sorted.map((game) => (
-        <Week1MatchupRow key={game.id || `${game.away_team_id}-${game.home_team_id}`} game={game} />
+        <MatchupPreviewRow key={game.id || `${game.away_team_id}-${game.home_team_id}`} game={game} />
       ))}
     </div>
   );
 }
 
-function Week1MatchupRow({ game }: { game: GamePrediction }) {
+function EmptyState({ season }: { season: number }) {
+  return (
+    <div className="panel p-8 text-center border border-dashed divider">
+      <p className="text-sm font-medium">Week 1 schedule coming soon</p>
+      <p className="text-xs text-muted mt-2 max-w-md mx-auto">
+        The {season > 0 ? season : "upcoming"} regular-season slate will appear here once schedule data is
+        synced from nflverse (usually when the NFL releases it in May).
+      </p>
+    </div>
+  );
+}
+
+/** Rich matchup preview row (Week 1 home + team overview "Next game"). */
+export function MatchupPreviewRow({ game, showH2hHint = true }: { game: GamePrediction; showH2hHint?: boolean }) {
   const p = game.prediction;
   const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
   const absSpread = Math.abs(p.predicted_spread);
   const eloDiff = Math.round(game.home_elo - game.away_elo);
   const played = game.home_score != null && game.away_score != null;
-  const kickoff = formatKickoff(game.gameday);
+  const kickoff = formatKickoff(game.gameday, game.gametime);
 
   return (
     <Link
@@ -107,9 +114,11 @@ function Week1MatchupRow({ game }: { game: GamePrediction }) {
         </div>
       </div>
 
-      <p className="text-[10px] text-muted mt-3 sm:mt-2 group-hover:text-team-primary transition-colors">
-        Full H2H breakdown →
-      </p>
+      {showH2hHint && (
+        <p className="text-[10px] text-muted mt-3 sm:mt-2 group-hover:text-team-primary transition-colors">
+          Full H2H breakdown →
+        </p>
+      )}
     </Link>
   );
 }
@@ -140,9 +149,24 @@ function parseGameday(gameday: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function formatKickoff(gameday: string): string | null {
+function formatKickoff(gameday: string, gametime?: string): string | null {
   const d = parseGameday(gameday);
   if (!d) return gameday || null;
+  if (gametime) {
+    const parts = gametime.split(":");
+    const h = Number(parts[0]);
+    const m = Number(parts[1] ?? 0);
+    if (!Number.isNaN(h)) {
+      d.setHours(h, m, 0, 0);
+      return d.toLocaleString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+  }
   return d.toLocaleDateString(undefined, {
     weekday: "short",
     month: "short",

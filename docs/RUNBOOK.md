@@ -93,9 +93,18 @@ Edit `.env` → `ENABLE_TWITTER=true` + `TWITTER_BEARER_TOKEN=...`. Restart back
 **Force a data refresh:**
 ```bash
 curl -X POST http://localhost:8000/admin/refresh/scores
+curl -X POST http://localhost:8000/admin/refresh/schedules
 curl -X POST http://localhost:8000/admin/refresh/news
 curl -X POST http://localhost:8000/admin/refresh/odds
 ```
+
+**Sync full-season schedules into Postgres** (needed for scoreboard DB rows; predictions read nflverse live but this warms the `Game` table):
+
+```bash
+curl -X POST "http://localhost:8000/admin/refresh/schedules?season=2026"
+```
+
+Omit `?season=` to refresh every season in the dropdown (same as the boot scheduler).
 
 ## Troubleshooting
 

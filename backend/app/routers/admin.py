@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import get_db
 from ..services import artifact_cache, news_service, odds_service, players_service, scores_service, teams_service
+from ..utils.seasons import available_seasons, current_or_upcoming_season
 
 router = APIRouter()
 
@@ -19,6 +20,27 @@ def refresh_teams(db: Session = Depends(get_db)):
 @router.post("/refresh/scores")
 async def refresh_scores(db: Session = Depends(get_db)):
     return {"events": await scores_service.refresh_scoreboard(db)}
+
+
+@router.post("/refresh/schedules")
+async def refresh_schedules(
+    db: Session = Depends(get_db),
+    season: int | None = None,
+):
+    """Pull full-season schedules from nflverse into the Game table.
+
+    Defaults to all dropdown seasons (same as the boot scheduler). Pass
+    `?season=2026` to refresh a single year.
+    """
+    seasons = [season] if season is not None else available_seasons()
+    total = 0
+    for s in seasons:
+        total += await scores_service.refresh_season_schedule(db, s)
+    return {
+        "games_upserted": total,
+        "seasons": seasons,
+        "current_or_upcoming": current_or_upcoming_season(),
+    }
 
 
 @router.post("/refresh/players")

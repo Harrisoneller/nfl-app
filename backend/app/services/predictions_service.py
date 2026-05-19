@@ -21,7 +21,7 @@ from ..logging_config import get_logger
 from ..models.seed import NFL_TEAMS
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import artifact_cache, elo_service
+from . import analytics_service, artifact_cache, elo_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -145,6 +145,7 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             "season": season,
             "week": week,
             "gameday": str(g.get("gameday") or ""),
+            "gametime": str(g.get("gametime") or ""),
             "home_team_id": h,
             "away_team_id": a,
             "home_score": _safe_int(g.get("home_score")),

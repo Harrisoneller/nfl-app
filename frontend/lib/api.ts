@@ -115,6 +115,7 @@ export type GamePrediction = {
   season: number;
   week: number;
   gameday: string;
+  gametime?: string;
   home_team_id: string;
   away_team_id: string;
   home_score: number | null;

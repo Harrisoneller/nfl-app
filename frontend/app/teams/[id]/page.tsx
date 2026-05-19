@@ -17,7 +17,7 @@ import { UpcomingSeason } from "@/components/UpcomingSeason";
 import { SkeletonRadar, SkeletonTable } from "@/components/Skeleton";
 import { EloBadge } from "@/components/predictions/EloBadge";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
-import { PredictionCard } from "@/components/predictions/PredictionCard";
+import { MatchupPreviewRow } from "@/components/Week1Schedule";
 import { SeasonOdds } from "@/components/predictions/SeasonOdds";
 import { EloHistoryChart } from "@/components/predictions/EloHistoryChart";
 import { TeamRemainingScheduleCard } from "@/components/predictions/TeamRemainingSchedule";
@@ -145,48 +145,45 @@ export default function TeamPage({ params }: { params: { id: string } }) {
     }
   }, [tab, season, trendMetric, coloredOverlays]);
 
-  // Find this team's next unplayed game. Prefer the current-week predictions
-  // (richer data), fall back to remaining-schedule when offseason / current
-  // week is empty for this team.
+  // Next unplayed REG game for this team (full-season order), enriched with
+  // current-week predictions when available.
   const nextGame: GamePrediction | undefined = useMemo(() => {
-    if (weekPreds?.games) {
-      const fromWeek = weekPreds.games.find(
+    const upcoming = teamSchedule?.games?.find((g) => !g.played);
+    if (!upcoming) {
+      const fromWeek = weekPreds?.games?.find(
         (g) => (g.home_team_id === id || g.away_team_id === id) && g.home_score == null,
       );
-      if (fromWeek) return fromWeek;
+      return fromWeek;
     }
-    // Fallback: synthesize a minimal GamePrediction from remaining-schedule
-    if (teamSchedule?.games) {
-      const upcoming = teamSchedule.games.find((g) => !g.played);
-      if (upcoming) {
-        const isHome = upcoming.is_home;
-        const homeId = isHome ? id : upcoming.opponent;
-        const awayId = isHome ? upcoming.opponent : id;
-        const myProb = upcoming.win_prob;
-        const spread = isHome ? upcoming.predicted_spread_for_team : -upcoming.predicted_spread_for_team;
-        return {
-          id: upcoming.id,
-          season: teamSchedule.season,
-          week: upcoming.week ?? 0,
-          gameday: upcoming.gameday,
-          home_team_id: homeId,
-          away_team_id: awayId,
-          home_score: null,
-          away_score: null,
-          home_elo: 1500,
-          away_elo: upcoming.opp_elo,
-          prediction: {
-            home_win_prob: isHome ? myProb : 1 - myProb,
-            away_win_prob: isHome ? 1 - myProb : myProb,
-            predicted_spread: spread,
-            predicted_total: upcoming.predicted_total,
-            predicted_home_score: (upcoming.predicted_total / 2) + (-spread / 2),
-            predicted_away_score: (upcoming.predicted_total / 2) - (-spread / 2),
-          },
-        };
-      }
-    }
-    return undefined;
+
+    const rich = weekPreds?.games?.find((g) => g.id && g.id === upcoming.id);
+    if (rich) return rich;
+
+    const isHome = upcoming.is_home;
+    const homeId = isHome ? id : upcoming.opponent;
+    const awayId = isHome ? upcoming.opponent : id;
+    const myProb = upcoming.win_prob;
+    const spread = isHome ? upcoming.predicted_spread_for_team : -upcoming.predicted_spread_for_team;
+    return {
+      id: upcoming.id,
+      season: teamSchedule.season,
+      week: upcoming.week ?? 0,
+      gameday: upcoming.gameday,
+      home_team_id: homeId,
+      away_team_id: awayId,
+      home_score: null,
+      away_score: null,
+      home_elo: isHome ? 1500 : upcoming.opp_elo,
+      away_elo: isHome ? upcoming.opp_elo : 1500,
+      prediction: {
+        home_win_prob: isHome ? myProb : 1 - myProb,
+        away_win_prob: isHome ? 1 - myProb : myProb,
+        predicted_spread: spread,
+        predicted_total: upcoming.predicted_total,
+        predicted_home_score: upcoming.predicted_total / 2 + -spread / 2,
+        predicted_away_score: upcoming.predicted_total / 2 - -spread / 2,
+      },
+    };
   }, [weekPreds, teamSchedule, id]);
 
   if (!team) return <p className="text-sm text-muted">Loading…</p>;
@@ -354,7 +351,7 @@ function OverviewTab({
         <Card title="Next game">
           {nextGame ? (
             <div className="space-y-3">
-              <PredictionCard game={nextGame} />
+              <MatchupPreviewRow game={nextGame} />
               <p className="text-xs text-muted">
                 Tap{" "}
                 <button onClick={() => setTab("predictions")} className="underline hover:no-underline">

@@ -133,100 +133,124 @@ a { color: inherit; }
   50% { opacity: 0.35; }
 }
 
-/* === Welcome hero: copy on top, stadium scene below === */
+/* === Welcome hero: photoreal stadium + broadcast HUD === */
 .welcome-hero {
-  display: flex;
-  flex-direction: column;
+  position: relative;
   overflow: hidden;
   border-radius: 16px;
   border: 1px solid var(--border);
-  background: var(--panel);
+  min-height: clamp(22rem, 52vh, 32rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.welcome-hero__photo {
+  object-fit: cover;
+  object-position: center 42%;
+  transform: scale(1.02);
+}
+
+.welcome-hero__shade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(8, 12, 18, 0.82) 0%, rgba(8, 12, 18, 0.45) 42%, rgba(8, 12, 18, 0.88) 100%),
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(15, 118, 110, 0.2), transparent 55%);
+  pointer-events: none;
+}
+:root[data-theme="light"] .welcome-hero__shade {
+  background:
+    linear-gradient(180deg, rgba(245, 246, 248, 0.88) 0%, rgba(245, 246, 248, 0.55) 45%, rgba(245, 246, 248, 0.92) 100%),
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(14, 116, 144, 0.12), transparent 55%);
+}
+
+/* Subtle field analytics grid */
+.welcome-hero__grid {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.35) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(180deg, transparent 35%, black 70%, transparent 100%);
+  pointer-events: none;
+}
+:root[data-theme="light"] .welcome-hero__grid {
+  opacity: 0.12;
+}
+
+.welcome-hero__hud {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: 1rem;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem;
+  padding: 0 1rem;
+  max-width: 20rem;
+  margin: 0 auto;
+  pointer-events: none;
+}
+@media (min-width: 640px) {
+  .welcome-hero__hud {
+    display: flex;
+    max-width: none;
+    margin: 0;
+    bottom: 1.25rem;
+    justify-content: space-between;
+    padding: 0 1.5rem;
+  }
+}
+.welcome-hero__hud-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(8, 12, 18, 0.72);
+  backdrop-filter: blur(8px);
+  min-width: 4.5rem;
+}
+:root[data-theme="light"] .welcome-hero__hud-stat {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+.welcome-hero__hud-label {
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.welcome-hero__hud-value {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #f8fafc;
+}
+:root[data-theme="light"] .welcome-hero__hud-value {
+  color: #0f172a;
 }
 
 .welcome-hero__content {
   position: relative;
-  z-index: 2;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding: 2rem 1.25rem 1.25rem;
+  padding: 2.5rem 1.5rem 5.5rem;
+  max-width: 44rem;
 }
 @media (min-width: 768px) {
-  .welcome-hero__content { padding: 2.5rem 2rem 1.5rem; }
-}
-
-/* Stadium + analytics panel — always visible, not covered by overlay */
-.welcome-hero__scene {
-  position: relative;
-  width: 100%;
-  min-height: 11rem;
-  height: clamp(11rem, 28vw, 16rem);
-  background: linear-gradient(180deg, #1e3a5f 0%, #0f172a 100%);
-  border-top: 1px solid rgba(34, 211, 238, 0.25);
-}
-.welcome-hero__svg {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.welcome-hero__scene-fade {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    var(--panel) 0%,
-    transparent 18%
-  );
-}
-:root[data-theme="light"] .welcome-hero__scene {
-  background: linear-gradient(180deg, #bae6fd 0%, #0f766e 100%);
-}
-:root[data-theme="light"] .welcome-hero__scene-fade {
-  background: linear-gradient(180deg, var(--panel) 0%, transparent 22%);
-}
-
-.welcome-hero__chip {
-  position: absolute;
-  z-index: 3;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  font-variant-numeric: tabular-nums;
-  padding: 0.3rem 0.6rem;
-  border-radius: 6px;
-  border: 1px solid rgba(34, 211, 238, 0.65);
-  background: rgba(15, 23, 42, 0.88);
-  color: #67e8f9;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  animation: chip-float 5s ease-in-out infinite;
-  pointer-events: none;
-}
-:root[data-theme="light"] .welcome-hero__chip {
-  background: rgba(255, 255, 255, 0.92);
-  color: #0e7490;
-}
-.welcome-hero__chip--1 { top: 12%; left: 6%; animation-delay: 0s; }
-.welcome-hero__chip--2 { top: 8%; right: 6%; animation-delay: 1s; }
-.welcome-hero__chip--3 { bottom: 18%; left: 8%; animation-delay: 2s; }
-.welcome-hero__chip--4 { bottom: 14%; right: 8%; animation-delay: 0.5s; }
-
-@keyframes chip-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-3px); }
-}
-
-.welcome-hero__dash {
-  animation: dash-march 12s linear infinite;
-}
-.welcome-hero__dash--reverse {
-  animation-direction: reverse;
-}
-@keyframes dash-march {
-  to { stroke-dashoffset: -70; }
+  .welcome-hero__content { padding: 3rem 2rem 6rem; }
 }
 
 .welcome-hero__eyebrow {
@@ -234,35 +258,47 @@ a { color: inherit; }
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--team-primary);
+  color: #7dd3fc;
   margin-bottom: 0.75rem;
+}
+:root[data-theme="light"] .welcome-hero__eyebrow {
+  color: #0369a1;
 }
 
 .welcome-hero__title {
-  font-size: clamp(1.75rem, 5vw, 3rem);
+  font-size: clamp(1.875rem, 5.5vw, 3.25rem);
   font-weight: 800;
-  line-height: 1.1;
+  line-height: 1.08;
   letter-spacing: -0.02em;
-  color: var(--text);
-  max-width: 18ch;
+  color: #f8fafc;
+  text-shadow: 0 2px 28px rgba(0, 0, 0, 0.55);
+}
+:root[data-theme="light"] .welcome-hero__title {
+  color: #0f172a;
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.6);
 }
 .welcome-hero__title-accent {
   display: block;
-  background: linear-gradient(90deg, var(--team-primary), var(--team-secondary));
+  background: linear-gradient(90deg, #38bdf8, #4ade80);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
 .welcome-hero__subtitle {
-  margin-top: 0.85rem;
-  max-width: 36rem;
+  margin-top: 1rem;
+  max-width: 32rem;
   font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--muted);
+  line-height: 1.65;
+  color: #e2e8f0;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
 }
 @media (min-width: 768px) {
   .welcome-hero__subtitle { font-size: 1.0625rem; }
+}
+:root[data-theme="light"] .welcome-hero__subtitle {
+  color: #334155;
+  text-shadow: none;
 }
 
 .welcome-hero__tags {
@@ -270,16 +306,22 @@ a { color: inherit; }
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.5rem;
-  margin-top: 1.1rem;
+  margin-top: 1.25rem;
 }
 .welcome-hero__tags span {
   font-size: 0.6875rem;
   font-weight: 500;
-  padding: 0.3rem 0.65rem;
+  padding: 0.35rem 0.7rem;
   border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(8, 12, 18, 0.55);
+  color: #e2e8f0;
+  backdrop-filter: blur(6px);
+}
+:root[data-theme="light"] .welcome-hero__tags span {
+  background: rgba(255, 255, 255, 0.75);
+  color: #475569;
+  border-color: rgba(0, 0, 0, 0.12);
 }
 
 .welcome-hero__actions {
@@ -287,12 +329,12 @@ a { color: inherit; }
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.75rem;
-  margin-top: 1.5rem;
+  margin-top: 1.75rem;
 }
 .welcome-hero__btn {
   font-size: 0.875rem;
   font-weight: 600;
-  padding: 0.65rem 1.35rem;
+  padding: 0.7rem 1.4rem;
   border-radius: 10px;
   transition: opacity 150ms ease, transform 150ms ease, border-color 150ms ease;
 }
@@ -300,26 +342,36 @@ a { color: inherit; }
 .welcome-hero__btn--primary {
   background: var(--team-primary);
   color: #fff;
-  box-shadow: 0 6px 20px color-mix(in oklab, var(--team-primary) 40%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 .welcome-hero__btn--primary:hover { opacity: 0.92; }
 .welcome-hero__btn--ghost {
-  border: 1px solid var(--border);
-  color: var(--text);
-  background: var(--bg);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #f8fafc;
+  background: rgba(8, 12, 18, 0.45);
+  backdrop-filter: blur(8px);
 }
 .welcome-hero__btn--ghost:hover {
-  border-color: var(--team-primary);
+  border-color: #7dd3fc;
+  background: rgba(8, 12, 18, 0.6);
+}
+:root[data-theme="light"] .welcome-hero__btn--ghost {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.15);
 }
 
 .welcome-hero__footnote {
-  margin-top: 1rem;
+  margin-top: 1.25rem;
   font-size: 0.6875rem;
-  color: var(--muted);
+  color: #cbd5e1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
+}
+:root[data-theme="light"] .welcome-hero__footnote {
+  color: #64748b;
 }
 
 /* === Pulse stat strip === */

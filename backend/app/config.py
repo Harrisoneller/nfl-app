@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # LLM
     llm_provider: Literal["grok", "anthropic", "openai"] = "grok"
     grok_api_key: str = ""
-    grok_model: str = "grok-2-latest"
+    grok_model: str = "grok-3"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
     openai_api_key: str = ""
