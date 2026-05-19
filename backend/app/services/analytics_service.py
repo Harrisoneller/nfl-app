@@ -479,17 +479,28 @@ async def player_profile(
 
 
 async def player_gamelog(player_id: str, full_name: str, season: int) -> list[dict[str, Any]]:
-    df = await _nfl.weekly_df(season)
-    if df is None or len(df) == 0:
-        return []
-    sub = df[df["player_id"] == player_id] if "player_id" in df.columns else df.iloc[0:0]
-    if len(sub) == 0 and full_name:
-        for col in ("player_display_name", "player_name"):
-            if col in df.columns:
-                sub = df[df[col] == full_name]
-                if len(sub):
-                    break
-    if len(sub) == 0:
+    """Week-by-week stats. Walks back up to 3 prior seasons if the requested
+    season has no data or the player has no rows that season (rookies,
+    returnees, offseason before nflverse publishes current year)."""
+    sub: pd.DataFrame | None = None
+    for offset in range(4):
+        s = season - offset
+        if s < 2000:
+            break
+        df = await _nfl.weekly_df(s)
+        if df is None or len(df) == 0:
+            continue
+        candidate = df[df["player_id"] == player_id] if "player_id" in df.columns else df.iloc[0:0]
+        if len(candidate) == 0 and full_name:
+            for col in ("player_display_name", "player_name"):
+                if col in df.columns:
+                    candidate = df[df[col] == full_name]
+                    if len(candidate):
+                        break
+        if len(candidate) > 0:
+            sub = candidate
+            break
+    if sub is None or len(sub) == 0:
         return []
     keep = [
         "week", "opponent_team", "completions", "attempts", "passing_yards",

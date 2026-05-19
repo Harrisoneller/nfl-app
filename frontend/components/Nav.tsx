@@ -3,11 +3,12 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ThemeToggle } from "./ThemeProvider";
 
+// NOTE: /players, /compare, and /performance are intentionally hidden from the
+// nav while they're being stabilized. The pages still exist if you navigate
+// directly to the URL — re-add the entries here to restore discovery.
 const links = [
   { href: "/", label: "Home" },
   { href: "/teams", label: "Teams" },
-  { href: "/players", label: "Players" },
-  { href: "/compare", label: "Compare" },
   { href: "/h2h/PHI/SF", label: "H2H" },
   { href: "/fantasy", label: "Fantasy" },
   { href: "/odds", label: "Odds" },

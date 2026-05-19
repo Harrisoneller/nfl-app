@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api, Player } from "@/lib/api";
 import { Card } from "@/components/Card";
+import { BetaBanner, BetaPill } from "@/components/BetaBanner";
 import Link from "next/link";
 
 export default function PlayersPage() {
@@ -30,7 +31,15 @@ export default function PlayersPage() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold">Players</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-semibold">Players</h1>
+        <BetaPill />
+      </div>
+      <BetaBanner title="Player data is still maturing">
+        Profile loads and predictions can be slow for less-popular players, and
+        some season data is unavailable during the offseason. Top fantasy
+        players are pre-cached and fast; everyone else loads on demand.
+      </BetaBanner>
       <Card>
         <div className="flex flex-wrap gap-2">
           <input

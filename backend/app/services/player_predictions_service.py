@@ -73,6 +73,39 @@ async def _player_weekly_frame(season: int) -> pd.DataFrame | None:
     return df
 
 
+async def _find_weekly_with_player_usage(
+    player_id: str, full_name: str, start_season: int, max_lookback: int = 3,
+) -> tuple[pd.DataFrame | None, int | None]:
+    """Walk back up to `max_lookback` seasons looking for one that:
+      1. has weekly data available from nflverse
+      2. contains this specific player with non-zero usage
+
+    Returns (weekly_df, season_used) or (None, None) if we exhausted all
+    fallbacks. Used by both game predictions and season projections so a
+    rookie or recently-active veteran with stale current-season data still
+    gets a useful response.
+    """
+    for offset in range(max_lookback + 1):
+        s = start_season - offset
+        if s < 2000:  # sanity
+            break
+        df = await _player_weekly_frame(s)
+        if df is None or len(df) == 0:
+            continue
+        # Check the player exists with at least one row of usage
+        if "player_id" in df.columns:
+            hits = df[df["player_id"] == player_id]
+            if len(hits) == 0 and full_name:
+                for col in ("player_display_name", "player_name"):
+                    if col in df.columns:
+                        hits = df[df[col] == full_name]
+                        if len(hits):
+                            break
+            if len(hits) > 0:
+                return df, s
+    return None, None
+
+
 def _rolling_stats(
     weekly: pd.DataFrame, player_id: str, stats: list[str], window: int = 4,
 ) -> dict[str, dict[str, float]]:
@@ -152,17 +185,34 @@ async def player_game_predictions(
         return {"player_id": player_id, "position": pos, "error": "unsupported position"}
 
     # Most recent COMPLETED season has full weekly data; in the offseason, use that
-    # for rolling baseline but predict against the new upcoming schedule.
-    weekly_season = season if season <= latest_completed_season() else latest_completed_season()
-    weekly = await _player_weekly_frame(weekly_season)
-    if weekly is None:
-        return {"player_id": player_id, "error": "no weekly data available"}
+    # for rolling baseline. Walk back up to 3 seasons if the player has no
+    # usage in the chosen one (rookies, vets returning from injury, etc.).
+    start_season = season if season <= latest_completed_season() else latest_completed_season()
+    weekly, weekly_season = await _find_weekly_with_player_usage(
+        player_id, player.full_name, start_season, max_lookback=3,
+    )
+    if weekly is None or weekly_season is None:
+        return {
+            "player_id": player_id,
+            "name": player.full_name,
+            "position": pos,
+            "team": player.team_id,
+            "error": "no recent weekly data — predictions unavailable",
+            "season": season,
+            "games": [],
+        }
 
     rolling = _rolling_stats(weekly, player_id, stats, window=4)
     if not rolling:
         return {
-            "player_id": player_id, "position": pos, "team": player.team_id,
+            "player_id": player_id,
+            "name": player.full_name,
+            "position": pos,
+            "team": player.team_id,
             "error": "no usage in recent games — no projections",
+            "season": season,
+            "baseline_season": weekly_season,
+            "games": [],
         }
 
     # Pull the team's remaining schedule from the current/upcoming season
@@ -275,10 +325,22 @@ async def player_season_projection(
     if not stats:
         return {"player_id": player_id, "position": pos, "error": "unsupported position"}
 
-    weekly_season = season if season <= latest_completed_season() else latest_completed_season()
-    weekly = await _player_weekly_frame(weekly_season)
-    if weekly is None:
-        return {"player_id": player_id, "error": "no weekly data available"}
+    start_season = season if season <= latest_completed_season() else latest_completed_season()
+    weekly, weekly_season = await _find_weekly_with_player_usage(
+        player_id, player.full_name, start_season, max_lookback=3,
+    )
+    if weekly is None or weekly_season is None:
+        return {
+            "player_id": player_id,
+            "name": player.full_name,
+            "position": pos,
+            "team": player.team_id,
+            "season": season,
+            "error": "no recent weekly data — projections unavailable",
+            "stats": {},
+            "games_played": 0,
+            "games_remaining": 17,
+        }
 
     ytd = _season_totals(weekly, player_id, stats)
     rolling = _rolling_stats(weekly, player_id, stats, window=4)
@@ -321,6 +383,8 @@ async def player_season_projection(
         "baseline_source_season": weekly_season,
         "stats": out_stats,
     }
+    if weekly_season != start_season:
+        result["fallback_from"] = start_season
     cache.set(cache_key, result, CACHE_TTL)
     return result
 

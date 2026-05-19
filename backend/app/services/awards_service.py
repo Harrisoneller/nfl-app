@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from . import analytics_service, elo_service
+from . import analytics_service, artifact_cache, elo_service
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
@@ -106,24 +106,28 @@ def _softmax_odds(scores: list[float], temperature: float = 8.0) -> list[float]:
 
 
 async def award_leaderboards(season: int | None = None) -> dict[str, Any]:
-    """Return MVP + OPOY leaderboards with normalized odds."""
+    """Return MVP + OPOY leaderboards with normalized odds.
+
+    DB-cached: a completed season's awards are immutable (never expires),
+    the current season is refreshed daily by the scheduler.
+    """
     season = season or latest_completed_season()
-    key = f"awards:{season}"
-    if (v := cache.get(key)) is not None:
-        return v
+    is_completed = season < latest_completed_season() + 1
+    ttl = None if is_completed else 60 * 60 * 24
 
-    mvp_rows = await _award_leaderboard(season, ["QB"], MVP_WEIGHTS, top=10)
-    opoy_rows = await _award_leaderboard(season, ["RB", "WR", "TE"], OPOY_WEIGHTS, top=10)
+    async def _compute() -> dict[str, Any]:
+        mvp_rows = await _award_leaderboard(season, ["QB"], MVP_WEIGHTS, top=10)
+        opoy_rows = await _award_leaderboard(season, ["RB", "WR", "TE"], OPOY_WEIGHTS, top=10)
+        for rows in (mvp_rows, opoy_rows):
+            odds = _softmax_odds([r["composite_score"] for r in rows])
+            for r, o in zip(rows, odds):
+                r["odds_pct"] = o
+        return {"season": season, "mvp": mvp_rows, "opoy": opoy_rows}
 
-    for rows in (mvp_rows, opoy_rows):
-        odds = _softmax_odds([r["composite_score"] for r in rows])
-        for r, o in zip(rows, odds):
-            r["odds_pct"] = o
-
-    out = {
-        "season": season,
-        "mvp": mvp_rows,
-        "opoy": opoy_rows,
-    }
-    cache.set(key, out, CACHE_TTL)
-    return out
+    return await artifact_cache.get_or_compute(
+        kind="awards",
+        key=f"season:{season}",
+        compute=_compute,
+        ttl_seconds=ttl,
+        l1_ttl_seconds=60 * 30,
+    )

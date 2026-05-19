@@ -21,7 +21,7 @@ from ..logging_config import get_logger
 from ..models.seed import NFL_TEAMS
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import elo_service
+from . import artifact_cache, elo_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -125,6 +125,8 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
     if not aggs:
         aggs = await analytics_service._team_pbp_aggregates(season - 1)
     games = sched[sched["week"] == week]
+    if "game_type" in games.columns:
+        games = games[games["game_type"].astype(str).str.upper() == "REG"]
     out = []
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
@@ -166,17 +168,29 @@ async def simulate_season(
 ) -> dict[str, Any]:
     """Run N simulations of the remaining schedule.
 
-    For each team returns:
-      - mean wins, p5/median/p95 wins
-      - division winner odds
-      - top-7 playoff seed odds (overall make-playoffs %)
-      - Super Bowl appearance odds (best-record proxy; we don't simulate the
-        bracket — just "best team in conference makes SB" as a rough heuristic)
+    Persisted to model_artifacts so the same simulation result is shared
+    across all workers/processes and survives backend restarts. Refreshed
+    daily by the scheduler.
     """
-    key = f"season_sim:{season}:{n_sims}"
-    if (v := cache.get(key)) is not None:
-        return v
+    # Two-layer cached fetch — L1 in-process, L2 Postgres
+    artifact_key = f"season:{season}:n:{n_sims}"
 
+    async def _compute() -> dict[str, Any]:
+        return await _simulate_season_compute(db, season, n_sims)
+
+    return await artifact_cache.get_or_compute(
+        kind="monte_carlo_sim",
+        key=artifact_key,
+        compute=_compute,
+        ttl_seconds=60 * 60 * 24,  # 24h
+        l1_ttl_seconds=60 * 30,
+    )
+
+
+async def _simulate_season_compute(
+    db: Session, season: int, n_sims: int,
+) -> dict[str, Any]:
+    """The real Monte Carlo. Separated so artifact_cache can wrap it."""
     sched = await _season_schedule(season)
     if sched is None:
         return {"season": season, "n_sims": 0, "teams": {}}
@@ -276,9 +290,7 @@ async def simulate_season(
             "sb_appearance_pct": round(100 * sb_appearances[team] / n_sims, 1),
         }
 
-    result = {"season": season, "n_sims": n_sims, "teams": out}
-    cache.set(key, result, CACHE_TTL)
-    return result
+    return {"season": season, "n_sims": n_sims, "teams": out}
 
 
 async def team_season_outlook(db: Session, team_id: str, season: int | None = None) -> dict[str, Any]:

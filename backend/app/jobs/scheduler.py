@@ -28,6 +28,7 @@ from ..db import SessionLocal
 from ..logging_config import get_logger
 from ..services import (
     analytics_service,
+    artifact_cache,
     awards_service,
     elo_service,
     news_service,
@@ -93,6 +94,16 @@ async def _job_rebuild_elo() -> None:
         log.warning("scheduler_elo_rebuild_failed", error=str(e))
     finally:
         db.close()
+
+
+async def _job_vacuum_cache() -> None:
+    """Sweep out expired model_artifacts > 7 days old. Cheap, daily."""
+    try:
+        deleted = artifact_cache.vacuum_expired(older_than_days=7)
+        if deleted:
+            log.info("scheduler_cache_vacuumed", deleted=deleted)
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler_cache_vacuum_failed", error=str(e))
 
 
 async def _job_warmup_predictions() -> None:
@@ -182,6 +193,13 @@ def start_scheduler() -> None:
         IntervalTrigger(hours=24),
         next_run_time=_soon(60 * 60 * 24),
         id="predictions_daily", coalesce=True, max_instances=1,
+    )
+    # Cache vacuum — weekly housekeeping
+    sched.add_job(
+        _job_vacuum_cache,
+        IntervalTrigger(hours=24 * 7),
+        next_run_time=_soon(60 * 60 * 24),
+        id="cache_vacuum_weekly", coalesce=True, max_instances=1,
     )
     # Weekly recompute during the season
     sched.add_job(

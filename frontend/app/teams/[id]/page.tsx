@@ -24,6 +24,10 @@ import { TeamRemainingScheduleCard } from "@/components/predictions/TeamRemainin
 import { BettingHistoryCard } from "@/components/betting/BettingHistoryCard";
 import { TeamEdgeCard } from "@/components/betting/EdgeBoard";
 import { LeagueBestBetsCard } from "@/components/betting/LeagueBestBets";
+import { H2HLauncher } from "@/components/H2HLauncher";
+import { RecentFormCard } from "@/components/RecentFormCard";
+import { DivisionStandingCard } from "@/components/DivisionStandingCard";
+import { TopPerformersCard } from "@/components/TopPerformersCard";
 import { pickColor } from "@/lib/colors";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
 import { readOverlayParams, syncUrlOverlays } from "@/lib/overlay-url";
@@ -344,6 +348,7 @@ function OverviewTab({
 
   return (
     <>
+      {/* Outlook, next game, division; compare under outlook + next game */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <SeasonOdds teamId={id} />
         <Card title="Next game">
@@ -355,18 +360,31 @@ function OverviewTab({
                 <button onClick={() => setTab("predictions")} className="underline hover:no-underline">
                   Predictions
                 </button>{" "}
-                for the full week's slate and season simulation breakdown.
+                for the full week's slate.
               </p>
             </div>
           ) : (
             <p className="text-sm text-muted">
-              No upcoming game found for {team.id} in the current week. Check the{" "}
+              No upcoming game found for {team.id}. Check the{" "}
               <button onClick={() => setTab("schedule")} className="underline">Schedule</button> tab.
             </p>
           )}
         </Card>
+        <div className="lg:row-span-2">
+          <DivisionStandingCard teamId={id} />
+        </div>
+        <div className="lg:col-span-2">
+          <H2HLauncher teamId={id} />
+        </div>
       </div>
 
+      {/* Recent form + key players */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <RecentFormCard teamId={id} />
+        <TopPerformersCard teamId={id} />
+      </div>
+
+      {/* Row 3: at a glance metrics */}
       {headlineMetrics.length > 0 && (
         <Card title="At a glance" action={<button onClick={() => setTab("performance")} className="text-[11px] text-muted hover:underline">All metrics →</button>}>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2">
@@ -377,6 +395,7 @@ function OverviewTab({
         </Card>
       )}
 
+      {/* Team news */}
       <LiveFeed
         title="Latest team news"
         cacheKey={["team-news-overview", id]}

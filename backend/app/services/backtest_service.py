@@ -25,7 +25,7 @@ from ..logging_config import get_logger
 from ..models.elo import TeamEloRating
 from ..utils.seasons import latest_completed_season
 from ..utils.teams import canonical_team
-from . import elo_service, ml_predictions_service
+from . import artifact_cache, elo_service, ml_predictions_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -41,18 +41,32 @@ CACHE_TTL = 60 * 60 * 24  # 24h
 async def backtest_elo(db: Session, seasons: list[int] | None = None) -> dict[str, Any]:
     """Walk completed games using week-N-1 Elo as the pre-game prediction.
 
-    For each game we compute:
-      - predicted spread (from Elo diff + HFA)
-      - predicted win prob
-      - actual margin + winner
-    Then aggregate MAE/RMSE/accuracy and calibration.
+    Persisted to model_artifacts. Completed seasons are immutable, so the
+    artifact survives indefinitely once written — the only refresh trigger
+    is a new completed season ending.
     """
     if seasons is None:
         latest = latest_completed_season()
         seasons = list(range(latest - 4, latest + 1))
-    key = f"backtest:elo:{','.join(str(s) for s in seasons)}"
-    if (v := cache.get(key)) is not None:
-        return v
+
+    artifact_key = f"seasons:{','.join(str(s) for s in seasons)}"
+
+    async def _compute() -> dict[str, Any]:
+        return await _backtest_elo_compute(db, seasons)
+
+    return await artifact_cache.get_or_compute(
+        kind="backtest_elo",
+        key=artifact_key,
+        compute=_compute,
+        ttl_seconds=60 * 60 * 24 * 7,  # 1 week — refreshed when new data lands
+        l1_ttl_seconds=60 * 60,
+    )
+
+
+async def _backtest_elo_compute(
+    db: Session, seasons: list[int],
+) -> dict[str, Any]:
+    """The actual backtest computation, wrapped above for caching."""
 
     # Load all Elo ratings for the seasons we're testing.
     elo_rows = (
@@ -127,15 +141,13 @@ async def backtest_elo(db: Session, seasons: list[int] | None = None) -> dict[st
     overall = _aggregate(all_rows) if all_rows else {}
     calibration = _calibration_table(all_rows)
 
-    out = {
+    return {
         "seasons": seasons,
         "n_games": len(all_rows),
         "overall": overall,
         "per_season": per_season,
         "calibration": calibration,
     }
-    cache.set(key, out, CACHE_TTL)
-    return out
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -246,13 +258,27 @@ async def backtest_ml(
     test_season = test_season or latest
     train_seasons = train_seasons or list(range(test_season - 4, test_season))
 
-    key = f"backtest:ml:{test_season}:{','.join(str(s) for s in train_seasons)}"
-    if (v := cache.get(key)) is not None:
-        return v
-
     xgb = ml_predictions_service._xgb()  # noqa: SLF001
     if xgb is None:
         return {"available": False, "reason": "xgboost not installed"}
+
+    artifact_key = f"test:{test_season}:train:{','.join(str(s) for s in train_seasons)}"
+
+    async def _compute() -> dict[str, Any]:
+        return await _backtest_ml_compute(db, test_season, train_seasons, xgb)
+
+    return await artifact_cache.get_or_compute(
+        kind="backtest_ml",
+        key=artifact_key,
+        compute=_compute,
+        ttl_seconds=60 * 60 * 24 * 7,
+        l1_ttl_seconds=60 * 60,
+    )
+
+
+async def _backtest_ml_compute(
+    db: Session, test_season: int, train_seasons: list[int], xgb,
+) -> dict[str, Any]:
 
     # Build training frame
     train_frames = []
@@ -295,7 +321,7 @@ async def backtest_ml(
     )
     feat_imp = [{"feature": f, "importance": round(imp, 4)} for f, imp in importance]
 
-    out = {
+    return {
         "available": True,
         "train_seasons": train_seasons,
         "test_season": test_season,
@@ -306,8 +332,6 @@ async def backtest_ml(
         "classifier_accuracy_pct": round(correct, 1),
         "feature_importance": feat_imp,
     }
-    cache.set(key, out, CACHE_TTL)
-    return out
 
 
 async def backtest_summary(db: Session) -> dict[str, Any]:

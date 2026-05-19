@@ -8,11 +8,10 @@ type Hit =
   | { kind: "player"; id: string; label: string; sub: string; color: string }
   | { kind: "nav"; id: string; label: string; sub: string; color: string };
 
+// /players, /compare, and /performance are temporarily hidden — see Nav.tsx.
 const NAV_ITEMS: Hit[] = [
   { kind: "nav", id: "/", label: "Home", sub: "Scores + news + widgets", color: "#94a3b8" },
   { kind: "nav", id: "/teams", label: "Teams", sub: "All 32, grouped by division", color: "#94a3b8" },
-  { kind: "nav", id: "/players", label: "Players", sub: "Search by name, position, team", color: "#94a3b8" },
-  { kind: "nav", id: "/compare", label: "Compare", sub: "Teams or players", color: "#94a3b8" },
   { kind: "nav", id: "/fantasy", label: "Fantasy", sub: "News, trending, advisor", color: "#94a3b8" },
   { kind: "nav", id: "/odds", label: "Odds", sub: "Sportsbook markets", color: "#94a3b8" },
   { kind: "nav", id: "/ai", label: "AI assistant", sub: "Ask anything NFL", color: "#94a3b8" },
@@ -64,26 +63,20 @@ export function CommandPalette() {
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
-        const [teams, players] = await Promise.all([
-          api.listTeams().catch(() => [] as Team[]),
-          api.listPlayers({ query: q, limit: 8 }).catch(() => [] as Player[]),
-        ]);
+        // Player search hidden alongside /players nav. Re-add to results when
+        // the players section is re-enabled.
+        const teams = await api.listTeams().catch(() => [] as Team[]);
         const ql = q.toLowerCase();
         const teamHits: Hit[] = teams
           .filter((t) => t.full_name.toLowerCase().includes(ql) || t.id.toLowerCase() === ql)
-          .slice(0, 5)
+          .slice(0, 8)
           .map((t) => ({
             kind: "team", id: `/teams/${t.id}`, label: t.full_name,
             sub: `Team · ${t.conference} ${t.division}`, color: t.primary_color,
           }));
-        const playerHits: Hit[] = players.map((p) => ({
-          kind: "player", id: `/players/${p.id}`, label: p.full_name,
-          sub: `Player · ${p.position}${p.team_id ? ` · ${p.team_id}` : ""}`,
-          color: "#22d3ee",
-        }));
         const navHits: Hit[] = NAV_ITEMS.filter((n) => n.label.toLowerCase().includes(ql)).slice(0, 3);
         if (!cancelled) {
-          setResults([...navHits, ...teamHits, ...playerHits]);
+          setResults([...navHits, ...teamHits]);
           setActiveIdx(0);
         }
       } catch {

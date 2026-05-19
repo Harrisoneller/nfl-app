@@ -19,7 +19,7 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
   ) : null;
 
   return (
-    <div className="panel p-3 space-y-2 hover:border-team-primary transition-colors">
+    <div className="panel panel-hover-lift p-3 space-y-2">
       <div className="flex items-center justify-between text-sm gap-2">
         <Link href={`/teams/${game.away_team_id}`} className="flex items-center gap-1.5 font-medium hover:underline">
           <TeamLogo teamId={game.away_team_id} size={22} />

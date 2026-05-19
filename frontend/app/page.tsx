@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { api, GamePrediction } from "@/lib/api";
+import { api, Game, GamePrediction } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { PredictionCard } from "@/components/predictions/PredictionCard";
 import { EloBadge } from "@/components/predictions/EloBadge";
@@ -7,19 +7,20 @@ import { WinProbBar } from "@/components/predictions/WinProbBar";
 import { AwardRaceCard } from "@/components/predictions/AwardRaceCard";
 import { LeagueBestBetsCard } from "@/components/betting/LeagueBestBets";
 import { TeamLogo } from "@/components/TeamLogo";
+import { LeaguePulse } from "@/components/LeaguePulse";
+import { WelcomeHero } from "@/components/home/WelcomeHero";
+import { Week1Schedule } from "@/components/Week1Schedule";
 
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   try { return await p; } catch { return fallback; }
 }
 
-// Pick the most compelling game of the week: closest predicted win prob,
-// preferring games involving top-10 Elo teams.
 function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePrediction | undefined {
   if (games.length === 0) return undefined;
   const upcoming = games.filter((g) => g.home_score == null);
   if (upcoming.length === 0) return undefined;
   const scored = upcoming.map((g) => {
-    const competitive = 1 - Math.abs(g.prediction.home_win_prob - 0.5) * 2; // 0..1
+    const competitive = 1 - Math.abs(g.prediction.home_win_prob - 0.5) * 2;
     const topMatch = (topTeams.has(g.home_team_id) ? 1 : 0) + (topTeams.has(g.away_team_id) ? 1 : 0);
     return { g, score: competitive * 2 + topMatch };
   });
@@ -27,11 +28,20 @@ function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePredi
   return scored[0].g;
 }
 
+const QUICK_LINKS = [
+  { href: "/teams", label: "Teams", icon: "🏟" },
+  { href: "/odds", label: "Odds", icon: "📊" },
+  { href: "/fantasy", label: "Fantasy", icon: "⭐" },
+  { href: "/h2h/PHI/SF", label: "H2H", icon: "⚔️" },
+  { href: "/ai", label: "AI", icon: "✨" },
+] as const;
+
 export default async function HomePage() {
-  const [scoreboard, predictions, news, standings, eloRatings, trendingAdds, widgets] =
+  const [scoreboard, predictions, week1Predictions, news, standings, eloRatings, trendingAdds, widgets] =
     await Promise.all([
       safe(api.scoreboard(12), []),
       safe(api.predictGames(undefined, undefined, true), { season: 0, week: null, games: [] }),
+      safe(api.predictGames(undefined, 1, true), { season: 0, week: 1, games: [] }),
       safe(api.news(8), []),
       safe(api.projectedStandings(), { season: 0, divisions: [] }),
       safe(api.currentElo(), { ratings: [] }),
@@ -41,31 +51,58 @@ export default async function HomePage() {
 
   const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));
   const featured = pickFeatured(predictions.games, topTeamIds);
-  const otherGames = featured
-    ? predictions.games.filter((g) => g.id !== featured.id).slice(0, 8)
-    : predictions.games.slice(0, 9);
+  const week1Season = week1Predictions.season || predictions.season;
+  const hasWeek1Games = week1Predictions.games.length > 0;
+  const otherGames = (featured
+    ? predictions.games.filter((g) => g.id !== featured.id)
+    : predictions.games
+  )
+    .filter((g) => !(hasWeek1Games && predictions.week === 1 && g.week === 1))
+    .slice(0, 8);
   const hasLiveGames = scoreboard.some((g) => g.status === "in" || g.status === "live");
+  const liveGames = scoreboard.filter((g) => g.status === "in" || g.status === "live");
+  const weekLabel = predictions.week ? `Week ${predictions.week}` : null;
 
   return (
-    <div className="space-y-7">
-      {/* ============ HERO ============ */}
+    <div className="space-y-10">
       {featured ? (
-        <FeaturedGame game={featured} />
-      ) : predictions.games.length > 0 ? (
-        <p className="text-xl font-semibold">
-          {hasLiveGames ? "Live now" : predictions.week ? `Week ${predictions.week}` : "This week"}
-        </p>
-      ) : null}
+        <FeaturedGame game={featured} weekLabel={weekLabel} />
+      ) : (
+        <WelcomeHero hasLiveGames={hasLiveGames} weekLabel={weekLabel} />
+      )}
 
-      {/* ============ THE WEEK ============ */}
+      <QuickExploreBar />
+
+      <section>
+        <SectionHeader
+          title={week1Season ? `Week 1 · ${week1Season} season` : "Week 1 schedule"}
+          href={hasWeek1Games ? "/odds" : undefined}
+          linkLabel={hasWeek1Games ? "Betting edges →" : undefined}
+        />
+        <Week1Schedule season={week1Season} games={week1Predictions.games} />
+      </section>
+
+      {hasLiveGames && liveGames.length > 0 && (
+        <section>
+          <SectionHeader title="Live now" />
+          <LiveScoreboardStrip games={liveGames} />
+        </section>
+      )}
+
+      {(eloRatings.ratings.length > 0 || standings.divisions.length > 0) && (
+        <section>
+          <SectionHeader title="League pulse" />
+          <LeaguePulse elo={eloRatings.ratings} standings={standings.divisions} />
+        </section>
+      )}
+
       {otherGames.length > 0 && (
         <section>
-          <div className="flex items-end justify-between mb-3">
-            <h2 className="text-sm font-semibold tracking-wide text-muted uppercase">
-              The rest of the slate
-            </h2>
-            <Link href="/odds" className="text-xs text-muted hover:underline">Full board →</Link>
-          </div>
+          <SectionHeader
+            title={predictions.week ? `Week ${predictions.week} slate` : "Upcoming games"}
+            href="/odds"
+            linkLabel="Full board →"
+          />
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
             {otherGames.map((g) => (
               <PredictionCard key={g.id || `${g.home_team_id}-${g.away_team_id}`} game={g} />
@@ -74,7 +111,6 @@ export default async function HomePage() {
         </section>
       )}
 
-      {/* ============ STORYLINES + POWER RANKINGS ============ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Card title="Today's storylines" className="lg:col-span-2">
           {news.length === 0 ? (
@@ -82,32 +118,55 @@ export default async function HomePage() {
           ) : (
             <ul className="space-y-3 text-sm">
               {news.map((n, i) => (
-                <li key={n.id} className={i === 0 ? "pb-3 border-b divider" : ""}>
-                  <a href={n.link} target="_blank" rel="noreferrer" className="hover:underline block">
-                    <div className={i === 0 ? "text-base font-medium" : ""}>{n.title}</div>
-                    <div className="text-[11px] text-muted mt-0.5">
-                      {n.source_label}
-                      {n.published_at && ` · ${timeAgo(n.published_at)}`}
-                    </div>
-                  </a>
+                <li key={n.id}>
+                  {i === 0 ? (
+                    <a
+                      href={n.link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded-xl border divider bg-bg/40 p-4 hover:border-team-primary/50 transition-colors group"
+                    >
+                      <div className="text-[10px] uppercase tracking-wider text-team-primary font-semibold mb-1.5">
+                        Lead story
+                      </div>
+                      <div className="text-lg font-semibold leading-snug group-hover:text-team-primary transition-colors">
+                        {n.title}
+                      </div>
+                      <div className="text-[11px] text-muted mt-2">
+                        {n.source_label}
+                        {n.published_at && ` · ${timeAgo(n.published_at)}`}
+                      </div>
+                    </a>
+                  ) : (
+                    <a href={n.link} target="_blank" rel="noreferrer" className="hover:underline block py-0.5">
+                      <div>{n.title}</div>
+                      <div className="text-[11px] text-muted mt-0.5">
+                        {n.source_label}
+                        {n.published_at && ` · ${timeAgo(n.published_at)}`}
+                      </div>
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>
           )}
         </Card>
 
-        <Card
-          title="Power rankings"
-          action={<span className="text-[11px] text-muted">via Elo</span>}
-        >
+        <Card title="Power rankings" action={<span className="text-[11px] text-muted">via Elo</span>}>
           {eloRatings.ratings.length === 0 ? (
             <p className="text-sm text-muted">Ratings build on first boot.</p>
           ) : (
             <ol className="space-y-1.5 text-sm">
               {eloRatings.ratings.slice(0, 12).map((r, i) => (
-                <li key={r.team_id} className="flex items-center justify-between gap-2">
+                <li key={r.team_id} className="flex items-center justify-between gap-2 group">
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-muted tabular-nums w-5 text-right">{i + 1}</span>
+                    <span
+                      className={`tabular-nums w-5 text-right text-xs font-bold ${
+                        i < 3 ? "text-team-primary" : "text-muted"
+                      }`}
+                    >
+                      {i + 1}
+                    </span>
                     <TeamLogo teamId={r.team_id} size={20} />
                     <Link href={`/teams/${r.team_id}`} className="hover:underline font-medium truncate">
                       {r.team_id}
@@ -121,7 +180,6 @@ export default async function HomePage() {
         </Card>
       </div>
 
-      {/* ============ PROJECTED STANDINGS ============ */}
       {standings.divisions.length > 0 && (
         <Card title="Projected standings" action={<span className="text-[11px] text-muted">10,000 Monte Carlo sims</span>}>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
@@ -153,13 +211,11 @@ export default async function HomePage() {
         </Card>
       )}
 
-      {/* ============ AWARDS + BEST BETS ============ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <AwardRaceCard />
         <LeagueBestBetsCard />
       </div>
 
-      {/* ============ PERSONA SNIPPETS ============ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Card title="Fantasy: trending adds" action={<Link href="/fantasy" className="text-[11px] hover:underline">More →</Link>}>
           {trendingAdds.items.length === 0 ? (
@@ -188,11 +244,20 @@ export default async function HomePage() {
         </Card>
 
         <Card title="Ask the AI" action={<Link href="/ai" className="text-[11px] hover:underline">Open →</Link>}>
-          <p className="text-sm text-muted mb-2">Specific questions, real data, instant answer.</p>
-          <ul className="text-sm space-y-1 text-muted">
-            <li>"Compare PHI and SF rushing efficiency"</li>
-            <li>"Best red-zone defenses this year"</li>
-            <li>"Build a widget of QB EPA leaders"</li>
+          <p className="text-sm text-muted mb-3">Specific questions, real data, instant answer.</p>
+          <ul className="text-sm space-y-2">
+            {[
+              "Compare PHI and SF rushing efficiency",
+              "Best red-zone defenses this year",
+              "Build a widget of QB EPA leaders",
+            ].map((q) => (
+              <li
+                key={q}
+                className="text-muted border-l-2 border-team-primary/40 pl-3 py-0.5 italic"
+              >
+                &ldquo;{q}&rdquo;
+              </li>
+            ))}
           </ul>
         </Card>
 
@@ -217,69 +282,149 @@ export default async function HomePage() {
   );
 }
 
-function FeaturedGame({ game }: { game: GamePrediction }) {
+function SectionHeader({
+  title,
+  href,
+  linkLabel,
+}: {
+  title: string;
+  href?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between mb-3">
+      <h2 className="home-section-title">{title}</h2>
+      {href && linkLabel && (
+        <Link href={href} className="text-xs text-muted hover:text-text">
+          {linkLabel}
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function QuickExploreBar() {
+  return (
+    <nav className="flex flex-wrap items-center gap-2" aria-label="Quick explore">
+      <span className="text-[11px] text-muted mr-1 hidden sm:inline">Jump to</span>
+      {QUICK_LINKS.map((l) => (
+        <Link key={l.href} href={l.href} className="home-quick-link">
+          <span aria-hidden>{l.icon}</span>
+          {l.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+function LiveScoreboardStrip({ games }: { games: Game[] }) {
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1">
+      {games.map((g) => {
+        const away = g.away_team_id;
+        const home = g.home_team_id;
+        if (!away || !home) return null;
+        return (
+          <Link
+            key={g.id}
+            href={`/h2h/${away}/${home}`}
+            className="panel panel-hover-lift shrink-0 px-4 py-3 min-w-[200px] flex items-center gap-3"
+          >
+            <TeamLogo teamId={away} size={28} />
+            <div className="text-center min-w-[4rem]">
+              <div className="text-lg font-bold tabular-nums leading-none">
+                {g.away_score ?? "—"} – {g.home_score ?? "—"}
+              </div>
+              <span className="live-pill mt-1.5 mx-auto">Live</span>
+            </div>
+            <TeamLogo teamId={home} size={28} />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+function FeaturedGame({ game, weekLabel }: { game: GamePrediction; weekLabel: string | null }) {
   const p = game.prediction;
   const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
   const absSpread = Math.abs(p.predicted_spread);
+
   return (
-    <section className="panel p-5 md:p-7 relative overflow-hidden">
-      <div
-        className="absolute inset-0 opacity-[0.06] pointer-events-none"
-        style={{
-          background: "radial-gradient(ellipse at top left, var(--team-primary), transparent 60%)",
-        }}
-      />
-      <div className="relative">
-        <div className="text-[11px] uppercase tracking-wider text-muted mb-2">
-          Featured · Wk {game.week ?? "—"}
+    <section className="panel hero-glow p-6 md:p-8 border-t-2 border-t-team-primary/40">
+      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] uppercase tracking-wider font-semibold text-team-primary">
+            Featured matchup
+          </span>
+          <span className="text-[11px] text-muted">
+            {weekLabel ?? `Wk ${game.week ?? "—"}`}
+            {game.gameday ? ` · ${game.gameday}` : ""}
+          </span>
         </div>
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-          <div className="flex items-center gap-3">
-            <TeamLogo teamId={game.away_team_id} size={48} />
-            <div>
-              <div className="text-2xl font-bold">{game.away_team_id}</div>
-              <div className="text-[11px] text-muted">Elo {Math.round(game.away_elo)}</div>
-            </div>
+        <Link
+          href={`/h2h/${game.away_team_id}/${game.home_team_id}`}
+          className="text-xs font-medium text-team-primary hover:underline"
+        >
+          Full breakdown →
+        </Link>
+      </div>
+
+      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+        <TeamLockup teamId={game.away_team_id} elo={game.away_elo} />
+        <div className="flex flex-col items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-muted font-semibold">vs</span>
+          <div className="text-3xl md:text-4xl font-bold tabular-nums">
+            <span className="text-team-primary">{Math.round(p.away_win_prob * 100)}%</span>
+            <span className="text-muted mx-2 font-normal text-2xl">/</span>
+            <span className="text-team-secondary">{Math.round(p.home_win_prob * 100)}%</span>
           </div>
-          <div className="text-muted text-lg">@</div>
-          <div className="flex items-center gap-3 flex-row-reverse">
-            <TeamLogo teamId={game.home_team_id} size={48} />
-            <div className="text-right">
-              <div className="text-2xl font-bold">{game.home_team_id}</div>
-              <div className="text-[11px] text-muted">Elo {Math.round(game.home_elo)}</div>
-            </div>
-          </div>
+          <div className="text-[11px] text-muted">win probability</div>
         </div>
+        <TeamLockup teamId={game.home_team_id} elo={game.home_elo} rightAligned />
+      </div>
+
+      <div className="mt-6">
         <WinProbBar
           awayTeam={game.away_team_id}
           awayProb={p.away_win_prob}
           homeTeam={game.home_team_id}
           homeProb={p.home_win_prob}
         />
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 text-sm">
-          <Stat label="Pick" value={`${fav} -${absSpread.toFixed(1)}`} />
-          <Stat label="Total" value={p.predicted_total.toFixed(1)} />
-          <Stat label="Predicted score" value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`} />
-          <Stat
-            label="ML model"
-            value={
-              game.ml_prediction
-                ? `${game.ml_prediction.predicted_spread <= 0 ? game.home_team_id : game.away_team_id} -${Math.abs(game.ml_prediction.predicted_spread).toFixed(1)}`
-                : "—"
-            }
-          />
-        </div>
-        <p className="text-[11px] text-muted mt-3">{game.gameday}</p>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 text-sm">
+        <Stat label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
+        <Stat label="Total" value={p.predicted_total.toFixed(1)} />
+        <Stat label="Predicted score" value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`} />
+        <Stat label="Game script" value={p.game_script ?? "—"} />
       </div>
     </section>
   );
 }
 
+function TeamLockup({ teamId, elo, rightAligned }: { teamId: string; elo: number; rightAligned?: boolean }) {
+  return (
+    <Link
+      href={`/teams/${teamId}`}
+      className={`flex items-center gap-4 group flex-1 ${rightAligned ? "flex-row-reverse text-right md:justify-end" : "md:justify-start"}`}
+    >
+      <TeamLogo teamId={teamId} size={72} />
+      <div>
+        <div className="text-3xl md:text-4xl font-extrabold tracking-tight group-hover:text-team-primary transition-colors">
+          {teamId}
+        </div>
+        <div className="text-xs text-muted tabular-nums">Elo {Math.round(elo)}</div>
+      </div>
+    </Link>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div className="text-[10px] text-muted uppercase tracking-wide">{label}</div>
-      <div className="font-semibold tabular-nums">{value}</div>
+    <div className="bg-bg/60 rounded-lg px-3 py-2.5 border divider">
+      <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div className="font-bold tabular-nums">{value}</div>
     </div>
   );
 }

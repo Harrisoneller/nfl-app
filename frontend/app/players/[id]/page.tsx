@@ -20,6 +20,7 @@ import {
 } from "@/components/predictions/PlayerProjections";
 import { SkeletonRadar, SkeletonTable } from "@/components/Skeleton";
 import { DataSourceBadge } from "@/components/DataSourceBadge";
+import { BetaPill } from "@/components/BetaBanner";
 import { pickColor } from "@/lib/colors";
 import { PLAYER_METRIC_LABELS, playerMetricFmt, playerMetricLabel } from "@/lib/metrics";
 import { readOverlayParams, syncUrlOverlays } from "@/lib/overlay-url";
@@ -182,7 +183,10 @@ function Header({
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold">{player.full_name}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-semibold">{player.full_name}</h1>
+            <BetaPill />
+          </div>
           <div className="mt-1 text-sm text-muted flex flex-wrap gap-x-3 gap-y-1">
             <span className="bg-team-primary/20 text-team-primary px-2 py-0.5 rounded text-xs font-semibold">
               {player.position}
@@ -290,9 +294,18 @@ function RadarSection({
   if (!profile || profile.error) {
     return (
       <Card title="Profile">
-        <p className="text-sm text-muted">
-          {profile?.error ? profile.error : "Loading profile…"}
-        </p>
+        <div className="text-sm text-muted space-y-2">
+          <p>{profile?.error ? profile.error : "Loading profile…"}</p>
+          {profile?.error && (
+            <p className="text-xs">
+              The seasonal stats source hasn't published data for the season
+              you picked (or this player has no rows in it). Try selecting a
+              past season from the dropdown, or check{" "}
+              <code className="text-[10px] px-1 bg-bg/60 rounded">/admin/data-availability</code>{" "}
+              to confirm what's loaded.
+            </p>
+          )}
+        </div>
       </Card>
     );
   }

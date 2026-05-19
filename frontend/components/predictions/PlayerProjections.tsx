@@ -38,13 +38,28 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
   if (data.error) {
     return (
       <Card title="Season projection">
-        <p className="text-sm text-muted">{data.error}</p>
+        <div className="text-sm text-muted space-y-2">
+          <p>{data.error}.</p>
+          <p className="text-xs">
+            This usually means nflverse hasn't published weekly data for the
+            relevant season yet, or this player has no recent usage. Check
+            <code className="text-[10px] mx-1 px-1 bg-bg/60 rounded">GET /admin/data-availability</code>
+            to see what seasons are loaded.
+          </p>
+        </div>
       </Card>
     );
   }
 
   const order = STAT_DISPLAY_ORDER[data.position] || Object.keys(data.stats);
   const headlineStats = order.filter((k) => data.stats[k]).slice(0, 4);
+  if (headlineStats.length === 0) {
+    return (
+      <Card title="Season projection">
+        <p className="text-sm text-muted">No usable stats found for this player.</p>
+      </Card>
+    );
+  }
 
   return (
     <Card
@@ -124,14 +139,23 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
   if (data.error) {
     return (
       <Card title="Upcoming game predictions">
-        <p className="text-sm text-muted">{data.error}</p>
+        <div className="text-sm text-muted space-y-2">
+          <p>{data.error}.</p>
+          <p className="text-xs">
+            Predictions require recent weekly stats. Common causes: this player
+            is a rookie with no NFL history, currently injured/out, or nflverse
+            hasn't loaded the current season yet.
+          </p>
+        </div>
       </Card>
     );
   }
   if (data.games.length === 0) {
     return (
       <Card title="Upcoming game predictions">
-        <p className="text-sm text-muted">No upcoming games scheduled.</p>
+        <p className="text-sm text-muted">
+          No upcoming games found on this team's remaining schedule.
+        </p>
       </Card>
     );
   }
