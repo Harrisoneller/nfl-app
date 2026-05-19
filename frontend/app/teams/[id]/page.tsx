@@ -351,7 +351,7 @@ function OverviewTab({
         <Card title="Next game">
           {nextGame ? (
             <div className="space-y-3">
-              <MatchupPreviewRow game={nextGame} />
+              <MatchupPreviewRow game={nextGame} variant="compact" />
               <p className="text-xs text-muted">
                 Tap{" "}
                 <button onClick={() => setTab("predictions")} className="underline hover:no-underline">

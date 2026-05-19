@@ -65,11 +65,7 @@ export default async function HomePage() {
 
   return (
     <div className="space-y-10">
-      {featured ? (
-        <FeaturedGame game={featured} weekLabel={weekLabel} />
-      ) : (
-        <WelcomeHero hasLiveGames={hasLiveGames} weekLabel={weekLabel} />
-      )}
+      <WelcomeHero hasLiveGames={hasLiveGames} weekLabel={weekLabel} />
 
       <QuickExploreBar />
 
@@ -81,6 +77,8 @@ export default async function HomePage() {
         />
         <Week1Schedule season={week1Season} games={week1Predictions.games} />
       </section>
+
+      {featured && <FeaturedGame game={featured} weekLabel={weekLabel} />}
 
       {hasLiveGames && liveGames.length > 0 && (
         <section>

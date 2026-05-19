@@ -47,77 +47,146 @@ function EmptyState({ season }: { season: number }) {
 }
 
 /** Rich matchup preview row (Week 1 home + team overview "Next game"). */
-export function MatchupPreviewRow({ game, showH2hHint = true }: { game: GamePrediction; showH2hHint?: boolean }) {
+export function MatchupPreviewRow({
+  game,
+  showH2hHint = true,
+  variant = "default",
+}: {
+  game: GamePrediction;
+  showH2hHint?: boolean;
+  variant?: "default" | "compact";
+}) {
   const p = game.prediction;
   const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
   const absSpread = Math.abs(p.predicted_spread);
   const eloDiff = Math.round(game.home_elo - game.away_elo);
   const played = game.home_score != null && game.away_score != null;
   const kickoff = formatKickoff(game.gameday, game.gametime);
+  const compact = variant === "compact";
+  const favProb = Math.round(
+    (fav === game.home_team_id ? p.home_win_prob : p.away_win_prob) * 100,
+  );
 
   return (
     <Link
       href={`/h2h/${game.away_team_id}/${game.home_team_id}`}
-      className="panel panel-hover-lift block p-4 group"
+      className={
+        compact
+          ? "block rounded-lg border divider bg-bg/30 p-3 hover:border-team-primary/40 transition-colors group"
+          : "panel panel-hover-lift block p-4 group"
+      }
       aria-label={`${game.away_team_id} at ${game.home_team_id} head-to-head`}
     >
-      <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <TeamLogo teamId={game.away_team_id} size={36} />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-bold text-lg group-hover:text-team-primary transition-colors">
+      {compact ? (
+        <div className="space-y-3 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <TeamLogo teamId={game.away_team_id} size={28} className="shrink-0" />
+            <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1 justify-center">
+              <span className="font-semibold text-sm group-hover:text-team-primary transition-colors">
                 {game.away_team_id}
               </span>
-              <span className="text-muted text-xs">@</span>
-              <span className="font-bold text-lg group-hover:text-team-primary transition-colors">
+              <span className="text-muted text-[10px]">@</span>
+              <span className="font-semibold text-sm group-hover:text-team-primary transition-colors">
                 {game.home_team_id}
               </span>
             </div>
-            {kickoff && (
-              <p className="text-[11px] text-muted mt-0.5">{kickoff}</p>
-            )}
+            <TeamLogo teamId={game.home_team_id} size={28} className="shrink-0" />
           </div>
-          <TeamLogo teamId={game.home_team_id} size={36} className="hidden sm:block shrink-0" />
-        </div>
+          {kickoff && <p className="text-[10px] text-muted text-center">{kickoff}</p>}
 
-        {played ? (
-          <div className="text-lg font-bold tabular-nums shrink-0">
-            Final {game.away_score} – {game.home_score}
-          </div>
-        ) : (
-          <div className="w-full sm:w-44 shrink-0">
+          {played ? (
+            <div className="text-base font-bold tabular-nums text-center">
+              Final {game.away_score} – {game.home_score}
+            </div>
+          ) : (
             <WinProbBar
               awayTeam={game.away_team_id}
               awayProb={p.away_win_prob}
               homeTeam={game.home_team_id}
               homeProb={p.home_win_prob}
             />
+          )}
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetricPill compact label="Win prob" value={`${fav} ${favProb}%`} />
+            <MetricPill
+              compact
+              label="Elo Δ"
+              value={`${eloDiff >= 0 ? "+" : ""}${eloDiff}`}
+              hint="home − away"
+            />
+            <MetricPill compact label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
+            <MetricPill
+              compact
+              label="Proj score"
+              value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`}
+            />
           </div>
-        )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0 w-full sm:w-auto sm:min-w-[280px]">
-          <MetricPill
-            label="Win prob"
-            value={`${fav} ${Math.round((fav === game.home_team_id ? p.home_win_prob : p.away_win_prob) * 100)}%`}
-          />
-          <MetricPill
-            label="Elo Δ"
-            value={`${eloDiff >= 0 ? "+" : ""}${eloDiff}`}
-            hint="home − away"
-          />
-          <MetricPill label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
-          <MetricPill
-            label="Proj score"
-            value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`}
-          />
+          {showH2hHint && (
+            <p className="text-[10px] text-muted group-hover:text-team-primary transition-colors">
+              Full H2H breakdown →
+            </p>
+          )}
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <TeamLogo teamId={game.away_team_id} size={36} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold text-lg group-hover:text-team-primary transition-colors">
+                    {game.away_team_id}
+                  </span>
+                  <span className="text-muted text-xs">@</span>
+                  <span className="font-bold text-lg group-hover:text-team-primary transition-colors">
+                    {game.home_team_id}
+                  </span>
+                </div>
+                {kickoff && (
+                  <p className="text-[11px] text-muted mt-0.5">{kickoff}</p>
+                )}
+              </div>
+              <TeamLogo teamId={game.home_team_id} size={36} className="hidden sm:block shrink-0" />
+            </div>
 
-      {showH2hHint && (
-        <p className="text-[10px] text-muted mt-3 sm:mt-2 group-hover:text-team-primary transition-colors">
-          Full H2H breakdown →
-        </p>
+            {played ? (
+              <div className="text-lg font-bold tabular-nums shrink-0">
+                Final {game.away_score} – {game.home_score}
+              </div>
+            ) : (
+              <div className="w-full sm:w-44 shrink-0">
+                <WinProbBar
+                  awayTeam={game.away_team_id}
+                  awayProb={p.away_win_prob}
+                  homeTeam={game.home_team_id}
+                  homeProb={p.home_win_prob}
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0 w-full sm:w-auto sm:min-w-[280px]">
+              <MetricPill label="Win prob" value={`${fav} ${favProb}%`} />
+              <MetricPill
+                label="Elo Δ"
+                value={`${eloDiff >= 0 ? "+" : ""}${eloDiff}`}
+                hint="home − away"
+              />
+              <MetricPill label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
+              <MetricPill
+                label="Proj score"
+                value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`}
+              />
+            </div>
+          </div>
+
+          {showH2hHint && (
+            <p className="text-[10px] text-muted mt-3 sm:mt-2 group-hover:text-team-primary transition-colors">
+              Full H2H breakdown →
+            </p>
+          )}
+        </>
       )}
     </Link>
   );
@@ -127,18 +196,40 @@ function MetricPill({
   label,
   value,
   hint,
+  compact = false,
 }: {
   label: string;
   value: string;
   hint?: string;
+  compact?: boolean;
 }) {
   return (
-    <div className="bg-bg/50 rounded-lg px-2.5 py-2 border divider">
-      <div className="text-[9px] uppercase tracking-wide text-muted leading-none">
+    <div
+      className={
+        compact
+          ? "bg-bg/50 rounded-md px-2 py-1.5 border divider min-w-0"
+          : "bg-bg/50 rounded-lg px-2.5 py-2 border divider"
+      }
+    >
+      <div
+        className={
+          compact
+            ? "text-[8px] uppercase tracking-wide text-muted leading-none truncate"
+            : "text-[9px] uppercase tracking-wide text-muted leading-none"
+        }
+      >
         {label}
         {hint && <span className="normal-case tracking-normal"> ({hint})</span>}
       </div>
-      <div className="text-xs font-semibold tabular-nums mt-1 truncate">{value}</div>
+      <div
+        className={
+          compact
+            ? "text-[11px] font-semibold tabular-nums mt-0.5 truncate"
+            : "text-xs font-semibold tabular-nums mt-1 truncate"
+        }
+      >
+        {value}
+      </div>
     </div>
   );
 }
