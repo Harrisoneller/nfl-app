@@ -88,7 +88,7 @@ async def _close_global_clients() -> None:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="NFL App API",
+        title="Statletics NFL API",
         version="0.3.0",
         lifespan=lifespan,
     )

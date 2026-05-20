@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "nfl-app-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "NFL App backend — FastAPI + SQLAlchemy + AI"
+description = "Statletics NFL backend — FastAPI + SQLAlchemy + AI"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

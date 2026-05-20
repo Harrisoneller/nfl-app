@@ -15,7 +15,13 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
 3. **New Project → Deploy from GitHub repo** → select your repo.
 4. Railway will detect `backend/pyproject.toml` but you need to set the root directory:
    - **Settings → Service → Root Directory** → `backend`
-5. **Add a database**: in the project, click **+ New → Database → PostgreSQL**. Railway will auto-inject `DATABASE_URL` into your service.
+5. **Add PostgreSQL** (required — without this the deploy crashes on `Connection refused`):
+   - In the project canvas, click **+ New → Database → PostgreSQL**.
+   - Open your **backend service** (`nfl-app`, not the Postgres box) → **Variables**.
+   - Click **+ New Variable → Add Reference** (or **Connect** from the Postgres service).
+   - Choose the **PostgreSQL** service → select **`DATABASE_URL`** → add.
+   - You should see `DATABASE_URL` on the backend service pointing at `${{Postgres.DATABASE_URL}}` (name may vary).
+   - **Do not** paste `localhost` or leave `DATABASE_URL` empty on the backend service.
 6. **Set environment variables** on the backend service (Variables tab). At minimum:
    ```
    APP_ENV=production
@@ -142,7 +148,8 @@ Once you're past friends-testing and want to put this on the open internet:
 ## Common gotchas
 
 - **CORS error in browser console after deploy** — `CORS_ORIGINS` doesn't match the Vercel URL exactly (no trailing slash, exact protocol). Fix and restart the backend.
-- **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or leave it unset so Railway's variable wins.
+- **Deploy fails: `Connection refused` on localhost:5432, healthcheck `/live` times out** — the backend service has no `DATABASE_URL`. Add a PostgreSQL database to the project, then **reference** its `DATABASE_URL` on the backend service (step 1.5 above). Redeploy.
+- **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or delete your override so the Postgres reference wins.
 - **Backend 500s with `relation "team_elo_ratings" does not exist`** — the Procfile/railway.toml runs `alembic upgrade head`, but if the build fails or you bypassed it, run it manually via `railway run alembic upgrade head` from the Railway CLI.
 - **Frontend deploy fails on Vercel with type errors** — `next build` is stricter than `next dev`. If you see errors, run `npm run build` locally first to surface them.
 - **Elo never rebuilds** — Railway's container restarts happen periodically; the in-memory cache resets. APScheduler restarts cleanly. If you see no `elo_history_rebuilt` log, hit `POST /predictions/admin/elo/rebuild` manually.

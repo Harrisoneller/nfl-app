@@ -1,6 +1,6 @@
-# NFL App
+# Statletics NFL
 
-A comprehensive NFL one-stop shop: news, scores, stats, fantasy analytics, sportsbook odds, and an AI assistant that can answer questions and generate custom views on demand.
+News, scores, stats, fantasy analytics, sportsbook odds, and an AI assistant that can answer questions and generate custom views on demand — all in one place.
 
 ## Stack
 

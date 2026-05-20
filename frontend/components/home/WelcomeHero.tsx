@@ -40,9 +40,9 @@ export function WelcomeHero({
 
       <div className="welcome-hero__content">
         {weekLabel ? (
-          <p className="welcome-hero__eyebrow">{weekLabel} · NFL One-Stop</p>
+          <p className="welcome-hero__eyebrow">{weekLabel} · Statletics NFL</p>
         ) : (
-          <p className="welcome-hero__eyebrow">NFL One-Stop</p>
+          <p className="welcome-hero__eyebrow">Statletics NFL</p>
         )}
 
         <h1 className="welcome-hero__title">

@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-19  
 **Scope:** Full-stack structure review (`backend/`, `frontend/`, CI, docs)  
-**Intent:** NFL one-stop product — news, scores, stats, fantasy, odds, predictions, AI widgets  
+**Intent:** Statletics NFL — news, scores, stats, fantasy, odds, predictions, AI widgets  
 **Verdict:** **Appropriate and sustainable for current scale** with targeted hardening before growth (more features, contributors, or production traffic).
 
 ---

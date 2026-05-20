@@ -32,7 +32,7 @@ export function Nav() {
     <header className="border-b divider sticky top-0 z-30 backdrop-blur bg-bg/70">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
         <Link href="/" className="font-semibold tracking-tight text-lg whitespace-nowrap">
-          🏈 NFL One-Stop
+          🏈 Statletics NFL
         </Link>
         <nav className="hidden md:flex items-center gap-5 text-sm">
           {links.map((l) => (

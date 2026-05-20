@@ -6,19 +6,19 @@ import { ToastProvider } from "@/components/Toast";
 
 export const metadata: Metadata = {
   title: {
-    default: "NFL One-Stop",
-    template: "%s · NFL One-Stop",
+    default: "Statletics NFL",
+    template: "%s · Statletics NFL",
   },
   description:
     "News, scores, stats, fantasy, odds, and AI — all things NFL in one place.",
   openGraph: {
-    title: "NFL One-Stop",
+    title: "Statletics NFL",
     description: "News, scores, stats, fantasy, odds, and AI — all things NFL.",
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "NFL One-Stop",
+    title: "Statletics NFL",
     description: "News, scores, stats, fantasy, odds, and AI — all things NFL.",
   },
   icons: {
@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Nav />
           <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
           <footer className="max-w-7xl mx-auto px-4 py-8 text-xs text-muted">
-            NFL One-Stop · data via ESPN, Sleeper, nfl-data-py, The Odds API, Open-Meteo
+            Statletics NFL · data via ESPN, Sleeper, nfl-data-py, The Odds API, Open-Meteo
           </footer>
           <CommandPalette />
         </ToastProvider>
