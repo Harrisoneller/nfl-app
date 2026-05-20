@@ -166,7 +166,7 @@ export default function TeamPage({ params }: { params: { id: string } }) {
     const spread = isHome ? upcoming.predicted_spread_for_team : -upcoming.predicted_spread_for_team;
     return {
       id: upcoming.id,
-      season: teamSchedule.season,
+      season: teamSchedule?.season ?? 0,
       week: upcoming.week ?? 0,
       gameday: upcoming.gameday,
       home_team_id: homeId,

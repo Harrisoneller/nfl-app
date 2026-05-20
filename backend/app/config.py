@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +31,14 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+psycopg://localhost/nflapp"
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: object) -> object:
+        """Railway/Heroku inject postgresql://; SQLAlchemy needs the psycopg driver."""
+        if isinstance(v, str) and v.startswith("postgresql://"):
+            return "postgresql+psycopg://" + v[len("postgresql://") :]
+        return v
     db_pool_size: int = 20
     db_max_overflow: int = 10
     db_pool_timeout: int = 30

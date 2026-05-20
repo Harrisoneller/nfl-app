@@ -44,8 +44,13 @@ nfl-app/
 └── .env.example
 ```
 
+## Deploy (friends testing)
+
+**Vercel** (frontend, `frontend/`) + **Railway** (backend + Postgres, `backend/`). Full checklist: [`docs/DEPLOY.md`](docs/DEPLOY.md). Repo is already on GitHub at `Harrisoneller/nfl-app`.
+
 ## Documentation
 
+- [Deployment runbook](docs/DEPLOY.md)
 - [Architecture overview](docs/ARCHITECTURE.md)
 - [Data sources](docs/DATA_SOURCES.md)
 - [AI design](docs/AI_DESIGN.md)

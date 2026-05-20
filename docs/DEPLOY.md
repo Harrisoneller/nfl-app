@@ -142,6 +142,7 @@ Once you're past friends-testing and want to put this on the open internet:
 ## Common gotchas
 
 - **CORS error in browser console after deploy** — `CORS_ORIGINS` doesn't match the Vercel URL exactly (no trailing slash, exact protocol). Fix and restart the backend.
+- **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or leave it unset so Railway's variable wins.
 - **Backend 500s with `relation "team_elo_ratings" does not exist`** — the Procfile/railway.toml runs `alembic upgrade head`, but if the build fails or you bypassed it, run it manually via `railway run alembic upgrade head` from the Railway CLI.
 - **Frontend deploy fails on Vercel with type errors** — `next build` is stricter than `next dev`. If you see errors, run `npm run build` locally first to surface them.
 - **Elo never rebuilds** — Railway's container restarts happen periodically; the in-memory cache resets. APScheduler restarts cleanly. If you see no `elo_history_rebuilt` log, hit `POST /predictions/admin/elo/rebuild` manually.

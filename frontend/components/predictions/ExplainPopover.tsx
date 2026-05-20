@@ -85,7 +85,7 @@ export function ExplainPopover({
             <div className="text-[10px] text-muted pt-1 border-t divider">
               Script: <span className="text-text">{game.prediction.game_script}</span>
               {game.ml_prediction && (
-                <span className="ml-2">· ML disagrees by {Math.abs(game.ml_prediction.predicted_spread - game.prediction.predicted_spread).toFixed(1)}</span>
+                <span className="ml-2">· ML disagrees by {globalThis.Math.abs(game.ml_prediction.predicted_spread - game.prediction.predicted_spread).toFixed(1)}</span>
               )}
             </div>
           )}
