@@ -117,6 +117,14 @@ def invalidate(db: Session, kind: str, key: str | None = None) -> int:
 # ============================================================================
 
 
+# Singleflight: when N concurrent requests for the same (kind, key) arrive
+# during a cold-cache window, only the first triggers compute; the rest await
+# the same result. Without this, 8 simultaneous loads of the same team page
+# would each kick off a 10k-sim Monte Carlo. With it, one runs and seven wait.
+_inflight: dict[str, asyncio.Future] = {}
+_inflight_lock = asyncio.Lock()
+
+
 async def get_or_compute(
     kind: str,
     key: str,
@@ -126,12 +134,9 @@ async def get_or_compute(
 ) -> Any:
     """Read-through cache: L1 in-process → L2 DB → recompute.
 
-    `compute` is an awaitable function. We never block the user request on
-    a DB write — successful results are persisted, but if the write fails
-    we still return the value.
-
-    Falls through cleanly on any cache error: corrupted artifact, DB
-    unreachable, serialization issue — none of them cause a 500.
+    Singleflighted: concurrent identical requests collapse to one compute.
+    Fails open: corrupted artifact, DB unreachable, serialization issue
+    all fall through to recompute and never cause a 500.
     """
     l1_key = f"artifact:{kind}:{key}"
 
@@ -152,8 +157,30 @@ async def get_or_compute(
     except Exception as e:  # noqa: BLE001
         log.warning("artifact_l2_read_failed", kind=kind, key=key, error=str(e)[:200])
 
-    # Miss — compute
-    result = await compute()
+    # Miss — but check if another coroutine is already computing this
+    inflight_key = f"{kind}:{key}"
+    async with _inflight_lock:
+        existing = _inflight.get(inflight_key)
+        if existing is not None:
+            # Another request is computing this. Wait for it.
+            log.debug("artifact_singleflight_wait", kind=kind, key=key)
+            future = existing
+        else:
+            future = asyncio.get_event_loop().create_future()
+            _inflight[inflight_key] = future
+
+    if existing is not None:
+        return await future  # type: ignore[possibly-unbound]
+
+    # We're the chosen one — actually compute
+    try:
+        result = await compute()
+    except Exception as e:
+        # Wake any waiters with the same exception so they don't hang forever
+        async with _inflight_lock:
+            _inflight.pop(inflight_key, None)
+        future.set_exception(e)
+        raise
 
     # Write-through both layers (best-effort)
     if result is not None:
@@ -167,6 +194,11 @@ async def get_or_compute(
         except Exception as e:  # noqa: BLE001
             log.warning("artifact_l2_write_failed", kind=kind, key=key, error=str(e)[:200])
 
+    # Resolve the future + clear the slot so future requests can compute fresh
+    async with _inflight_lock:
+        _inflight.pop(inflight_key, None)
+    if not future.done():
+        future.set_result(result)
     return result
 
 

@@ -252,13 +252,14 @@ function OverviewTab({
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
             {keys.map((k) => {
               const m = profile.metrics[k];
-              const p = m.higher_is_better ? m.percentile : (m.percentile == null ? null : 100 - m.percentile);
+              // Backend already orients percentile toward "good for this
+              // player" (e.g. low sack rate ⇒ high percentile).
               return (
                 <PercentileBar
                   key={k}
                   label={playerMetricLabel(k)}
                   value={playerMetricFmt(k, m.value)}
-                  percentile={p}
+                  percentile={m.percentile}
                 />
               );
             })}
@@ -314,19 +315,18 @@ function RadarSection({
   );
   const labels = keys.map((k) => playerMetricLabel(k));
   const valuesFor = (p: any): Record<string, number | null> => {
+    // percentile from backend is already "good for player" oriented; no flip.
     const out: Record<string, number | null> = {};
     for (const k of keys) {
       const m = p?.metrics?.[k];
-      const v = m?.higher_is_better ? m?.percentile : (m?.percentile == null ? null : 100 - m.percentile);
-      out[playerMetricLabel(k)] = v ?? null;
+      out[playerMetricLabel(k)] = m?.percentile ?? null;
     }
     return out;
   };
   if (overlays.length === 0) {
     const data = keys.map((k) => {
       const m = profile.metrics[k];
-      const p = m.higher_is_better ? m.percentile : m.percentile == null ? null : 100 - m.percentile;
-      return { metric: playerMetricLabel(k), percentile: p };
+      return { metric: playerMetricLabel(k), percentile: m.percentile };
     });
     return (
       <Card title={`Player profile — ${profile.season}`}>
@@ -372,9 +372,13 @@ function PercentileSection({
               {grouped[cat].map((k) => {
                 const m = profile.metrics[k];
                 if (!m) return null;
-                const p = m.higher_is_better ? m.percentile : (m.percentile == null ? null : 100 - m.percentile);
                 return (
-                  <PercentileBar key={k} label={playerMetricLabel(k)} value={playerMetricFmt(k, m.value)} percentile={p} />
+                  <PercentileBar
+                    key={k}
+                    label={playerMetricLabel(k)}
+                    value={playerMetricFmt(k, m.value)}
+                    percentile={m.percentile}
+                  />
                 );
               })}
             </div>

@@ -338,8 +338,8 @@ function OverviewTab({
       .slice(0, 4)
       .map((k) => {
         const m = profile.metrics[k];
-        const p = m.higher_is_better ? m.percentile : (m.percentile == null ? null : 100 - m.percentile);
-        return { key: k, label: teamMetricLabel(k), value: teamMetricFmt(k, m.value), percentile: p };
+        // Backend percentile is already oriented as "higher = better for team"
+        return { key: k, label: teamMetricLabel(k), value: teamMetricFmt(k, m.value), percentile: m.percentile };
       });
   }, [profile]);
 
@@ -550,15 +550,16 @@ function ProfileSection({
     );
   }
 
-  const buildSeries = (radarKeys: string[], isDefense: boolean): RadarSeries[] => {
+  const buildSeries = (radarKeys: string[], _isDefense: boolean): RadarSeries[] => {
+    // Backend already orients each metric's percentile toward "good for this
+    // team" (e.g. lower points-allowed ⇒ higher percentile), so we plot the
+    // raw percentile directly. No inversion needed here.
     const series: RadarSeries[] = [];
     const valuesFromProfile = (p: any) => {
       const out: Record<string, number | null> = {};
       for (const k of radarKeys) {
         const m = p?.metrics?.[k];
-        let v = m?.percentile;
-        if (isDefense && v != null) v = 100 - v;
-        out[teamMetricLabel(k)] = v ?? null;
+        out[teamMetricLabel(k)] = m?.percentile ?? null;
       }
       return out;
     };
@@ -606,7 +607,8 @@ function ProfileSection({
                 .filter((k) => profile.metrics[k])
                 .map((k) => {
                   const m = profile.metrics[k];
-                  const p = m?.percentile == null ? null : 100 - m.percentile;
+                  // Backend percentile already oriented "higher = better defense"
+                  const p = m?.percentile ?? null;
                   return { metric: teamMetricLabel(k).replace("allowed", "").trim(), percentile: p };
                 })}
               color={team.secondary_color}
@@ -628,7 +630,7 @@ function ProfileSection({
                 key={k}
                 label={teamMetricLabel(k)}
                 value={teamMetricFmt(k, v.value)}
-                percentile={v.higher_is_better ? v.percentile : v.percentile == null ? null : 100 - v.percentile}
+                percentile={v.percentile}
               />
             ))}
           </div>

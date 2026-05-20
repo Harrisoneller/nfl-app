@@ -310,14 +310,14 @@ function RadarSection({ data, teamA, teamB }: { data: H2HMatchup; teamA: any; te
   const profileB = data.profile.b;
   if (!profileA?.metrics || !profileB?.metrics) return null;
 
-  const buildSeries = (keys: string[], isDefense: boolean): RadarSeries[] => {
+  const buildSeries = (keys: string[], _isDefense: boolean): RadarSeries[] => {
+    // Backend percentiles are already "higher = better for this team" for both
+    // offensive and defensive metrics, so we plot them directly. No inversion.
     const valuesFor = (p: any): Record<string, number | null> => {
       const out: Record<string, number | null> = {};
       for (const k of keys) {
         const m = p?.metrics?.[k];
-        let v = m?.percentile;
-        if (isDefense && v != null) v = 100 - v;
-        out[teamMetricLabel(k)] = v ?? null;
+        out[teamMetricLabel(k)] = m?.percentile ?? null;
       }
       return out;
     };

@@ -81,6 +81,18 @@ def cache_invalidate(kind: str, key: str | None = None, db: Session = Depends(ge
     return {"deleted": artifact_cache.invalidate(db, kind, key)}
 
 
+@router.get("/upstream-status")
+def upstream_status():
+    """Live snapshot of the nfl-data-py circuit breaker.
+
+    Useful when pages are unexpectedly empty: an open circuit means we've
+    fast-failed recent requests for a given (fn, season) due to repeated
+    upstream errors. Cooldown is in seconds.
+    """
+    from ..adapters.data.nfl_data_py_adapter import circuit_breaker_status
+    return circuit_breaker_status()
+
+
 @router.get("/data-availability")
 async def data_availability():
     """Diagnostic: which seasons currently have data from nflverse.
