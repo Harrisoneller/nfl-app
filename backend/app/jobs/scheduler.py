@@ -1,20 +1,15 @@
-"""APScheduler bootstrap.
+"""APScheduler bootstrap (worker role only).
 
-Runs in the same process as FastAPI. Each job opens its own DB session
-and calls a service method. Intervals come from settings.
+Phase A layout:
+- **Boot (minimal):** seed teams, Sleeper players, current-season schedule, news.
+  No PBP / Elo / Monte Carlo / H2H at boot (avoids Railway OOM crash-loops).
+- **Derive cron (default 06:00 + 18:00 UTC):** full schedule sync, analytics,
+  Elo, predictions, H2H — 1–2×/day, aligned with nflverse cadence.
+- **Live interval (Sep–Feb only):** ESPN scoreboard.
+- **Always on worker:** news, odds cron, daily player sync.
 
-Startup jobs (run-once on boot, scheduled as `date` triggers a few seconds out):
-    - Seed teams
-    - Sync Sleeper player metadata
-    - Refresh current scoreboard
-    - Refresh last 6 seasons' schedules (powers team schedule pages)
-
-Recurring jobs (intervals from settings):
-    - Scores  : SCHEDULE_SCORES_SECONDS
-    - News    : SCHEDULE_NEWS_SECONDS
-    - Odds    : SCHEDULE_ODDS_SECONDS
-    - Players : every 24h
-    - Sched   : every 24h (for live-season updates)
+Set `APP_ROLE=web` on the public Railway service; `APP_ROLE=worker` on a
+second service (same repo, same DATABASE_URL). See docs/DEPLOY.md.
 """
 from __future__ import annotations
 
@@ -23,9 +18,9 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import SessionLocal
 from ..logging_config import get_logger
 from ..services import (
     analytics_service,
@@ -38,159 +33,151 @@ from ..services import (
     players_service,
     predictions_service,
     scores_service,
+    sync_run_service,
     teams_service,
 )
-from ..utils.seasons import available_seasons, current_or_upcoming_season, latest_completed_season
+from ..utils.seasons import (
+    available_seasons,
+    current_or_upcoming_season,
+    is_nfl_live_period,
+    latest_completed_season,
+)
 
 log = get_logger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
 # --------------------------------------------------------------------------- #
-# Job bodies
+# Job bodies (accept an open Session — wrapped by sync_run_service.run_job)
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_teams(db: Session) -> int:
+    return teams_service.ensure_seeded(db)
+
+
+async def _sync_players(db: Session) -> int:
+    return await players_service.sync_from_sleeper(db)
+
+
+async def _sync_schedules_all(db: Session) -> int:
+    total = 0
+    for season in available_seasons():
+        try:
+            total += await scores_service.refresh_season_schedule(db, season)
+        except Exception as e:  # noqa: BLE001
+            log.warning("scheduler_schedule_season_failed", season=season, error=str(e))
+    return total
+
+
+async def _sync_schedules_current(db: Session) -> int:
+    season = current_or_upcoming_season()
+    return await scores_service.refresh_season_schedule(db, season)
+
+
+async def _rebuild_elo(db: Session) -> int:
+    latest = latest_completed_season()
+    return await elo_service.rebuild_history(db, list(range(latest - 5, latest + 1)))
+
+
+async def _vacuum_cache(_db: Session) -> int:
+    return artifact_cache.vacuum_expired(older_than_days=7)
+
+
+async def _warmup_predictions(db: Session) -> dict[str, str]:
+    season = current_or_upcoming_season()
+    await predictions_service.simulate_season(db, season)
+    await awards_service.award_leaderboards()
+    return {"status": "ok", "season": str(season)}
+
+
+async def _warmup_h2h(db: Session) -> int:
+    return await h2h_service.prewarm_h2h(db)
+
+
+async def _warmup_analytics(_db: Session) -> int:
+    latest = latest_completed_season()
+    await analytics_service.warmup([latest])
+    return 1
+
+
+async def _refresh_scores(db: Session) -> int:
+    return await scores_service.refresh_scoreboard(db)
+
+
+async def _refresh_news(db: Session) -> int:
+    return await news_service.refresh_news(db)
+
+
+async def _refresh_odds(db: Session) -> dict:
+    return await odds_service.refresh_odds(db)
+
+
+async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
+    """Heavy chain: schedules → analytics → elo → predictions → h2h."""
+    parts: list[str] = []
+    n_sched = await _sync_schedules_all(db)
+    parts.append(f"schedules={n_sched}")
+    await _warmup_analytics(db)
+    parts.append("analytics=ok")
+    n_elo = await _rebuild_elo(db)
+    parts.append(f"elo_rows={n_elo}")
+    pred = await _warmup_predictions(db)
+    parts.append(f"predictions={pred.get('season', 'ok')}")
+    n_h2h = await _warmup_h2h(db)
+    parts.append(f"h2h_pairs={n_h2h}")
+    return {"status": "ok", "message": "; ".join(parts)}
+
+
+# --------------------------------------------------------------------------- #
+# Scheduler entrypoints (logging wrappers)
 # --------------------------------------------------------------------------- #
 
 
 async def _job_seed_teams() -> None:
-    db = SessionLocal()
-    try:
-        added = teams_service.ensure_seeded(db)
-        if added:
-            log.info("scheduler_seeded_teams", added=added)
-    finally:
-        db.close()
+    await sync_run_service.run_job("teams_seed", _seed_teams)
 
 
 async def _job_sync_players() -> None:
-    db = SessionLocal()
-    try:
-        n = await players_service.sync_from_sleeper(db)
-        log.info("scheduler_synced_players", count=n)
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_players_failed", error=str(e))
-    finally:
-        db.close()
+    await sync_run_service.run_job("players", _sync_players)
 
 
 async def _job_sync_schedules() -> None:
-    db = SessionLocal()
-    try:
-        total = 0
-        for season in available_seasons():
-            try:
-                total += await scores_service.refresh_season_schedule(db, season)
-            except Exception as e:  # noqa: BLE001
-                log.warning("scheduler_schedule_season_failed", season=season, error=str(e))
-        log.info("scheduler_synced_schedules", games=total)
-    finally:
-        db.close()
+    await sync_run_service.run_job("schedules", _sync_schedules_all)
 
 
-async def _job_rebuild_elo() -> None:
-    """Compute Elo for the last 6 seasons. Idempotent; runs once after boot."""
-    db = SessionLocal()
-    try:
-        latest = latest_completed_season()
-        await elo_service.rebuild_history(db, list(range(latest - 5, latest + 1)))
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_elo_rebuild_failed", error=str(e))
-    finally:
-        db.close()
+async def _job_sync_schedules_current() -> None:
+    season = current_or_upcoming_season()
+    await sync_run_service.run_job("schedules_current", _sync_schedules_current, season=season)
+
+
+async def _job_daily_derive() -> None:
+    await sync_run_service.run_job("derive_pipeline", _daily_derive_pipeline)
 
 
 async def _job_vacuum_cache() -> None:
-    """Sweep out expired model_artifacts > 7 days old. Cheap, daily."""
-    try:
-        deleted = artifact_cache.vacuum_expired(older_than_days=7)
-        if deleted:
-            log.info("scheduler_cache_vacuumed", deleted=deleted)
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_cache_vacuum_failed", error=str(e))
-
-
-async def _job_warmup_predictions() -> None:
-    """Pre-run the heavy Monte Carlo and award computations so cache is hot.
-
-    First /standings/projected request after a cold start does ~10k sims;
-    pre-warming during boot moves that cost off the user's request path.
-    """
-    db = SessionLocal()
-    try:
-        await predictions_service.simulate_season(db, current_or_upcoming_season())
-        await awards_service.award_leaderboards()
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_predictions_warmup_failed", error=str(e))
-    finally:
-        db.close()
-
-
-async def _job_warmup_h2h() -> None:
-    """Pre-compute popular H2H matchups (this week's games + division rivals) so
-    their first click is instant. Runs after analytics+Elo warmup so the shared
-    building blocks are already cached; each pair is then cheap to assemble."""
-    db = SessionLocal()
-    try:
-        n = await h2h_service.prewarm_h2h(db)
-        log.info("scheduler_h2h_warmed", pairs=n)
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_h2h_warmup_failed", error=str(e))
-    finally:
-        db.close()
-
-
-async def _job_warmup_analytics() -> None:
-    """Pre-warm analytics caches for the latest completed season only.
-
-    We deliberately warm just ONE season at boot to keep peak memory low (one
-    PBP frame). The previous season warms lazily on its first request — cheap
-    now that PBP loads are column-projected and singleflighted. Warming two
-    seasons here is what spiked memory on every (re)start.
-    """
-    latest = latest_completed_season()
-    try:
-        await analytics_service.warmup([latest])
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_warmup_failed", error=str(e))
+    await sync_run_service.run_job("cache_vacuum", _vacuum_cache)
 
 
 async def _job_refresh_scores() -> None:
-    db = SessionLocal()
-    try:
-        await scores_service.refresh_scoreboard(db)
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_scores_failed", error=str(e))
-    finally:
-        db.close()
+    await sync_run_service.run_job("scores", _refresh_scores)
 
 
 async def _job_refresh_news() -> None:
-    db = SessionLocal()
-    try:
-        await news_service.refresh_news(db)
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_news_failed", error=str(e))
-    finally:
-        db.close()
+    await sync_run_service.run_job("news", _refresh_news)
 
 
 async def _job_refresh_odds() -> None:
-    """Twice-daily Odds API pull. The service self-guards (min-interval +
-    offseason) so this stays well under the 500-credit/mo free-tier budget."""
-    db = SessionLocal()
-    try:
-        result = await odds_service.refresh_odds(db)
-        if result["status"] in ("skipped_fresh", "skipped_offseason"):
+    result = await sync_run_service.run_job("odds", _refresh_odds)
+    if isinstance(result, dict):
+        if result.get("status") in ("skipped_fresh", "skipped_offseason"):
             log.info("scheduler_odds_skipped", status=result["status"], message=result.get("message"))
-        elif result["status"] not in ("ok", "disabled") and result["lines_in_db"] == 0:
+        elif result.get("status") not in ("ok", "disabled") and result.get("lines_in_db", 0) == 0:
             log.warning(
                 "scheduler_odds_empty",
-                status=result["status"],
+                status=result.get("status"),
                 message=result.get("message"),
             )
-    except Exception as e:  # noqa: BLE001
-        log.warning("scheduler_odds_failed", error=str(e))
-    finally:
-        db.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -203,91 +190,121 @@ def start_scheduler() -> None:
     if _scheduler is not None:
         return
     settings = get_settings()
+    if not settings.scheduler_enabled:
+        log.info("scheduler_not_started", reason="app_role is not worker")
+        return
+
     sched = AsyncIOScheduler(timezone="UTC")
+    live = is_nfl_live_period()
+    boot = settings.boot_warmup_level
 
-    # ---- Startup one-shots (staggered so we don't hammer at once) ----
-    sched.add_job(_job_seed_teams, "date", run_date=_soon(1))
-    sched.add_job(_job_sync_players, "date", run_date=_soon(3))
-    sched.add_job(_job_sync_schedules, "date", run_date=_soon(6))
-    sched.add_job(_job_warmup_analytics, "date", run_date=_soon(10))
-    # Elo rebuild after analytics warmup — uses schedules already loaded by warmup
-    sched.add_job(_job_rebuild_elo, "date", run_date=_soon(45))
-    # Predictions cache warmup after Elo is built
-    sched.add_job(_job_warmup_predictions, "date", run_date=_soon(75))
-    # H2H pre-warm after predictions (reuses the now-cached team aggregates + Elo)
-    sched.add_job(_job_warmup_h2h, "date", run_date=_soon(90))
-    # Weekly re-run of Monte Carlo + awards in case rosters/standings shift
+    # ---- Boot (minimal by default) -----------------------------------------
+    if boot != "none":
+        sched.add_job(_job_seed_teams, "date", run_date=_soon(1), id="boot_teams")
+        sched.add_job(_job_sync_players, "date", run_date=_soon(3), id="boot_players")
+        sched.add_job(
+            _job_sync_schedules_current, "date", run_date=_soon(6), id="boot_schedules_current",
+        )
+        sched.add_job(_job_refresh_news, "date", run_date=_soon(12), id="boot_news")
+
+    if boot == "full":
+        # Local dev convenience — mirrors pre-Phase-A warmups (high memory).
+        sched.add_job(_job_warmup_analytics, "date", run_date=_soon(20), id="boot_analytics")
+        sched.add_job(_job_rebuild_elo_boot, "date", run_date=_soon(45), id="boot_elo")
+        sched.add_job(_job_warmup_predictions_boot, "date", run_date=_soon(75), id="boot_predictions")
+        sched.add_job(_job_warmup_h2h_boot, "date", run_date=_soon(90), id="boot_h2h")
+
+    # ---- Derive pipeline (cron, not at boot) ---------------------------------
     sched.add_job(
-        _job_warmup_predictions,
-        IntervalTrigger(hours=24),
-        next_run_time=_soon(60 * 60 * 24),
-        id="predictions_daily", coalesce=True, max_instances=1,
-    )
-    # Daily H2H re-warm — picks up newly-completed games (version key busts the
-    # stale entries) and refreshes the next week's matchups.
-    sched.add_job(
-        _job_warmup_h2h,
-        IntervalTrigger(hours=24),
-        next_run_time=_soon(60 * 60 * 24 + 120),
-        id="h2h_daily", coalesce=True, max_instances=1,
-    )
-    # Cache vacuum — weekly housekeeping
-    sched.add_job(
-        _job_vacuum_cache,
-        IntervalTrigger(hours=24 * 7),
-        next_run_time=_soon(60 * 60 * 24),
-        id="cache_vacuum_weekly", coalesce=True, max_instances=1,
-    )
-    # Weekly recompute during the season
-    sched.add_job(
-        _job_rebuild_elo,
-        IntervalTrigger(hours=24 * 7),
-        next_run_time=_soon(60 * 60 * 24 * 7),
-        id="elo_weekly", coalesce=True, max_instances=1,
+        _job_daily_derive,
+        CronTrigger(hour=settings.derive_cron_hours_expr, minute=15, timezone="UTC"),
+        id="derive_pipeline",
+        coalesce=True,
+        max_instances=1,
     )
 
-    # ---- Recurring ----
-    sched.add_job(
-        _job_refresh_scores,
-        IntervalTrigger(seconds=settings.schedule_scores_seconds),
-        next_run_time=_soon(8),
-        id="scores", coalesce=True, max_instances=1,
-    )
+    # ---- Recurring ingest ----------------------------------------------------
+    if live:
+        sched.add_job(
+            _job_refresh_scores,
+            IntervalTrigger(seconds=settings.schedule_scores_seconds),
+            next_run_time=_soon(8),
+            id="scores",
+            coalesce=True,
+            max_instances=1,
+        )
+    else:
+        log.info("scheduler_scores_disabled", reason="offseason")
+
+    news_seconds = settings.schedule_news_seconds if live else 60 * 60 * 24
     sched.add_job(
         _job_refresh_news,
-        IntervalTrigger(seconds=settings.schedule_news_seconds),
+        IntervalTrigger(seconds=news_seconds),
         next_run_time=_soon(12),
-        id="news", coalesce=True, max_instances=1,
+        id="news",
+        coalesce=True,
+        max_instances=1,
     )
-    # Odds: fixed cron times (UTC), NOT an interval with a boot fetch. A cron
-    # trigger won't double-fire on container restarts (coalesce collapses missed
-    # runs), so credit usage is predictable. Default "1,13" = ~180 credits/mo.
+
     sched.add_job(
         _job_refresh_odds,
         CronTrigger(hour=settings.odds_refresh_hours_utc, minute=0, timezone="UTC"),
-        id="odds", coalesce=True, max_instances=1,
+        id="odds",
+        coalesce=True,
+        max_instances=1,
     )
     sched.add_job(
         _job_sync_players,
         IntervalTrigger(hours=24),
-        next_run_time=_soon(60 * 60 * 24),  # ~24h after boot
-        id="players_daily", coalesce=True, max_instances=1,
+        next_run_time=_soon(60 * 60 * 6),
+        id="players_daily",
+        coalesce=True,
+        max_instances=1,
     )
     sched.add_job(
         _job_sync_schedules,
         IntervalTrigger(hours=24),
-        next_run_time=_soon(60 * 60 * 24 + 60),
-        id="schedules_daily", coalesce=True, max_instances=1,
+        next_run_time=_soon(60 * 60 * 6 + 60),
+        id="schedules_daily",
+        coalesce=True,
+        max_instances=1,
+    )
+    sched.add_job(
+        _job_vacuum_cache,
+        IntervalTrigger(hours=24 * 7),
+        next_run_time=_soon(60 * 60 * 24),
+        id="cache_vacuum_weekly",
+        coalesce=True,
+        max_instances=1,
     )
 
     sched.start()
     _scheduler = sched
     log.info(
         "scheduler_started",
-        scores_s=settings.schedule_scores_seconds,
-        news_s=settings.schedule_news_seconds,
+        boot_warmup=boot,
+        live_period=live,
+        scores_s=settings.schedule_scores_seconds if live else None,
+        news_s=news_seconds,
         odds_cron_utc=settings.odds_refresh_hours_utc,
+        derive_cron_utc=settings.derive_cron_hours_expr,
     )
+
+
+async def _job_warmup_analytics() -> None:
+    await sync_run_service.run_job("analytics_warmup", _warmup_analytics)
+
+
+async def _job_rebuild_elo_boot() -> None:
+    await sync_run_service.run_job("elo_rebuild", _rebuild_elo)
+
+
+async def _job_warmup_predictions_boot() -> None:
+    await sync_run_service.run_job("predictions_warmup", _warmup_predictions)
+
+
+async def _job_warmup_h2h_boot() -> None:
+    await sync_run_service.run_job("h2h_warmup", _warmup_h2h)
 
 
 def stop_scheduler() -> None:

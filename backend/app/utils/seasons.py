@@ -46,6 +46,16 @@ def available_seasons(today: date | None = None) -> list[int]:
     return out
 
 
+def is_nfl_live_period(today: date | None = None) -> bool:
+    """True during regular season + playoffs (roughly Sep–Feb).
+
+    Used to gate high-frequency jobs (live ESPN scoreboard). Mar–Aug is treated
+    as offseason for those intervals.
+    """
+    t = today or date.today()
+    return t.month >= 9 or t.month <= 2
+
+
 def season_info(season: int, today: date | None = None) -> dict:
     """Metadata about a single season for the UI."""
     upcoming = is_season_upcoming(season, today)

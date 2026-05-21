@@ -26,6 +26,9 @@ class Settings(BaseSettings):
 
     # Core
     app_env: Literal["development", "production"] = "development"
+    # web = API only (Railway public service). worker = scheduler + ingest/derive.
+    # Local dev: use worker (or two terminals with web + worker) — see RUNBOOK.
+    app_role: Literal["web", "worker"] = "worker"
     log_level: str = "INFO"
     secret_key: str = "change-me"
 
@@ -107,10 +110,14 @@ class Settings(BaseSettings):
         "https://establishtherun.com/feed/"
     )
 
-    # Scheduler
+    # Scheduler (worker role only — see app_role)
+    # Boot: none | minimal (seed + current-season schedule) | full (legacy dev warmups)
+    boot_warmup_level: Literal["none", "minimal", "full"] = "minimal"
     schedule_scores_seconds: int = 30
     schedule_news_seconds: int = 300
     schedule_odds_seconds: int = 900  # deprecated for odds (cron-driven now); kept for back-compat
+    # Heavy derive chain (analytics, elo, MC, h2h) — UTC hours, comma-separated
+    derive_cron_hours_utc: str = "6,18"
 
     # Odds budget controls — The Odds API free tier = 500 credits/mo, and each
     # pull costs (markets × regions) credits (our standard pull = 3). Only the
@@ -133,6 +140,26 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [u.strip() for u in self.cors_origins.split(",") if u.strip()]
+
+    @property
+    def scheduler_enabled(self) -> bool:
+        return self.app_role == "worker"
+
+    @property
+    def derive_cron_hour_list(self) -> list[int]:
+        out: list[int] = []
+        for part in self.derive_cron_hours_utc.split(","):
+            part = part.strip()
+            if part.isdigit():
+                h = int(part)
+                if 0 <= h <= 23:
+                    out.append(h)
+        return out or [6, 18]
+
+    @property
+    def derive_cron_hours_expr(self) -> str:
+        """Comma-separated hours for APScheduler (expects a string, not a list)."""
+        return ",".join(str(h) for h in self.derive_cron_hour_list)
 
 
 @lru_cache(maxsize=1)

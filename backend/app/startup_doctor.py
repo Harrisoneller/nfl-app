@@ -22,6 +22,7 @@ EXPECTED_TABLES = [
     "widgets", "chat_sessions", "chat_messages",
     "team_elo_ratings",
     "model_artifacts",
+    "data_sync_runs",
 ]
 
 
@@ -64,6 +65,15 @@ def run() -> None:
         log.warning("doctor_default_secret_key",
                     hint="Generate one: python -c 'import secrets; print(secrets.token_urlsafe(64))'")
         issues.append("SECRET_KEY is default placeholder")
+
+    if s.app_env == "production" and s.app_role == "web":
+        log.info(
+            "doctor_web_role",
+            hint="Scheduler is off on APP_ROLE=web. Run a separate worker service with "
+            "APP_ROLE=worker and the same DATABASE_URL, or data will not refresh.",
+        )
+    if s.app_env == "production" and s.app_role == "worker":
+        log.info("doctor_worker_role", boot_warmup=s.boot_warmup_level)
 
     # ---- Teams seeded? -----------------------------------------------------
     try:

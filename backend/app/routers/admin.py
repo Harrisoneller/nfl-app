@@ -6,7 +6,16 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
-from ..services import artifact_cache, news_service, odds_service, players_service, scores_service, teams_service
+from ..config import get_settings
+from ..services import (
+    artifact_cache,
+    news_service,
+    odds_service,
+    players_service,
+    scores_service,
+    sync_run_service,
+    teams_service,
+)
 from ..utils.seasons import available_seasons, current_or_upcoming_season
 
 router = APIRouter()
@@ -82,6 +91,19 @@ def cache_vacuum(older_than_days: int = 7):
 def cache_invalidate(kind: str, key: str | None = None, db: Session = Depends(get_db)):
     """Force-recompute on next read."""
     return {"deleted": artifact_cache.invalidate(db, kind, key)}
+
+
+@router.get("/sync-status")
+def sync_status(db: Session = Depends(get_db), limit: int = 3):
+    """Last ingest/derive job runs per domain (worker scheduler)."""
+    s = get_settings()
+    return {
+        "app_role": s.app_role,
+        "scheduler_enabled": s.scheduler_enabled,
+        "boot_warmup_level": s.boot_warmup_level,
+        "derive_cron_hours_utc": s.derive_cron_hour_list,
+        "runs": sync_run_service.last_runs(db, limit_per_domain=limit),
+    }
 
 
 @router.get("/upstream-status")

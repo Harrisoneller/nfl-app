@@ -52,6 +52,9 @@ async def lifespan(app: FastAPI):
     log.info(
         "app_starting",
         env=settings.app_env,
+        app_role=settings.app_role,
+        scheduler=settings.scheduler_enabled,
+        boot_warmup=settings.boot_warmup_level if settings.scheduler_enabled else "n/a",
         llm_provider=settings.llm_provider,
         sentry=sentry_on,
     )
@@ -61,7 +64,10 @@ async def lifespan(app: FastAPI):
         run_startup_doctor()
     except Exception as e:  # noqa: BLE001
         log.warning("startup_doctor_crashed", error=str(e)[:200])
-    start_scheduler()
+    if settings.scheduler_enabled:
+        start_scheduler()
+    else:
+        log.info("scheduler_disabled", reason="app_role=web")
     try:
         yield
     finally:

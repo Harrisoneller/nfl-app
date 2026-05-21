@@ -21,7 +21,7 @@ from ..logging_config import get_logger
 from ..models.seed import NFL_TEAMS
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import analytics_service, artifact_cache, elo_service
+from . import analytics_service, artifact_cache, elo_service, prediction_dist
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -31,6 +31,16 @@ CACHE_TTL = 60 * 30  # 30 minutes
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
 LEAGUE_AVG_POINTS_PER_TEAM = 22.0
+
+# Game-margin SD used to turn the point spread into an outcome distribution.
+GAME_SIGMA = prediction_dist.NFL_MARGIN_SIGMA  # ~13.5 points
+
+# Season-long latent-strength uncertainty per team (Elo points), drawn once per
+# Monte Carlo trial and held across that team's whole slate. This is what makes
+# the season win-total distribution correlated and realistically wide instead of
+# an over-tight sum of independent coin flips. TUNABLE: validate against the
+# backtest PIT histogram / observed win-total dispersion (see PREDICTION_MODEL_SPEC).
+RATING_SIGMA_ELO = 55.0
 
 
 def predict_game(
@@ -45,15 +55,32 @@ def predict_game(
     This blends each team's offensive output with what their opponent typically
     allows, instead of a fixed league average.
     """
-    win_p = elo_service.win_probability(home_rating, away_rating, neutral_site)
     spread = elo_service.predicted_spread(home_rating, away_rating, neutral_site)
+    expected_margin = -spread  # home perspective: positive = home favored
+    # Win probability is derived FROM the margin distribution (not the Elo
+    # logistic) so spread, win prob, and score ranges are mutually consistent.
+    win_p = prediction_dist.win_prob(expected_margin, GAME_SIGMA)
+
     h_off = home_off_ppg if home_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
     a_off = away_off_ppg if away_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
     h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
     a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
-    expected_home_pts = (h_off + a_def) / 2
-    expected_away_pts = (a_off + h_def) / 2
+    # Matchup-adjusted scoring relative to the league baseline (replaces the
+    # midpoint average): a team's own pace, nudged by how much more/less than a
+    # league-average defense the opponent allows. Same correction as h2h_service.
+    expected_home_pts = h_off + (a_def - LEAGUE_AVG_POINTS_PER_TEAM)
+    expected_away_pts = a_off + (h_def - LEAGUE_AVG_POINTS_PER_TEAM)
     total = expected_home_pts + expected_away_pts
+
+    # Reconcile the (well-calibrated) Elo margin with the total for displayed scores.
+    predicted_home_score = (total + expected_margin) / 2
+    predicted_away_score = (total - expected_margin) / 2
+
+    # Outcome distribution — the "likely outcomes" view. Margin credible
+    # intervals translate to score ranges (total held at its expectation).
+    m_lo80, m_hi80 = prediction_dist.margin_interval(expected_margin, GAME_SIGMA, 0.80)
+    m_lo50, m_hi50 = prediction_dist.margin_interval(expected_margin, GAME_SIGMA, 0.50)
+
     # Game-script label: shootout / methodical / defensive based on total + spread.
     abs_spread = abs(spread)
     if total >= 48:
@@ -71,19 +98,31 @@ def predict_game(
         "away_win_prob": round(1 - win_p, 3),
         "predicted_spread": round(spread, 1),       # negative = home favored
         "predicted_total": round(total, 1),
-        "predicted_home_score": round((total / 2) + (-spread / 2), 1),
-        "predicted_away_score": round((total / 2) - (-spread / 2), 1),
+        "predicted_home_score": round(predicted_home_score, 1),
+        "predicted_away_score": round(predicted_away_score, 1),
         "game_script": script,
+        "margin_sd": GAME_SIGMA,
+        # Full outcome distribution so the UI can show honest ranges, not just a point.
+        "distribution": {
+            "expected_margin": round(expected_margin, 1),
+            "margin_sd": GAME_SIGMA,
+            "home_win_prob": round(win_p, 3),
+            "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
+            "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],
+            "home_score_range_80": [round((total + m_lo80) / 2, 1), round((total + m_hi80) / 2, 1)],
+            "away_score_range_80": [round((total - m_hi80) / 2, 1), round((total - m_lo80) / 2, 1)],
+        },
         # Surface every input so the UI can render an "explain this" popover
         "inputs": {
             "home_elo": round(home_rating, 1),
             "away_elo": round(away_rating, 1),
-            "home_field_advantage_elo": 0 if neutral_site else 55.0,
+            "home_field_advantage_elo": 0 if neutral_site else elo_service.HOME_FIELD_ADVANTAGE,
             "neutral_site": neutral_site,
             "home_off_ppg": round(h_off, 1),
             "away_off_ppg": round(a_off, 1),
             "home_def_ppg_allowed": round(h_def, 1),
             "away_def_ppg_allowed": round(a_def, 1),
+            "league_avg_points": LEAGUE_AVG_POINTS_PER_TEAM,
             "expected_home_pts": round(expected_home_pts, 1),
             "expected_away_pts": round(expected_away_pts, 1),
         },
@@ -201,8 +240,9 @@ async def _simulate_season_compute(
         # Cold start — use defaults
         ratings = {t["id"]: elo_service.INITIAL_RATING for t in NFL_TEAMS}
 
-    # Banked wins/losses from already-completed games
-    banked: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # [wins, losses]
+    # Banked results from completed games (wins + point differential).
+    banked_wins: dict[str, int] = defaultdict(int)
+    banked_pd: dict[str, float] = defaultdict(float)
     pending: list[dict[str, Any]] = []
     for _, g in sched.iterrows():
         h, a = g["home_team"], g["away_team"]
@@ -210,12 +250,17 @@ async def _simulate_season_compute(
             continue
         hs, as_ = g.get("home_score"), g.get("away_score")
         if pd.notna(hs) and pd.notna(as_):
-            if hs > as_:
-                banked[h][0] += 1; banked[a][1] += 1
-            elif hs < as_:
-                banked[a][0] += 1; banked[h][1] += 1
+            margin = float(hs) - float(as_)
+            banked_pd[h] += margin; banked_pd[a] -= margin
+            if margin > 0:
+                banked_wins[h] += 1
+            elif margin < 0:
+                banked_wins[a] += 1
         else:
-            pending.append({"home": h, "away": a, "neutral": bool(g.get("location") == "Neutral") if "location" in sched.columns else False})
+            pending.append({
+                "home": h, "away": a,
+                "neutral": bool(g.get("location") == "Neutral") if "location" in sched.columns else False,
+            })
 
     # Counters
     win_distribution: dict[str, list[int]] = defaultdict(list)
@@ -224,52 +269,70 @@ async def _simulate_season_compute(
     sb_appearances: dict[str, int] = defaultdict(int)
 
     rng = random.Random(42)  # deterministic — set None for fresh randomness each call
+    hfa = elo_service.HOME_FIELD_ADVANTAGE
+    elo_per_point = elo_service.ELO_PER_POINT
 
     for _sim in range(n_sims):
-        sim_wins: dict[str, int] = {t: banked[t][0] for t in ratings}
-        # Don't actually update Elo within a sim — keeps it light + fast
+        # --- Correlated team strength (the variance fix) ----------------------
+        # Draw a single season-long latent-strength offset per team and hold it
+        # across that team's entire remaining slate. Because the offset persists,
+        # a team that is "secretly good" in this trial wins across ALL its games,
+        # which is what makes simulated win totals over-dispersed (realistically
+        # wide) instead of an over-tight sum of independent coin flips. The draws
+        # are mean-zero, so the central projection is unchanged — only the spread
+        # widens.
+        offset = {t: rng.gauss(0.0, RATING_SIGMA_ELO) for t in ratings}
+        sim_wins: dict[str, int] = {t: banked_wins.get(t, 0) for t in ratings}
+        sim_pd: dict[str, float] = {t: banked_pd.get(t, 0.0) for t in ratings}
+
         for game in pending:
             h, a = game["home"], game["away"]
-            wp = elo_service.win_probability(
-                ratings.get(h, elo_service.INITIAL_RATING),
-                ratings.get(a, elo_service.INITIAL_RATING),
-                neutral_site=game["neutral"],
-            )
-            if rng.random() < wp:
+            rh = ratings.get(h, elo_service.INITIAL_RATING) + offset.get(h, 0.0)
+            ra = ratings.get(a, elo_service.INITIAL_RATING) + offset.get(a, 0.0)
+            diff = rh - ra + (0.0 if game["neutral"] else hfa)
+            expected_margin = diff / elo_per_point
+            # Simulate an actual margin (not just W/L) so point differential is
+            # available for tiebreakers and the win prob is consistent with the
+            # game-level distribution model.
+            margin = rng.gauss(expected_margin, GAME_SIGMA)
+            if margin >= 0:
                 sim_wins[h] = sim_wins.get(h, 0) + 1
             else:
                 sim_wins[a] = sim_wins.get(a, 0) + 1
+            sim_pd[h] = sim_pd.get(h, 0.0) + margin
+            sim_pd[a] = sim_pd.get(a, 0.0) - margin
 
-        # Compute division winners and playoff seeds
-        by_div: dict[tuple, list[tuple[str, int]]] = defaultdict(list)
+        # Division winners + playoff seeds. Ties broken by point differential,
+        # then a coin flip (previously a pure coin flip).
+        by_div: dict[tuple, list[tuple[str, int, float]]] = defaultdict(list)
         for team, wins in sim_wins.items():
             div = DIVISIONS.get(team)
             if div:
-                by_div[div].append((team, wins))
+                by_div[div].append((team, wins, sim_pd.get(team, 0.0)))
 
-        # Division winners (4 per conf)
-        conf_seeds: dict[str, list[tuple[str, int]]] = defaultdict(list)
-        for (conf, division), teams in by_div.items():
-            winner = max(teams, key=lambda t: (t[1], rng.random()))
+        conf_seeds: dict[str, list[tuple[str, int, float]]] = defaultdict(list)
+        for (conf, _division), teams in by_div.items():
+            winner = max(teams, key=lambda t: (t[1], t[2], rng.random()))
             division_wins[winner[0]] += 1
             conf_seeds[conf].append(winner)
 
-        # Wildcards (3 per conf): top 3 non-division-winners
+        # Wildcards (3 per conf): top 3 non-division-winners by wins, then PD.
         for conf, seeds in conf_seeds.items():
             seed_team_ids = {s[0] for s in seeds}
             others = [
-                (team, w) for team, w in sim_wins.items()
+                (team, sim_wins[team], sim_pd.get(team, 0.0))
+                for team in sim_wins
                 if DIVISIONS.get(team, (None,))[0] == conf and team not in seed_team_ids
             ]
-            others.sort(key=lambda t: (-t[1], rng.random()))
+            others.sort(key=lambda t: (-t[1], -t[2], rng.random()))
             conf_seeds[conf] = seeds + others[:3]
 
         # Mark playoff appearances
         for conf, all_seven in conf_seeds.items():
-            for team, _ in all_seven:
+            for team, *_rest in all_seven:
                 playoff_appearances[team] += 1
-            # Crude SB heuristic: best record in conference
-            best = max(all_seven, key=lambda t: (t[1], rng.random()))
+            # Crude SB heuristic: best seed in conference (wins, then PD)
+            best = max(all_seven, key=lambda t: (t[1], t[2], rng.random()))
             sb_appearances[best[0]] += 1
 
         for team, wins in sim_wins.items():
@@ -281,8 +344,11 @@ async def _simulate_season_compute(
         dist = sorted(win_distribution.get(team, []))
         if not dist:
             continue
+        mean_wins = sum(dist) / len(dist)
+        var = sum((x - mean_wins) ** 2 for x in dist) / len(dist)
         out[team] = {
-            "mean_wins": round(sum(dist) / len(dist), 1),
+            "mean_wins": round(mean_wins, 1),
+            "std_wins": round(var ** 0.5, 2),   # spread of the win-total distribution
             "p5_wins": dist[int(0.05 * len(dist))],
             "median_wins": dist[len(dist) // 2],
             "p95_wins": dist[int(0.95 * len(dist)) - 1],

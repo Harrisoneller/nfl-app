@@ -46,7 +46,7 @@ nfl-app/
 
 ## Deploy (friends testing)
 
-**Vercel** (frontend, `frontend/`) + **Railway** (backend + Postgres, `backend/`). Full checklist: [`docs/DEPLOY.md`](docs/DEPLOY.md). Repo is already on GitHub at `Harrisoneller/nfl-app`.
+**Vercel** (frontend, `frontend/`) + **Railway** (backend + Postgres, `backend/`). Use two Railway services: `APP_ROLE=web` (public API) and `APP_ROLE=worker` (scheduler). Full checklist: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Documentation
 

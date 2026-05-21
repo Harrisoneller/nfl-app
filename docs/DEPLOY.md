@@ -22,9 +22,11 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
    - Choose the **PostgreSQL** service → select **`DATABASE_URL`** → add.
    - You should see `DATABASE_URL` on the backend service pointing at `${{Postgres.DATABASE_URL}}` (name may vary).
    - **Do not** paste `localhost` or leave `DATABASE_URL` empty on the backend service.
-6. **Set environment variables** on the backend service (Variables tab). At minimum:
+6. **Set environment variables** on the **public API** service (Variables tab). At minimum:
    ```
    APP_ENV=production
+   APP_ROLE=web
+   BOOT_WARMUP_LEVEL=minimal
    SECRET_KEY=<run: python -c "import secrets; print(secrets.token_urlsafe(64))" and paste>
    GROK_API_KEY=<your xAI key>
 
@@ -37,9 +39,31 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
    # Fill in AFTER you've deployed the frontend in step 2:
    CORS_ORIGINS=https://<your-vercel-domain>.vercel.app
    ```
-7. The `railway.toml` in `backend/` already sets the start command to run Alembic migrations and boot uvicorn. Railway will pick that up.
-8. Railway will assign a public URL (under **Settings → Networking → Public Networking → Generate Domain**). Copy it; you'll need it in step 2. Example: `https://nfl-app-production.up.railway.app`.
-9. Test it: `curl https://your-url.up.railway.app/live` → should return `{"ok": true}`.
+7. **Add a worker service** (Phase A — stops OOM crash-loops on the public URL):
+   - In the same Railway project: **+ New → GitHub Repo** → same repo, root directory `backend`.
+   - Name it e.g. `nfl-app-worker`. **Do not** attach a public domain.
+   - Reference the **same** `DATABASE_URL` from Postgres (step 5).
+   - Variables:
+     ```
+     APP_ENV=production
+     APP_ROLE=worker
+     BOOT_WARMUP_LEVEL=minimal
+     DERIVE_CRON_HOURS_UTC=6,18
+     SECRET_KEY=<same as web service>
+     ODDS_API_KEY=<if you use odds>
+     ```
+   - **Resources:** give the worker **≥ 1 GB RAM** (see [Memory & sizing](#6-memory--sizing)). The web service can stay smaller (~512 MB–1 GB) since it no longer runs heavy boot jobs.
+   - Only the **web** service needs `CORS_ORIGINS` and `GROK_API_KEY` if AI runs there; worker does not need CORS.
+8. The `railway.toml` in `backend/` runs Alembic migrations then uvicorn on **both** services (migrations are idempotent).
+9. Railway will assign a public URL on the **web** service only (**Settings → Networking → Generate Domain**). Example: `https://nfl-app-production.up.railway.app`.
+10. Test:
+    ```bash
+    curl https://your-url.up.railway.app/live
+    # → {"ok": true}
+    curl https://your-url.up.railway.app/health
+    # → app_role: "web", scheduler_enabled: false
+    ```
+    On the worker, check logs for `scheduler_started` (no public URL required).
 
 ### 2. Frontend on Vercel
 
@@ -63,9 +87,22 @@ chmod +x scripts/warmup-production.sh
 ./scripts/warmup-production.sh https://<your-railway-url>.up.railway.app
 ```
 
-Or run the curls manually (same script). **Odds** only populate if `ODDS_API_KEY` is set on Railway.
+Or run the curls manually (same script). **Odds** only populate if `ODDS_API_KEY` is set on the **worker**.
 
-Elo / analytics also warm on a timer (~45–90s after boot). First team-metrics load can take ~30s while nflverse parquet downloads on Railway.
+Heavy analytics / Elo / Monte Carlo / H2H run on the **worker** at **06:15 and 18:15 UTC** (`DERIVE_CRON_HOURS_UTC`), not at web boot. Until the first derive finishes, some pages may load slowly once (lazy compute). Check progress:
+
+```bash
+curl https://your-url.up.railway.app/admin/sync-status
+```
+
+To force a derive immediately after deploy (from your laptop):
+
+```bash
+# Hit the worker’s private network isn’t possible from outside Railway —
+# use warmup script on the public URL (admin routes run on web; heavy work
+# still needs worker). After worker is up, wait for derive cron or temporarily
+# set BOOT_WARMUP_LEVEL=full on worker only for one boot (dev-style, high RAM).
+```
 
 ### 4. Custom domain (optional)
 
@@ -98,10 +135,13 @@ don't reintroduce a regression.
   trigger **one** PBP load, not 10. Keep this lock if you refactor.
 - **Bounded cache** — `app/cache.py` is an LRU-capped TTL cache (`DEFAULT_MAX_ENTRIES`),
   so it can't grow without limit and pin RAM.
-- **Light boot warmup** — the scheduler warms only the **latest completed season**
-  at startup, sequentially (one PBP frame resident at a time). The previous season
-  warms lazily and cheaply on first request. Warming multiple seasons concurrently
-  at boot is what previously caused out-of-memory crash-loops.
+- **Web/worker split** — `APP_ROLE=web` on the public service (no scheduler).
+  `APP_ROLE=worker` on a second service runs ingest + derive. Never run heavy
+  boot warmups on the URL users hit.
+- **Derive on a cron** — analytics / Elo / Monte Carlo / H2H run at
+  `DERIVE_CRON_HOURS_UTC` (default 06:15 + 18:15 UTC), not at boot.
+- **Minimal boot** — worker boot only seeds teams, players, current-season schedule,
+  and news. One PBP frame at a time during derive, not during web startup.
 
 **How much to provision.**
 

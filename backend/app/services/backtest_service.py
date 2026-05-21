@@ -25,7 +25,7 @@ from ..logging_config import get_logger
 from ..models.elo import TeamEloRating
 from ..utils.seasons import latest_completed_season
 from ..utils.teams import canonical_team
-from . import artifact_cache, elo_service, ml_predictions_service
+from . import artifact_cache, elo_service, ml_predictions_service, prediction_dist
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -158,6 +158,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     spread_errs = []
     classifier_correct = 0
     prob_brier = 0.0
+    prob_log_loss = 0.0
     high_conf_correct = 0
     high_conf_n = 0
     ats_correct = 0
@@ -173,9 +174,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if pred_home == r["home_won"]:
             classifier_correct += 1
 
-        # Brier score: (predicted_prob - actual_outcome)^2
+        # Brier + log loss: proper scoring rules for the win probability.
         actual_home_int = 1 if r["home_won"] else 0
         prob_brier += (r["pred_win_prob_home"] - actual_home_int) ** 2
+        prob_log_loss += prediction_dist.log_loss(r["pred_win_prob_home"], actual_home_int)
 
         # High-confidence (>=60%) accuracy
         if r["pred_win_prob_home"] >= 0.6 or r["pred_win_prob_home"] <= 0.4:
@@ -200,6 +202,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "spread_rmse": round(rmse, 2),
         "classifier_accuracy_pct": round(100 * classifier_correct / n, 1),
         "brier_score": round(prob_brier / n, 4),
+        "log_loss": round(prob_log_loss / n, 4),
         "high_confidence_accuracy_pct": (
             round(100 * high_conf_correct / high_conf_n, 1) if high_conf_n else None
         ),

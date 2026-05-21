@@ -90,6 +90,13 @@ Edit `.env` → `LLM_PROVIDER=anthropic` (and set `ANTHROPIC_API_KEY`). Restart 
 **Enable Twitter feed:**
 Edit `.env` → `ENABLE_TWITTER=true` + `TWITTER_BEARER_TOKEN=...`. Restart backend.
 
+**Local dev roles:** default `APP_ROLE=worker` runs the scheduler. To mimic production web-only: `APP_ROLE=web` (no background jobs). For full boot warmups (high RAM): `BOOT_WARMUP_LEVEL=full`.
+
+**Inspect job history (after migration 0004):**
+```bash
+curl http://localhost:8000/admin/sync-status
+```
+
 **Force a data refresh:**
 ```bash
 curl -X POST http://localhost:8000/admin/refresh/scores

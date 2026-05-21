@@ -24,6 +24,8 @@ def health() -> dict:
     return {
         "ok": True,
         "env": s.app_env,
+        "app_role": s.app_role,
+        "scheduler_enabled": s.scheduler_enabled,
         "llm_provider": s.llm_provider,
         "multi_user": s.multi_user_mode,
         "twitter_enabled": s.enable_twitter,
