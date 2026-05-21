@@ -78,6 +78,49 @@ Elo / analytics also warm on a timer (~45–90s after boot). First team-metrics 
 - Vercel: Hobby tier is free up to 100 GB bandwidth — way more than friends testing will use.
 - xAI (Grok): pay-as-you-go. The cost gates in `app/services/cost_service.py` will hard-stop any user at $0.25/day and the whole app at $2/day, so worst case you spend $60/mo on AI even if 8 friends pound on it constantly.
 
+### 6. Memory & sizing
+
+The backend is CPU-light but **memory-sensitive**, because its richest features are
+computed from nflverse **play-by-play (PBP)** data. The data layer is tuned to keep
+this bounded, but it's worth understanding so you size the instance correctly and
+don't reintroduce a regression.
+
+**What uses memory.** A single NFL season of PBP is ~50k rows. Loaded naively
+(all ~390 columns) that's **700MB–1GB** as a pandas DataFrame. The app avoids this:
+
+- **Column projection** — `app/adapters/data/nfl_data_py_adapter.py` loads only the
+  ~20 columns we actually use (`PBP_COLUMNS`), cutting each season's frame to
+  **~50–80MB**. If you add a metric that needs a new PBP column, add it to
+  `PBP_COLUMNS` *and* the relevant aggregate — otherwise the column silently won't
+  be there.
+- **Singleflight** — `_team_pbp_aggregates` (the shared path behind predictions,
+  betting, h2h, team pages) serializes cold-cache loads, so 10 simultaneous users
+  trigger **one** PBP load, not 10. Keep this lock if you refactor.
+- **Bounded cache** — `app/cache.py` is an LRU-capped TTL cache (`DEFAULT_MAX_ENTRIES`),
+  so it can't grow without limit and pin RAM.
+- **Light boot warmup** — the scheduler warms only the **latest completed season**
+  at startup, sequentially (one PBP frame resident at a time). The previous season
+  warms lazily and cheaply on first request. Warming multiple seasons concurrently
+  at boot is what previously caused out-of-memory crash-loops.
+
+**How much to provision.**
+
+| Instance RAM | Verdict |
+|---|---|
+| 512 MB | Works for friends-testing, but tight — first PBP download + a Monte Carlo warmup can brush the ceiling. Fine if you don't add more in-memory data. |
+| **1 GB** | **Recommended.** Comfortable headroom for the first-load PBP fetch, the season simulator, and a few concurrent users. |
+| 2 GB+ | Only needed if you warm many seasons or add heavyweight in-memory datasets. |
+
+Set this in Railway under **Settings → Resources** (or the service's plan). The single
+uvicorn worker in `railway.toml` is intentional — **do not add `--workers N`** on a
+small instance: each worker is a separate process with its **own** PBP frames and
+cache, multiplying memory by N.
+
+**If you see OOM / "ran out of memory" restarts:** check the logs for repeated
+`Started server process` lines a few minutes apart (a crash-loop). Confirm you're on
+≥1 GB and running a single worker, and that nothing has been changed to load full
+(un-projected) PBP or warm multiple seasons at boot.
+
 ---
 
 ## Path B — Local backend + ngrok + Vercel (free)
@@ -153,6 +196,7 @@ Once you're past friends-testing and want to put this on the open internet:
 - **Backend 500s with `relation "team_elo_ratings" does not exist`** — the Procfile/railway.toml runs `alembic upgrade head`, but if the build fails or you bypassed it, run it manually via `railway run alembic upgrade head` from the Railway CLI.
 - **Frontend deploy fails on Vercel with type errors** — `next build` is stricter than `next dev`. If you see errors, run `npm run build` locally first to surface them.
 - **Elo never rebuilds** — Railway's container restarts happen periodically; the in-memory cache resets. APScheduler restarts cleanly. If you see no `elo_history_rebuilt` log, hit `POST /predictions/admin/elo/rebuild` manually.
+- **"Deploy ran out of memory" / backend crashes with >1 user, repeated `Started server process` every few minutes** — an out-of-memory crash-loop. Provision **≥1 GB** (Railway → Settings → Resources) and keep a **single** uvicorn worker (no `--workers N`). See [Memory & sizing](#6-memory--sizing). If it persists after raising RAM, something is loading full (un-projected) play-by-play or warming multiple seasons at boot — check recent changes against `PBP_COLUMNS`, the `_team_pbp_aggregates` singleflight, and `_job_warmup_analytics`.
 - **xAI / Grok API key not working** — verify at https://console.x.ai/. The current default model is `grok-2-latest`; older keys may need `grok-beta` (set `GROK_MODEL=grok-beta`).
 
 ---

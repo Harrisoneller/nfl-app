@@ -32,6 +32,7 @@ from ..services import (
     artifact_cache,
     awards_service,
     elo_service,
+    h2h_service,
     news_service,
     odds_service,
     players_service,
@@ -123,16 +124,31 @@ async def _job_warmup_predictions() -> None:
         db.close()
 
 
-async def _job_warmup_analytics() -> None:
-    """Pre-warm analytics caches for the two most recent completed seasons.
+async def _job_warmup_h2h() -> None:
+    """Pre-compute popular H2H matchups (this week's games + division rivals) so
+    their first click is instant. Runs after analytics+Elo warmup so the shared
+    building blocks are already cached; each pair is then cheap to assemble."""
+    db = SessionLocal()
+    try:
+        n = await h2h_service.prewarm_h2h(db)
+        log.info("scheduler_h2h_warmed", pairs=n)
+    except Exception as e:  # noqa: BLE001
+        log.warning("scheduler_h2h_warmup_failed", error=str(e))
+    finally:
+        db.close()
 
-    Without this, the first user to load a team or player page eats the
-    PBP download (~30s for 2 seasons). With it, the work happens during
-    boot while you're still spinning up the frontend.
+
+async def _job_warmup_analytics() -> None:
+    """Pre-warm analytics caches for the latest completed season only.
+
+    We deliberately warm just ONE season at boot to keep peak memory low (one
+    PBP frame). The previous season warms lazily on its first request — cheap
+    now that PBP loads are column-projected and singleflighted. Warming two
+    seasons here is what spiked memory on every (re)start.
     """
     latest = latest_completed_season()
     try:
-        await analytics_service.warmup([latest, latest - 1])
+        await analytics_service.warmup([latest])
     except Exception as e:  # noqa: BLE001
         log.warning("scheduler_warmup_failed", error=str(e))
 
@@ -198,12 +214,22 @@ def start_scheduler() -> None:
     sched.add_job(_job_rebuild_elo, "date", run_date=_soon(45))
     # Predictions cache warmup after Elo is built
     sched.add_job(_job_warmup_predictions, "date", run_date=_soon(75))
+    # H2H pre-warm after predictions (reuses the now-cached team aggregates + Elo)
+    sched.add_job(_job_warmup_h2h, "date", run_date=_soon(90))
     # Weekly re-run of Monte Carlo + awards in case rosters/standings shift
     sched.add_job(
         _job_warmup_predictions,
         IntervalTrigger(hours=24),
         next_run_time=_soon(60 * 60 * 24),
         id="predictions_daily", coalesce=True, max_instances=1,
+    )
+    # Daily H2H re-warm — picks up newly-completed games (version key busts the
+    # stale entries) and refreshes the next week's matchups.
+    sched.add_job(
+        _job_warmup_h2h,
+        IntervalTrigger(hours=24),
+        next_run_time=_soon(60 * 60 * 24 + 120),
+        id="h2h_daily", coalesce=True, max_instances=1,
     )
     # Cache vacuum — weekly housekeeping
     sched.add_job(

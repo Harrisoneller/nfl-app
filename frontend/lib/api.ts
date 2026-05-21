@@ -305,13 +305,22 @@ export type MatchupSide = {
   metrics_count: number;
 };
 
+export type MatchupLean =
+  | "even"
+  | "slight_off" | "clear_off" | "strong_off" | "off"
+  | "slight_def" | "clear_def" | "strong_def" | "def";
+
 export type MatchupRow = {
   metric: string;
   label: string;
   off_value: number;
   def_value: number;
+  league_avg: number | null;
   expected: number;
   delta: number;
+  edge: number;
+  edge_z: number | null;
+  lean: MatchupLean;
   offense_has_edge: boolean;
   off_percentile: number | null;
   def_percentile_for_offense: number | null;

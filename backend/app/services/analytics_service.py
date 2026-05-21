@@ -27,7 +27,9 @@ import pandas as pd
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
+from ..utils.seasons import current_or_upcoming_season
 from ..utils.teams import canonical_team
+from . import artifact_cache
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -101,6 +103,17 @@ async def _team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
     if (v := cache.get(key)) is not None:
         return v
 
+    # Singleflight: without this, N concurrent cold-cache requests (e.g. several
+    # users hitting the home page, which fans out to predictions/betting) would
+    # EACH load a full PBP frame into memory at once — the exact multi-user OOM
+    # we're fixing. Serialize the load; the losers get the cached result.
+    async with _lock_for(key):
+        if (v := cache.get(key)) is not None:
+            return v
+        return await _compute_team_pbp_aggregates(season, key)
+
+
+async def _compute_team_pbp_aggregates(season: int, key: str) -> dict[str, dict[str, float]]:
     pbp = await _nfl.pbp_df(season)
     if pbp is None or len(pbp) == 0:
         return {}
@@ -186,6 +199,23 @@ async def _team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
 
 
 async def team_profile(team_id: str, season: int) -> dict[str, Any]:
+    """Team season profile (metrics + percentile ranks), persisted in L2.
+
+    A completed season's profile never changes, so it's cached permanently and
+    survives restarts/redeploys; the active/upcoming season refreshes every few
+    hours. This removes the recompute-after-restart latency on team pages.
+    """
+    ttl = None if season < current_or_upcoming_season() else CACHE_TTL
+    return await artifact_cache.get_or_compute(
+        kind="team_profile",
+        key=f"{team_id}:{season}",
+        compute=lambda: _compute_team_profile(team_id, season),
+        ttl_seconds=ttl,
+        l1_ttl_seconds=CACHE_TTL,
+    )
+
+
+async def _compute_team_profile(team_id: str, season: int) -> dict[str, Any]:
     aggs = await _team_pbp_aggregates(season)
     if not aggs:
         return {"team_id": team_id, "season": season, "error": "no data"}
@@ -403,18 +433,31 @@ async def player_profile(
 ) -> dict[str, Any]:
     """PlayerProfiler-style profile. Uses pre-computed peer distributions for speed.
 
-    Caching: result is memoized per (player_id, season). First miss does the
-    DataFrame scan; subsequent calls are ~1ms cache lookups.
+    Persisted in L2 (Postgres) keyed by (player_id, season): a completed
+    season's profile is immutable and cached permanently (survives restarts);
+    the active/upcoming season refreshes every few hours. get_or_compute also
+    provides the in-process layer + singleflight, so concurrent first-loads of
+    the same player collapse to one computation.
+    """
+    ttl = None if season < current_or_upcoming_season() else CACHE_TTL
+    return await artifact_cache.get_or_compute(
+        kind="player_profile",
+        key=f"{player_id}:{season}",
+        compute=lambda: _compute_player_profile(player_id, full_name, position, season),
+        ttl_seconds=ttl,
+        l1_ttl_seconds=CACHE_TTL,
+    )
+
+
+async def _compute_player_profile(
+    player_id: str, full_name: str, position: str, season: int
+) -> dict[str, Any]:
+    """Heavy path (cache miss): scan the seasonal table + rank vs peers.
 
     Season fallback: if the requested season has no data (e.g. current season
     in offseason before nflverse publishes), transparently fall back to the
     most recent completed season and mark `fallback_from`.
     """
-    # Cache key includes player_id + season so we can serve hot in O(1).
-    cache_key = f"player_profile:{player_id}:{season}"
-    if (cached := cache.get(cache_key)) is not None:
-        return cached
-
     df = await _seasonal_player_table(season)
     fallback_from: int | None = None
     if df is None or len(df) == 0:
@@ -474,7 +517,6 @@ async def player_profile(
     }
     if fallback_from is not None:
         result["fallback_from"] = fallback_from
-    cache.set(cache_key, result, CACHE_TTL_LONG)
     return result
 
 
@@ -544,21 +586,24 @@ async def warmup(seasons: list[int]) -> None:
     queries hit cache and return in ~10ms.
     """
     log.info("analytics_warmup_starting", seasons=seasons)
-    tasks = []
+    # Process seasons SEQUENTIALLY so at most one full PBP frame is resident at
+    # a time. Loading every season's PBP concurrently (the old behavior) spiked
+    # memory on each boot and, in the crash-loop, kept re-triggering the OOM.
+    # Within a season the position tables reuse the already-cached seasonal
+    # frame, so those few can run together cheaply.
     for s in seasons:
-        tasks.append(_team_pbp_aggregates(s))
-        tasks.append(_seasonal_player_table(s))
-        for pos in ("QB", "RB", "WR", "TE"):
-            tasks.append(_position_percentile_table(s, pos))
-    try:
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as e:  # noqa: BLE001
-        log.warning("analytics_warmup_partial_failure", error=str(e))
-
-    # Pre-compute top fantasy-relevant players per position so the first
-    # player-page load is a cache hit, not a 1-2s DataFrame scan.
-    for s in seasons:
-        await _precompute_popular_players(s, per_position=100)
+        try:
+            await _team_pbp_aggregates(s)   # loads + releases one PBP frame
+            await _seasonal_player_table(s)
+            await asyncio.gather(
+                *[_position_percentile_table(s, pos) for pos in ("QB", "RB", "WR", "TE")],
+                return_exceptions=True,
+            )
+            # Pre-compute top fantasy-relevant players so the first player-page
+            # load is a cache hit, not a 1-2s DataFrame scan.
+            await _precompute_popular_players(s, per_position=75)
+        except Exception as e:  # noqa: BLE001
+            log.warning("analytics_warmup_partial_failure", season=s, error=str(e))
 
     log.info("analytics_warmup_complete", seasons=seasons)
 

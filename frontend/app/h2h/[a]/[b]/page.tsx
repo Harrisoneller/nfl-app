@@ -243,11 +243,42 @@ function MatchupBreakdownCard({ data }: { data: H2HMatchup }) {
         <MatchupSidePanel side={b} />
       </div>
       <p className="text-[10px] text-muted mt-3">
-        "Expected" = midpoint of the offense's season pace and the defense's
-        season-allowed average. Green delta = offense projects to outperform
-        what the defense typically allows.
+        "Expected" projects this offense's output against this defense — its own
+        season pace adjusted by how much more or less than a league-average
+        defense this one allows. "Edge" grades that matchup in standard
+        deviations of league spread: <span className="text-muted">Even</span> means
+        the gap is within normal week-to-week noise; <span style={{ color: "#22c55e" }}>green</span> favors
+        the offense, <span style={{ color: "#f97316" }}>orange</span> the defense.
       </p>
     </Card>
+  );
+}
+
+// Lean label + color. Green = favors the offense in this panel; orange = the
+// defense wins the matchup; gray = within league noise (not a real edge).
+const LEAN_STYLE: Record<string, { word: string; color: string }> = {
+  even: { word: "Even", color: "#94a3b8" },
+  slight_off: { word: "Slight", color: "#4ade80" },
+  clear_off: { word: "Clear", color: "#22c55e" },
+  strong_off: { word: "Strong", color: "#15803d" },
+  off: { word: "Edge", color: "#22c55e" },
+  slight_def: { word: "Slight", color: "#fb923c" },
+  clear_def: { word: "Clear", color: "#f97316" },
+  strong_def: { word: "Strong", color: "#c2410c" },
+  def: { word: "Edge", color: "#f97316" },
+};
+
+function LeanBadge({ lean, z }: { lean: string; z: number | null }) {
+  const s = LEAN_STYLE[lean] ?? LEAN_STYLE.even;
+  const favors = lean.endsWith("_off") ? "offense" : lean.endsWith("_def") ? "defense" : "neither";
+  const title = z === null ? "no league context" : `${z > 0 ? "+" : ""}${z.toFixed(2)} SD vs league — favors ${favors}`;
+  return (
+    <span title={title} style={{ color: s.color }} className="font-medium tabular-nums">
+      {s.word}
+      {z !== null && lean !== "even" && (
+        <span className="text-[10px] opacity-70 ml-1">{z > 0 ? "+" : ""}{z.toFixed(1)}</span>
+      )}
+    </span>
   );
 }
 
@@ -269,8 +300,8 @@ function MatchupSidePanel({ side }: { side: MatchupSide }) {
               <th className="py-1 pr-2">Metric</th>
               <th className="pr-2 text-right">{side.offense} off</th>
               <th className="pr-2 text-right">{side.defense} def</th>
-              <th className="pr-2 text-right">Expected</th>
-              <th className="pr-2 text-right">Δ</th>
+              <th className="pr-2 text-right" title="Matchup-adjusted projection of the offense's output vs this defense">Expected</th>
+              <th className="pr-2 text-right" title="Edge graded in std deviations of league spread">Edge</th>
             </tr>
           </thead>
           <tbody>
@@ -279,12 +310,11 @@ function MatchupSidePanel({ side }: { side: MatchupSide }) {
                 <td className="py-1 pr-2">{r.label}</td>
                 <td className="pr-2 text-right tabular-nums">{fmtVal(r.metric, r.off_value)}</td>
                 <td className="pr-2 text-right tabular-nums">{fmtVal(r.metric, r.def_value)}</td>
-                <td className="pr-2 text-right tabular-nums font-medium">{fmtVal(r.metric, r.expected)}</td>
-                <td
-                  className="pr-2 text-right tabular-nums font-medium"
-                  style={{ color: r.offense_has_edge ? "#22c55e" : "#f97316" }}
-                >
-                  {r.delta > 0 ? "+" : ""}{r.delta.toFixed(r.metric === "points_per_game" ? 1 : 3)}
+                <td className="pr-2 text-right tabular-nums font-medium" title={r.league_avg !== null ? `league avg ${fmtVal(r.metric, r.league_avg)}` : undefined}>
+                  {fmtVal(r.metric, r.expected)}
+                </td>
+                <td className="pr-2 text-right">
+                  <LeanBadge lean={r.lean} z={r.edge_z} />
                 </td>
               </tr>
             ))}

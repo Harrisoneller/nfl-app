@@ -50,6 +50,33 @@ except Exception as e:  # pragma: no cover
 
 DEFAULT_TIMEOUT_S = 45.0  # First-call parquet downloads can be slow.
 
+# Memory control: a full season of play-by-play is ~50k rows × ~390 columns,
+# which is 700MB–1GB+ as a pandas DataFrame. Every consumer of PBP only needs a
+# couple dozen columns, so we project to just those at load time. This is the
+# single biggest lever on the backend's resident memory (the rest of the app is
+# small). Keep this list a superset of every column referenced in
+# analytics_service._team_pbp_aggregates and ml_predictions_service.
+PBP_COLUMNS: list[str] = [
+    "game_id", "week", "posteam", "defteam", "home_team", "away_team",
+    "play_type", "epa", "success", "yards_gained", "yardline_100",
+    "touchdown", "drive", "down", "first_down", "posteam_score",
+    "wp", "qtr", "interception", "fumble_lost", "sack",
+]
+
+
+def _import_pbp_lean(season: int):
+    """Load play-by-play with only the columns we use + float downcast.
+
+    Falls back to a full load only if a projected column is missing for a given
+    season (rare/old seasons) so we degrade to "works but heavier" rather than
+    "no data".
+    """
+    try:
+        return nfl.import_pbp_data([season], columns=PBP_COLUMNS, downcast=True)
+    except Exception:  # noqa: BLE001 — column set mismatch on an odd season
+        log.debug("pbp_columns_fallback", season=season)
+        return nfl.import_pbp_data([season], downcast=True)
+
 # Circuit breaker: if a given (fn, args-key) fails this many times within the
 # window, subsequent calls fast-fail for the cooldown duration.
 _CB_FAILURE_THRESHOLD = 3
@@ -175,8 +202,12 @@ class NflDataPyAdapter:
         return await _run_sync_safe(nfl.import_schedules, [season], fn_name="schedules")
 
     async def pbp_df(self, season: int):
-        """Play-by-play. ~50MB per season; first call is slow — longer leash."""
-        return await _run_sync_safe(nfl.import_pbp_data, [season], timeout=120.0, fn_name="pbp")
+        """Play-by-play, projected to PBP_COLUMNS to keep memory bounded.
+
+        First call is slow (parquet download) — longer leash. Column projection
+        cuts the resident frame from ~700MB-1GB to ~50-80MB per season.
+        """
+        return await _run_sync_safe(_import_pbp_lean, season, timeout=120.0, fn_name="pbp")
 
     # ---- dict variants for places that don't need DataFrames -----------------
 

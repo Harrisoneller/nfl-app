@@ -6,37 +6,78 @@ feel instant once warmed.
 """
 from __future__ import annotations
 
+import math
+from collections import defaultdict
+from statistics import fmean, pstdev
 from typing import Any
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
-from ..cache import cache
 from ..logging_config import get_logger
+from ..models.game import Game
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import analytics_service, betting_service, elo_service, predictions_service
+from . import analytics_service, artifact_cache, betting_service, elo_service, predictions_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
-CACHE_TTL = 60 * 30  # 30 min
+# In-process layer TTL (L2/Postgres handles durability + cross-restart reuse).
+L1_TTL = 60 * 30  # 30 min
 
 
 async def head_to_head(
     db: Session, team_a: str, team_b: str, season: int | None = None,
 ) -> dict[str, Any]:
-    """Composite of two teams: ratings, profiles, predicted matchup, history, trends."""
+    """Composite of two teams, served from the persistent cache.
+
+    The expensive assembly (PBP-derived profiles, historical H2H, Elo trends)
+    only changes when a new game completes, so we cache the result in the L2
+    artifact store keyed by the season's completed-game count. That means:
+      - a finished season is computed once and served forever (immutable),
+      - the active season auto-refreshes the moment a game goes final (the
+        count changes → new key → recompute) without any manual invalidation,
+      - results survive restarts/redeploys instead of recomputing on the next
+        click (the latency this is meant to remove).
+    """
     a, b = team_a.upper(), team_b.upper()
     if a == b:
-        return {"error": "Pick two different teams"}
+        return {"error": "Pick two different teams"}  # never cache the error case
     season = season or current_or_upcoming_season()
 
-    cache_key = f"h2h:{a}:{b}:{season}"
-    if (v := cache.get(cache_key)) is not None:
-        return v
+    final_count = _final_games_count(db, season)
+    # Completed seasons are immutable; the active/upcoming season gets a 24h
+    # backstop on top of the version key (covers schedule corrections etc.).
+    is_completed = season < current_or_upcoming_season()
+    ttl = None if is_completed else 60 * 60 * 24
 
+    return await artifact_cache.get_or_compute(
+        kind="h2h",
+        key=f"{a}:{b}:{season}:v{final_count}",
+        compute=lambda: _compute_head_to_head(db, a, b, season),
+        ttl_seconds=ttl,
+        l1_ttl_seconds=L1_TTL,
+    )
+
+
+def _final_games_count(db: Session, season: int) -> int:
+    """Number of completed games in a season — the cache version signal."""
+    try:
+        return (
+            db.query(Game)
+            .filter(Game.season == season, Game.status == "final")
+            .count()
+        )
+    except Exception:  # noqa: BLE001 — versioning must never break the request
+        return 0
+
+
+async def _compute_head_to_head(
+    db: Session, a: str, b: str, season: int,
+) -> dict[str, Any]:
+    """Assemble the full H2H payload (the expensive path, run on cache miss)."""
     # ---- Current ratings + records + grades ---------------------------------
     ratings = elo_service.current_ratings(db)
     elo_a = ratings.get(a, elo_service.INITIAL_RATING)
@@ -89,10 +130,18 @@ async def head_to_head(
         }
 
     # ---- Profile delta + cross-side matchup breakdown ----------------------
-    profile_a = await analytics_service.team_profile(a, season=season - 1 if season > last_completed else season)
-    profile_b = await analytics_service.team_profile(b, season=season - 1 if season > last_completed else season)
+    profile_season = season - 1 if season > last_completed else season
+    profile_a = await analytics_service.team_profile(a, season=profile_season)
+    profile_b = await analytics_service.team_profile(b, season=profile_season)
+    # League distribution for the SAME season the profiles came from — needed to
+    # turn raw offense-vs-defense gaps into matchup-adjusted expectations and
+    # significance-scored edges (not "any positive delta = edge").
+    league_aggs = await analytics_service._team_pbp_aggregates(profile_season)  # noqa: SLF001
+    if not league_aggs:
+        league_aggs = await analytics_service._team_pbp_aggregates(profile_season - 1)  # noqa: SLF001
+    league_stats = _league_metric_stats(league_aggs)
     deltas = _profile_deltas(profile_a, profile_b)
-    matchup_breakdown = _cross_side_matchups(profile_a, profile_b, a, b)
+    matchup_breakdown = _cross_side_matchups(profile_a, profile_b, a, b, league_stats)
 
     # ---- Historical H2H ------------------------------------------------------
     history = await _historical_h2h(a, b, n_seasons=8)
@@ -120,7 +169,6 @@ async def head_to_head(
         "history": history,
         "elo_history": {"a": elo_history_a, "b": elo_history_b},
     }
-    cache.set(cache_key, result, CACHE_TTL)
     return result
 
 
@@ -218,16 +266,77 @@ _OFF_TO_DEF_PAIRS: list[tuple[str, str, str]] = [
 ]
 
 
+# Edge significance bands, in standard deviations of the league's combined
+# offense+defense spread. An edge only "counts" once it clears EDGE_MIN_Z — a
+# raw gap that's small relative to normal week-to-week league variation is
+# noise, not an advantage.
+EDGE_MIN_Z = 0.4
+EDGE_CLEAR_Z = 1.0
+EDGE_STRONG_Z = 1.75
+
+
+def _league_metric_stats(aggs: dict[str, dict[str, float]]) -> dict[str, tuple[float, float]]:
+    """Per-metric (mean, population-stddev) across every team in the season.
+
+    This is the league baseline we measure matchup edges against. Computed from
+    the same aggregates the team profiles are built from, so values line up.
+    """
+    if not aggs:
+        return {}
+    metrics: set[str] = set()
+    for off_key, def_key, _ in _OFF_TO_DEF_PAIRS:
+        metrics.add(off_key)
+        metrics.add(def_key)
+    out: dict[str, tuple[float, float]] = {}
+    for m in metrics:
+        vals = [
+            float(t[m]) for t in aggs.values()
+            if isinstance(t.get(m), (int, float)) and t.get(m) is not None
+        ]
+        if len(vals) >= 2:
+            out[m] = (fmean(vals), pstdev(vals))
+        elif len(vals) == 1:
+            out[m] = (vals[0], 0.0)
+    return out
+
+
+def _grade_edge(z: float) -> tuple[str, bool]:
+    """Map a signed z-score to a lean label + whether the OFFENSE has a real edge.
+
+    Positive z favors the offense; negative favors the defense. Returns e.g.
+    ("slight_off", True), ("strong_def", False), ("even", False).
+    """
+    az = abs(z)
+    if az < EDGE_MIN_Z:
+        return "even", False
+    tier = "slight" if az < EDGE_CLEAR_Z else ("clear" if az < EDGE_STRONG_Z else "strong")
+    if z > 0:
+        return f"{tier}_off", True
+    return f"{tier}_def", False
+
+
 def _matchup_side(
     off_team: str, off_profile: dict, def_team: str, def_profile: dict,
+    league_stats: dict[str, tuple[float, float]],
 ) -> dict:
-    """Build one direction of the matchup ("when [off_team] has the ball")."""
+    """Build one direction of the matchup ("when [off_team] has the ball").
+
+    Each row is a matchup-adjusted projection, not a raw comparison:
+      expected = off_val + (def_val - league_avg)
+        → the offense's own pace, nudged by how much more/less than a league-
+          average defense this specific defense allows.
+      edge     = (off_val - league_avg) + (def_val - league_avg)
+        → offense's strength-above-average PLUS defense's weakness-above-average.
+      edge_z   = edge / sqrt(σ_off² + σ_def²)
+        → that edge expressed in standard deviations of normal league spread,
+          so we can tell a real mismatch from noise.
+    """
     rows: list[dict] = []
     advantage_count = 0
     if not off_profile or "metrics" not in off_profile:
-        return {"offense": off_team, "defense": def_team, "rows": [], "advantage_count": 0}
+        return {"offense": off_team, "defense": def_team, "rows": [], "advantage_count": 0, "metrics_count": 0}
     if not def_profile or "metrics" not in def_profile:
-        return {"offense": off_team, "defense": def_team, "rows": [], "advantage_count": 0}
+        return {"offense": off_team, "defense": def_team, "rows": [], "advantage_count": 0, "metrics_count": 0}
     off_m = off_profile["metrics"]
     def_m = def_profile["metrics"]
     for off_key, def_key, label in _OFF_TO_DEF_PAIRS:
@@ -239,11 +348,30 @@ def _matchup_side(
         def_val = def_card.get("value")
         if not isinstance(off_val, (int, float)) or not isinstance(def_val, (int, float)):
             continue
-        # Both are "higher means more production". For the offense, advantage
-        # if off_val > def_val (offense averages more than this defense allows).
-        expected = (off_val + def_val) / 2
+
+        off_stat = league_stats.get(off_key)
+        def_stat = league_stats.get(def_key)
         delta = off_val - def_val
-        offense_has_edge = delta > 0
+        if off_stat is None or def_stat is None:
+            # No league context (shouldn't happen in-season) — degrade gracefully
+            # to the raw view rather than inventing a baseline.
+            expected = (off_val + def_val) / 2
+            edge_raw = delta
+            edge_z = None
+            lean, offense_has_edge = ("off" if delta > 0 else "def" if delta < 0 else "even", delta > 0)
+            league_avg: float | None = None
+        else:
+            mu_off, sd_off = off_stat
+            mu_def, sd_def = def_stat
+            league_avg = mu_off
+            # Matchup-adjusted expected production of THIS offense vs THIS defense.
+            expected = off_val + (def_val - mu_def)
+            # Combined deviation from average (offense strength + defense leakiness).
+            edge_raw = (off_val - mu_off) + (def_val - mu_def)
+            sd_comb = math.sqrt(sd_off * sd_off + sd_def * sd_def)
+            edge_z = (edge_raw / sd_comb) if sd_comb > 1e-9 else 0.0
+            lean, offense_has_edge = _grade_edge(edge_z)
+
         if offense_has_edge:
             advantage_count += 1
         rows.append({
@@ -251,8 +379,12 @@ def _matchup_side(
             "label": label,
             "off_value": round(off_val, 3),
             "def_value": round(def_val, 3),
+            "league_avg": round(league_avg, 3) if league_avg is not None else None,
             "expected": round(expected, 3),
             "delta": round(delta, 3),
+            "edge": round(edge_raw, 3),
+            "edge_z": round(edge_z, 2) if edge_z is not None else None,
+            "lean": lean,
             "offense_has_edge": offense_has_edge,
             # Percentile context for the UI (offense's own pct + opponent's def pct)
             "off_percentile": off_card.get("percentile"),
@@ -276,15 +408,18 @@ def _matchup_side(
 
 def _cross_side_matchups(
     profile_a: dict, profile_b: dict, a: str, b: str,
+    league_stats: dict[str, tuple[float, float]],
 ) -> dict:
     """Two-sided matchup breakdown.
 
     "When A has the ball" pairs A's offensive metrics against B's defensive
     counterparts and vice versa. This is the analyst-style view — strength
-    vs. weakness — instead of comparing offense-to-offense.
+    vs. weakness — instead of comparing offense-to-offense. Edges are scored
+    against the league distribution (`league_stats`) so only material mismatches
+    are flagged.
     """
-    a_offense = _matchup_side(a, profile_a, b, profile_b)
-    b_offense = _matchup_side(b, profile_b, a, profile_a)
+    a_offense = _matchup_side(a, profile_a, b, profile_b, league_stats)
+    b_offense = _matchup_side(b, profile_b, a, profile_a, league_stats)
     return {
         "when_a_has_ball": a_offense,
         "when_b_has_ball": b_offense,
@@ -328,3 +463,72 @@ def _safe_int(v) -> int | None:
         return int(v) if pd.notna(v) else None
     except (TypeError, ValueError):
         return None
+
+
+# ============================================================================
+# Pre-warm — make the matchups people actually click instant on first load
+# ============================================================================
+
+
+def _upcoming_week_matchups(db: Session, season: int) -> list[tuple[str, str]]:
+    """(home, away) ids for the next week that still has an unplayed game."""
+    row = (
+        db.query(Game.week)
+        .filter(Game.season == season, Game.status != "final", Game.week.isnot(None))
+        .order_by(Game.week.asc())
+        .first()
+    )
+    if not row:
+        return []
+    week = row[0]
+    games = db.query(Game).filter(Game.season == season, Game.week == week).all()
+    return [(g.home_team_id, g.away_team_id) for g in games if g.home_team_id and g.away_team_id]
+
+
+def _prewarm_pairs(db: Session, season: int) -> list[tuple[str, str]]:
+    """Pairs to pre-compute: all intra-division rivalries + this week's games.
+
+    Returns BOTH orderings of each pair so a click in either direction is an
+    instant cache hit (the payload is order-sensitive — "when A has the ball").
+    """
+    from ..models.seed import NFL_TEAMS
+
+    by_div: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for t in NFL_TEAMS:
+        by_div[(t["conference"], t["division"])].append(t["id"])
+
+    unordered: set[frozenset] = set()
+    for ids in by_div.values():
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                unordered.add(frozenset((ids[i], ids[j])))
+    for home, away in _upcoming_week_matchups(db, season):
+        unordered.add(frozenset((home, away)))
+
+    pairs: list[tuple[str, str]] = []
+    for fs in unordered:
+        xs = sorted(fs)
+        if len(xs) == 2:
+            pairs.append((xs[0], xs[1]))
+            pairs.append((xs[1], xs[0]))
+    return pairs
+
+
+async def prewarm_h2h(db: Session, season: int | None = None) -> int:
+    """Pre-compute popular matchups so their first click is instant.
+
+    Cheap: the heavy building blocks (team aggregates, schedules) are shared and
+    already cached after the analytics/predictions warmup, so each pair is just
+    assembly + a couple of DB reads, landing the result in the L2 store.
+    """
+    season = season or current_or_upcoming_season()
+    pairs = _prewarm_pairs(db, season)
+    warmed = 0
+    for a, b in pairs:
+        try:
+            await head_to_head(db, a, b, season)
+            warmed += 1
+        except Exception as e:  # noqa: BLE001 — one bad pair shouldn't stop warmup
+            log.debug("h2h_prewarm_pair_failed", a=a, b=b, error=str(e)[:120])
+    log.info("h2h_prewarmed", season=season, pairs=warmed)
+    return warmed
