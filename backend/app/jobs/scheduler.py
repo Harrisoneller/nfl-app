@@ -159,7 +159,13 @@ async def _job_refresh_news() -> None:
 async def _job_refresh_odds() -> None:
     db = SessionLocal()
     try:
-        await odds_service.refresh_odds(db)
+        result = await odds_service.refresh_odds(db)
+        if result["status"] not in ("ok", "disabled") and result["lines_in_db"] == 0:
+            log.warning(
+                "scheduler_odds_empty",
+                status=result["status"],
+                message=result.get("message"),
+            )
     except Exception as e:  # noqa: BLE001
         log.warning("scheduler_odds_failed", error=str(e))
     finally:

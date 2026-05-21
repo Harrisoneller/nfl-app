@@ -16,13 +16,15 @@ import { TeamLogo } from "@/components/TeamLogo";
  * explanation of how to read it.
  */
 
-const fetcher = () => api.odds(undefined, 400);
+const oddsFetcher = () => api.odds(undefined, 400);
+const statusFetcher = () => api.oddsStatus();
 
 // Map full-name strings from The Odds API back to our 3-letter team ids.
 import { NFL_TEAM_NAMES } from "@/lib/team-names";
 
 export default function OddsPage() {
-  const { data, isLoading, error } = useSWR(["odds-all"], fetcher);
+  const { data, isLoading, error } = useSWR(["odds-all"], oddsFetcher);
+  const { data: status } = useSWR(["odds-status"], statusFetcher);
   const [showExplainer, setShowExplainer] = useState(true);
 
   const grouped = useMemo(() => groupByEvent(data ?? []), [data]);
@@ -49,13 +51,7 @@ export default function OddsPage() {
       {isLoading && <Card><p className="text-sm text-muted">Loading lines…</p></Card>}
       {error && <Card><p className="text-sm text-red-400">Couldn't load odds.</p></Card>}
       {!isLoading && grouped.length === 0 && (
-        <Card>
-          <p className="text-sm text-muted">
-            No odds loaded. Set <code className="text-xs px-1 bg-bg rounded">ODDS_API_KEY</code> in{" "}
-            <code className="text-xs px-1 bg-bg rounded">.env</code> and hit{" "}
-            <code className="text-xs px-1 bg-bg rounded">POST /admin/refresh/odds</code>.
-          </p>
-        </Card>
+        <OddsEmptyState status={status} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -64,6 +60,61 @@ export default function OddsPage() {
         ))}
       </div>
     </div>
+  );
+}
+
+// ============================================================================
+// Empty state — uses /odds/status for actionable copy
+// ============================================================================
+
+function OddsEmptyState({
+  status,
+}: {
+  status?: { configured: boolean; lines_in_db: number; ready: boolean };
+}) {
+  if (!status?.configured) {
+    return (
+      <Card>
+        <p className="text-sm text-muted">
+          No odds in the database yet. Add a free key from{" "}
+          <a
+            href="https://the-odds-api.com"
+            className="text-team-primary hover:underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            the-odds-api.com
+          </a>{" "}
+          as <code className="text-xs px-1 bg-bg rounded">ODDS_API_KEY</code> in the repo-root{" "}
+          <code className="text-xs px-1 bg-bg rounded">.env</code> (key only on that line — no
+          inline comment), restart the backend, then run{" "}
+          <code className="text-xs px-1 bg-bg rounded">curl -X POST http://localhost:8000/admin/refresh/odds</code>.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <p className="text-sm text-muted">
+        <code className="text-xs px-1 bg-bg rounded">ODDS_API_KEY</code> is set, but no lines are
+        stored ({status.lines_in_db} in DB). The Odds API likely rejected the key (401) or returned
+        no NFL games. Confirm the key at{" "}
+        <a
+          href="https://the-odds-api.com/account"
+          className="text-team-primary hover:underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          your account
+        </a>
+        , restart the backend after updating <code className="text-xs px-1 bg-bg rounded">.env</code>
+        , then refresh:{" "}
+        <code className="text-xs px-1 bg-bg rounded">curl -X POST http://localhost:8000/admin/refresh/odds</code>.
+        The response includes <code className="text-xs px-1 bg-bg rounded">status</code> and{" "}
+        <code className="text-xs px-1 bg-bg rounded">message</code> if the upstream call failed.
+      </p>
+    </Card>
   );
 }
 

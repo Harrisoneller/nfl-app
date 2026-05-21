@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     odds_api_key: str = ""
     odds_api_base: str = "https://api.the-odds-api.com/v4"
 
+    @field_validator("odds_api_key", mode="before")
+    @classmethod
+    def normalize_odds_api_key(cls, v: object) -> object:
+        """Strip whitespace; reject inline comments accidentally pasted into the value."""
+        if not isinstance(v, str):
+            return v
+        key = v.strip()
+        if "#" in key:
+            key = key.split("#", 1)[0].strip()
+        return key
+
     # News / social
     enable_twitter: bool = False
     twitter_bearer_token: str = ""

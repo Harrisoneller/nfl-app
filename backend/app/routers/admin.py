@@ -55,7 +55,7 @@ async def refresh_news(db: Session = Depends(get_db)):
 
 @router.post("/refresh/odds")
 async def refresh_odds(db: Session = Depends(get_db)):
-    return {"lines": await odds_service.refresh_odds(db)}
+    return await odds_service.refresh_odds(db)
 
 
 # ============================================================================

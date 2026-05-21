@@ -1,7 +1,14 @@
 "use client";
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { ThemeToggle } from "./ThemeProvider";
+
+const BRAND_LOGO = {
+  src: "/brand/statletics-sports.png",
+  width: 127,
+  height: 36,
+} as const;
 
 // NOTE: /players, /compare, and /performance are intentionally hidden from the
 // nav while they're being stabilized. The pages still exist if you navigate
@@ -31,8 +38,19 @@ export function Nav() {
   return (
     <header className="border-b divider sticky top-0 z-30 backdrop-blur bg-bg/70">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
-        <Link href="/" className="font-semibold tracking-tight text-lg whitespace-nowrap">
-          🏈 Statletics NFL
+        <Link
+          href="/"
+          className="flex shrink-0 items-center"
+          aria-label="Statletics NFL home"
+        >
+          <Image
+            src={BRAND_LOGO.src}
+            alt="Statletics NFL"
+            width={BRAND_LOGO.width}
+            height={BRAND_LOGO.height}
+            className="h-9 w-auto max-w-[160px] object-contain object-left"
+            priority
+          />
         </Link>
         <nav className="hidden md:flex items-center gap-5 text-sm">
           {links.map((l) => (

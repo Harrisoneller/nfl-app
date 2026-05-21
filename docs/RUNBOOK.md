@@ -112,6 +112,8 @@ Omit `?season=` to refresh every season in the dropdown (same as the boot schedu
 
 **`nfl-data-py` slow first call:** It downloads ~50MB of parquet files on first use. Subsequent calls hit local cache.
 
+**Odds page empty / `POST /admin/refresh/odds` returns `"status":"unauthorized"`:** `ODDS_API_KEY` must be on its own line in repo-root `.env` (no trailing comment on the same line). Get a key from [the-odds-api.com](https://the-odds-api.com), restart the backend (settings are cached for the process lifetime), then `curl -X POST http://localhost:8000/admin/refresh/odds`. Check `GET http://localhost:8000/odds/status` for `lines_in_db`.
+
 **Odds endpoint returns 429:** You've blown the free tier. Either wait until next month or upgrade. The scheduler caches every 15 min so this should not happen in normal use.
 
 **Grok API errors:** Verify the key at https://console.x.ai. The default model is `grok-2-latest`; older keys may need `grok-beta`.

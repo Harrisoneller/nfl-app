@@ -46,27 +46,26 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
 1. Sign up at https://vercel.com (GitHub auth).
 2. **New Project** → import the same GitHub repo.
 3. **Root Directory** → `frontend`.
-4. **Environment Variables**:
+4. **Environment Variables** (scope: **Production** at minimum):
    ```
    NEXT_PUBLIC_API_BASE=https://<your-railway-url>.up.railway.app
    ```
+   This value is **baked in at build time**. If you add or change it after the first deploy, you **must redeploy** the frontend or every page will still call `localhost:8000` and look empty.
 5. Deploy. Vercel gives you a URL like `https://nfl-app-yourname.vercel.app`.
-6. **Go back to Railway** and update `CORS_ORIGINS` with that exact URL. Restart the backend service so it picks up the new value.
+6. **Go back to Railway** and update `CORS_ORIGINS` with that exact URL. Restart the backend service so it picks up the new value. (Required for **team/player** pages — they fetch from the browser; CORS does not affect the homepage server render.)
 
 ### 3. Post-deploy bootstrap
 
 Once both are up:
 
 ```bash
-# Train the ML model (only needed once per deploy; persists to /tmp).
-curl -X POST https://<your-railway-url>.up.railway.app/predictions/admin/ml/train
-
-# Force-refresh news + scores so the homepage isn't empty.
-curl -X POST https://<your-railway-url>.up.railway.app/admin/refresh/news
-curl -X POST https://<your-railway-url>.up.railway.app/admin/refresh/scores
+chmod +x scripts/warmup-production.sh
+./scripts/warmup-production.sh https://<your-railway-url>.up.railway.app
 ```
 
-Elo will rebuild itself on the scheduler's first run (~45s after startup).
+Or run the curls manually (same script). **Odds** only populate if `ODDS_API_KEY` is set on Railway.
+
+Elo / analytics also warm on a timer (~45–90s after boot). First team-metrics load can take ~30s while nflverse parquet downloads on Railway.
 
 ### 4. Custom domain (optional)
 
@@ -147,6 +146,7 @@ Once you're past friends-testing and want to put this on the open internet:
 
 ## Common gotchas
 
+- **Site loads but everything is empty (no scores, metrics, schedule, predictions)** — (1) Vercel `NEXT_PUBLIC_API_BASE` missing or set after first build → set to Railway URL and **Redeploy** frontend. (2) Fresh Railway DB never warmed → run `scripts/warmup-production.sh`. (3) Team pages still blank → fix `CORS_ORIGINS` + restart backend. Open DevTools → Network: failed calls to `localhost:8000` mean (1); blocked calls to Railway with CORS errors mean (3).
 - **CORS error in browser console after deploy** — `CORS_ORIGINS` doesn't match the Vercel URL exactly (no trailing slash, exact protocol). Fix and restart the backend.
 - **Deploy fails: `Connection refused` on localhost:5432, healthcheck `/live` times out** — the backend service has no `DATABASE_URL`. Add a PostgreSQL database to the project, then **reference** its `DATABASE_URL` on the backend service (step 1.5 above). Redeploy.
 - **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or delete your override so the Postgres reference wins.

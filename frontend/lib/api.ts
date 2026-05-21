@@ -524,6 +524,8 @@ export const api = {
     req<NewsItem[]>(`/news?limit=${limit}${source ? `&source=${source}` : ""}`),
 
   // odds
+  oddsStatus: () =>
+    req<{ configured: boolean; lines_in_db: number; ready: boolean }>("/odds/status"),
   odds: (market?: string, limit = 100) =>
     req<OddsLine[]>(`/odds?limit=${limit}${market ? `&market=${market}` : ""}`),
 
