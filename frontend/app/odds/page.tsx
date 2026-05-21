@@ -37,6 +37,11 @@ export default function OddsPage() {
           <p className="text-sm text-muted mt-1">
             Best lines across major sportsbooks. Click a game to see every book.
           </p>
+          {status?.last_updated && (
+            <p className="text-xs text-muted/80 mt-1" title={new Date(status.last_updated).toLocaleString()}>
+              Lines as of {formatAsOf(status.last_updated)} · refreshed twice daily
+            </p>
+          )}
         </div>
         <button
           onClick={() => setShowExplainer((v) => !v)}
@@ -70,7 +75,7 @@ export default function OddsPage() {
 function OddsEmptyState({
   status,
 }: {
-  status?: { configured: boolean; lines_in_db: number; ready: boolean };
+  status?: { configured: boolean; lines_in_db: number; ready: boolean; last_updated?: string | null };
 }) {
   if (!status?.configured) {
     return (
@@ -153,6 +158,19 @@ function ExplainerCard() {
       </div>
     </Card>
   );
+}
+
+// Relative "as of" string for the lines-freshness label.
+function formatAsOf(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "recently";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return `${days}d ago`;
 }
 
 // ============================================================================

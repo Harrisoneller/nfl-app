@@ -110,7 +110,14 @@ class Settings(BaseSettings):
     # Scheduler
     schedule_scores_seconds: int = 30
     schedule_news_seconds: int = 300
-    schedule_odds_seconds: int = 900
+    schedule_odds_seconds: int = 900  # deprecated for odds (cron-driven now); kept for back-compat
+
+    # Odds budget controls — The Odds API free tier = 500 credits/mo, and each
+    # pull costs (markets × regions) credits (our standard pull = 3). Only the
+    # scheduled job hits the API; everything user-facing reads the DB snapshot.
+    odds_refresh_hours_utc: str = "1,13"   # cron hours (UTC) for the twice-daily pull (~180 credits/mo)
+    odds_min_refresh_hours: float = 6.0    # floor: skip an auto-pull if we pulled more recently than this
+    odds_lookahead_days: int = 10          # offseason guard: skip auto-pull if no game kicks off within this window
 
     # CORS
     cors_origins: str = "http://localhost:3000"

@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import get_settings
@@ -157,10 +158,14 @@ async def _job_refresh_news() -> None:
 
 
 async def _job_refresh_odds() -> None:
+    """Twice-daily Odds API pull. The service self-guards (min-interval +
+    offseason) so this stays well under the 500-credit/mo free-tier budget."""
     db = SessionLocal()
     try:
         result = await odds_service.refresh_odds(db)
-        if result["status"] not in ("ok", "disabled") and result["lines_in_db"] == 0:
+        if result["status"] in ("skipped_fresh", "skipped_offseason"):
+            log.info("scheduler_odds_skipped", status=result["status"], message=result.get("message"))
+        elif result["status"] not in ("ok", "disabled") and result["lines_in_db"] == 0:
             log.warning(
                 "scheduler_odds_empty",
                 status=result["status"],
@@ -228,10 +233,12 @@ def start_scheduler() -> None:
         next_run_time=_soon(12),
         id="news", coalesce=True, max_instances=1,
     )
+    # Odds: fixed cron times (UTC), NOT an interval with a boot fetch. A cron
+    # trigger won't double-fire on container restarts (coalesce collapses missed
+    # runs), so credit usage is predictable. Default "1,13" = ~180 credits/mo.
     sched.add_job(
         _job_refresh_odds,
-        IntervalTrigger(seconds=settings.schedule_odds_seconds),
-        next_run_time=_soon(18),
+        CronTrigger(hour=settings.odds_refresh_hours_utc, minute=0, timezone="UTC"),
         id="odds", coalesce=True, max_instances=1,
     )
     sched.add_job(
@@ -253,7 +260,7 @@ def start_scheduler() -> None:
         "scheduler_started",
         scores_s=settings.schedule_scores_seconds,
         news_s=settings.schedule_news_seconds,
-        odds_s=settings.schedule_odds_seconds,
+        odds_cron_utc=settings.odds_refresh_hours_utc,
     )
 
 

@@ -3,7 +3,10 @@
 Two data sources combined:
 - Historical ATS / O/U records → nfl-data-py schedules (closing `spread_line`
   and `total_line` come from nflverse and go back decades).
-- Current-week market lines → The Odds API (free tier).
+- Current-week market lines → the persisted `odds_lines` snapshot, which the
+  scheduled job refreshes from The Odds API twice a day. We never call the
+  paid API from this request path (free tier is 500 credits/mo); we read the
+  DB snapshot so user traffic can't blow the budget.
 - "Edge" = our predicted spread vs market spread. >|2.0| = notable.
 
 ATS convention: `spread_line` from nflverse is HOME perspective (negative =
@@ -22,7 +25,6 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
-from ..adapters.data.odds_api import TheOddsApiAdapter
 from ..cache import cache
 from ..logging_config import get_logger
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
@@ -33,7 +35,7 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL_LONG = 60 * 60 * 12  # 12h for historical records
-CACHE_TTL_SHORT = 60 * 5       # 5m for live market data
+CACHE_TTL_SHORT = 60 * 5       # 5m: re-aggregation cache for the DB odds snapshot (no API impact)
 
 EDGE_THRESHOLD = 2.0  # points difference flagged as a "value bet"
 WIN_PROB_EDGE_THRESHOLD = 0.04  # 4 percentage points on moneyline implied prob
@@ -263,34 +265,18 @@ def _market_odds_from_db(db: Session) -> dict[str, dict[str, Any]]:
 
 
 async def _current_market_odds(db: Session | None = None) -> dict[str, dict[str, Any]]:
-    """Consensus spread/total/ML from Odds API, with DB snapshot as fallback."""
+    """Consensus spread/total/ML built from the persisted `odds_lines` snapshot.
+
+    The snapshot is kept current by the scheduled odds job (twice daily). We do
+    NOT call The Odds API here — doing so on the request path is what burned the
+    500-credit/mo budget. The short L1 cache below only avoids re-aggregating the
+    same DB rows on every request; it has no bearing on API usage.
+    """
     key = "betting_current_market"
     if (v := cache.get(key)) is not None:
         return v
 
-    out: dict[str, dict[str, Any]] = {}
-    adapter = TheOddsApiAdapter()
-    try:
-        events = await adapter.fetch_game_odds(
-            markets=("h2h", "spreads", "totals"), regions="us",
-        )
-        out = _aggregate_market_from_events(events)
-    except Exception as e:  # noqa: BLE001
-        log.warning("betting_market_live_failed", error=str(e))
-    finally:
-        await adapter.aclose()
-
-    if db is not None:
-        db_map = _market_odds_from_db(db)
-        for k, val in db_map.items():
-            if k not in out:
-                out[k] = val
-            else:
-                for field in ("market_spread_home", "market_total", "market_home_win_prob"):
-                    if out[k].get(field) is None and val.get(field) is not None:
-                        out[k][field] = val[field]
-                out[k]["books"] = max(out[k].get("books", 0), val.get("books", 0))
-
+    out = _market_odds_from_db(db) if db is not None else {}
     cache.set(key, out, CACHE_TTL_SHORT)
     return out
 

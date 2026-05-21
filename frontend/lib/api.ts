@@ -525,7 +525,9 @@ export const api = {
 
   // odds
   oddsStatus: () =>
-    req<{ configured: boolean; lines_in_db: number; ready: boolean }>("/odds/status"),
+    req<{ configured: boolean; lines_in_db: number; ready: boolean; last_updated: string | null }>(
+      "/odds/status",
+    ),
   odds: (market?: string, limit = 100) =>
     req<OddsLine[]>(`/odds?limit=${limit}${market ? `&market=${market}` : ""}`),
 

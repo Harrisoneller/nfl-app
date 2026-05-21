@@ -54,8 +54,11 @@ async def refresh_news(db: Session = Depends(get_db)):
 
 
 @router.post("/refresh/odds")
-async def refresh_odds(db: Session = Depends(get_db)):
-    return await odds_service.refresh_odds(db)
+async def refresh_odds(force: bool = True, db: Session = Depends(get_db)):
+    """Manual odds pull. Defaults to force=True (a hand-triggered refresh is
+    intentional) — bypasses the min-interval/offseason guards. Pass
+    `?force=false` to respect them (e.g. for a cron-like external trigger)."""
+    return await odds_service.refresh_odds(db, force=force)
 
 
 # ============================================================================
