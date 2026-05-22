@@ -26,6 +26,7 @@ def health() -> dict:
         "env": s.app_env,
         "app_role": s.app_role,
         "scheduler_enabled": s.scheduler_enabled,
+        "cache_backend": s.cache_backend,
         "llm_provider": s.llm_provider,
         "multi_user": s.multi_user_mode,
         "twitter_enabled": s.enable_twitter,
@@ -42,12 +43,20 @@ def live() -> dict:
 @router.get("/ready")
 def ready(db: Session = Depends(get_db)) -> dict:
     """Readiness probe — checks downstreams. Returns 503 on failure."""
+    s = get_settings()
     checks: dict[str, str] = {}
     try:
         db.execute(text("SELECT 1"))
         checks["db"] = "ok"
     except Exception as e:  # noqa: BLE001
         checks["db"] = f"fail: {type(e).__name__}"
+    if s.cache_backend == "redis":
+        try:
+            from ..cache import get_cache
+
+            checks["redis"] = "ok" if get_cache().ping() else "fail"
+        except Exception as e:  # noqa: BLE001
+            checks["redis"] = f"fail: {type(e).__name__}"
     ok = all(v == "ok" for v in checks.values())
     return {"ok": ok, "checks": checks}
 

@@ -1,15 +1,14 @@
 """APScheduler bootstrap (worker role only).
 
-Phase A layout:
-- **Boot (minimal):** seed teams, Sleeper players, current-season schedule, news.
-  No PBP / Elo / Monte Carlo / H2H at boot (avoids Railway OOM crash-loops).
-- **Derive cron (default 06:00 + 18:00 UTC):** full schedule sync, analytics,
-  Elo, predictions, H2H — 1–2×/day, aligned with nflverse cadence.
-- **Live interval (Sep–Feb only):** ESPN scoreboard.
-- **Always on worker:** news, odds cron, daily player sync.
+Phase B/C layout:
+- **Boot (minimal):** seed, players, current schedule, news — no PBP at boot.
+- **Derive cron (06:15 + 18:15 UTC):** schedules → materialize nflverse → elo
+  → profiles → MC → awards.
+- **H2H cron (03:30 UTC nightly):** prewarm matchups only.
+- **Live (Sep–Feb):** ESPN scores on an interval.
 
 Set `APP_ROLE=web` on the public Railway service; `APP_ROLE=worker` on a
-second service (same repo, same DATABASE_URL). See docs/DEPLOY.md.
+second service. See docs/DEPLOY.md.
 """
 from __future__ import annotations
 
@@ -28,6 +27,8 @@ from ..services import (
     awards_service,
     elo_service,
     h2h_service,
+    materialize_service,
+    metrics_index_service,
     news_service,
     odds_service,
     players_service,
@@ -48,7 +49,7 @@ _scheduler: AsyncIOScheduler | None = None
 
 
 # --------------------------------------------------------------------------- #
-# Job bodies (accept an open Session — wrapped by sync_run_service.run_job)
+# Job bodies
 # --------------------------------------------------------------------------- #
 
 
@@ -84,6 +85,17 @@ async def _vacuum_cache(_db: Session) -> int:
     return artifact_cache.vacuum_expired(older_than_days=7)
 
 
+async def _materialize_nflverse(db: Session) -> dict[str, int]:
+    return await materialize_service.materialize_seasons(db)
+
+
+async def _build_profiles(db: Session) -> dict[str, int]:
+    latest = latest_completed_season()
+    upcoming = current_or_upcoming_season()
+    seasons = [latest] if latest == upcoming else [latest, upcoming]
+    return await analytics_service.build_derived_profiles(seasons)
+
+
 async def _warmup_predictions(db: Session) -> dict[str, str]:
     season = current_or_upcoming_season()
     await predictions_service.simulate_season(db, season)
@@ -93,12 +105,6 @@ async def _warmup_predictions(db: Session) -> dict[str, str]:
 
 async def _warmup_h2h(db: Session) -> int:
     return await h2h_service.prewarm_h2h(db)
-
-
-async def _warmup_analytics(_db: Session) -> int:
-    latest = latest_completed_season()
-    await analytics_service.warmup([latest])
-    return 1
 
 
 async def _refresh_scores(db: Session) -> int:
@@ -113,24 +119,32 @@ async def _refresh_odds(db: Session) -> dict:
     return await odds_service.refresh_odds(db)
 
 
+async def _sync_metric_index(db: Session) -> dict[str, int]:
+    return await metrics_index_service.sync_metric_index(db)
+
+
 async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
-    """Heavy chain: schedules → analytics → elo → predictions → h2h."""
+    """schedules → materialize → metric index → elo → profiles → MC → awards (no H2H)."""
     parts: list[str] = []
     n_sched = await _sync_schedules_all(db)
     parts.append(f"schedules={n_sched}")
-    await _warmup_analytics(db)
-    parts.append("analytics=ok")
+    mat = await _materialize_nflverse(db)
+    parts.append(f"materialize_teams={mat.get('teams', 0)}")
+    parts.append(f"materialize_players={mat.get('players', 0)}")
+    idx = await _sync_metric_index(db)
+    parts.append(f"metric_index_teams={idx.get('team_rows', 0)}")
+    parts.append(f"metric_index_players={idx.get('player_rows', 0)}")
     n_elo = await _rebuild_elo(db)
     parts.append(f"elo_rows={n_elo}")
+    prof = await _build_profiles(db)
+    parts.append(f"profiles_teams={prof.get('teams', 0)}")
     pred = await _warmup_predictions(db)
     parts.append(f"predictions={pred.get('season', 'ok')}")
-    n_h2h = await _warmup_h2h(db)
-    parts.append(f"h2h_pairs={n_h2h}")
     return {"status": "ok", "message": "; ".join(parts)}
 
 
 # --------------------------------------------------------------------------- #
-# Scheduler entrypoints (logging wrappers)
+# Scheduler entrypoints
 # --------------------------------------------------------------------------- #
 
 
@@ -153,6 +167,10 @@ async def _job_sync_schedules_current() -> None:
 
 async def _job_daily_derive() -> None:
     await sync_run_service.run_job("derive_pipeline", _daily_derive_pipeline)
+
+
+async def _job_nightly_h2h() -> None:
+    await sync_run_service.run_job("h2h_prewarm", _warmup_h2h)
 
 
 async def _job_vacuum_cache() -> None:
@@ -180,6 +198,14 @@ async def _job_refresh_odds() -> None:
             )
 
 
+async def _job_materialize_only() -> None:
+    await sync_run_service.run_job("materialize", _materialize_nflverse)
+
+
+async def _job_profiles_only() -> None:
+    await sync_run_service.run_job("profiles", _build_profiles)
+
+
 # --------------------------------------------------------------------------- #
 # Bootstrap
 # --------------------------------------------------------------------------- #
@@ -198,7 +224,6 @@ def start_scheduler() -> None:
     live = is_nfl_live_period()
     boot = settings.boot_warmup_level
 
-    # ---- Boot (minimal by default) -----------------------------------------
     if boot != "none":
         sched.add_job(_job_seed_teams, "date", run_date=_soon(1), id="boot_teams")
         sched.add_job(_job_sync_players, "date", run_date=_soon(3), id="boot_players")
@@ -208,13 +233,12 @@ def start_scheduler() -> None:
         sched.add_job(_job_refresh_news, "date", run_date=_soon(12), id="boot_news")
 
     if boot == "full":
-        # Local dev convenience — mirrors pre-Phase-A warmups (high memory).
-        sched.add_job(_job_warmup_analytics, "date", run_date=_soon(20), id="boot_analytics")
+        sched.add_job(_job_materialize_only, "date", run_date=_soon(20), id="boot_materialize")
         sched.add_job(_job_rebuild_elo_boot, "date", run_date=_soon(45), id="boot_elo")
+        sched.add_job(_job_profiles_only, "date", run_date=_soon(60), id="boot_profiles")
         sched.add_job(_job_warmup_predictions_boot, "date", run_date=_soon(75), id="boot_predictions")
-        sched.add_job(_job_warmup_h2h_boot, "date", run_date=_soon(90), id="boot_h2h")
+        sched.add_job(_job_nightly_h2h, "date", run_date=_soon(90), id="boot_h2h")
 
-    # ---- Derive pipeline (cron, not at boot) ---------------------------------
     sched.add_job(
         _job_daily_derive,
         CronTrigger(hour=settings.derive_cron_hours_expr, minute=15, timezone="UTC"),
@@ -223,7 +247,14 @@ def start_scheduler() -> None:
         max_instances=1,
     )
 
-    # ---- Recurring ingest ----------------------------------------------------
+    sched.add_job(
+        _job_nightly_h2h,
+        CronTrigger(hour=settings.h2h_cron_hours_expr, minute=30, timezone="UTC"),
+        id="h2h_nightly",
+        coalesce=True,
+        max_instances=1,
+    )
+
     if live:
         sched.add_job(
             _job_refresh_scores,
@@ -288,11 +319,8 @@ def start_scheduler() -> None:
         news_s=news_seconds,
         odds_cron_utc=settings.odds_refresh_hours_utc,
         derive_cron_utc=settings.derive_cron_hours_expr,
+        h2h_cron_utc=settings.h2h_cron_hours_expr,
     )
-
-
-async def _job_warmup_analytics() -> None:
-    await sync_run_service.run_job("analytics_warmup", _warmup_analytics)
 
 
 async def _job_rebuild_elo_boot() -> None:
@@ -301,10 +329,6 @@ async def _job_rebuild_elo_boot() -> None:
 
 async def _job_warmup_predictions_boot() -> None:
     await sync_run_service.run_job("predictions_warmup", _warmup_predictions)
-
-
-async def _job_warmup_h2h_boot() -> None:
-    await sync_run_service.run_job("h2h_warmup", _warmup_h2h)
 
 
 def stop_scheduler() -> None:

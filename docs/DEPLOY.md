@@ -89,7 +89,11 @@ chmod +x scripts/warmup-production.sh
 
 Or run the curls manually (same script). **Odds** only populate if `ODDS_API_KEY` is set on the **worker**.
 
-Heavy analytics / Elo / Monte Carlo / H2H run on the **worker** at **06:15 and 18:15 UTC** (`DERIVE_CRON_HOURS_UTC`), not at web boot. Until the first derive finishes, some pages may load slowly once (lazy compute). Check progress:
+Heavy jobs on the **worker**:
+- **06:15 + 18:15 UTC** (`DERIVE_CRON_HOURS_UTC`): schedules → materialize nflverse → Elo → profiles → MC → awards
+- **03:30 UTC** (`H2H_CRON_HOURS_UTC`): H2H prewarm only
+
+Until the first derive finishes, some pages may load slowly once (lazy compute). Check progress:
 
 ```bash
 curl https://your-url.up.railway.app/admin/sync-status
@@ -133,7 +137,7 @@ don't reintroduce a regression.
 - **Singleflight** — `_team_pbp_aggregates` (the shared path behind predictions,
   betting, h2h, team pages) serializes cold-cache loads, so 10 simultaneous users
   trigger **one** PBP load, not 10. Keep this lock if you refactor.
-- **Bounded cache** — `app/cache.py` is an LRU-capped TTL cache (`DEFAULT_MAX_ENTRIES`),
+- **Bounded cache** — `app/cache/` is an LRU-capped in-process tier (`CACHE_MAX_ENTRIES`),
   so it can't grow without limit and pin RAM.
 - **Web/worker split** — `APP_ROLE=web` on the public service (no scheduler).
   `APP_ROLE=worker` on a second service runs ingest + derive. Never run heavy
@@ -160,6 +164,41 @@ cache, multiplying memory by N.
 `Started server process` lines a few minutes apart (a crash-loop). Confirm you're on
 ≥1 GB and running a single worker, and that nothing has been changed to load full
 (un-projected) PBP or warm multiple seasons at boot.
+
+### 7. Scale reads (Phase D) — Redis + multiple web replicas
+
+**Typed metric tables** (`team_metric_values`, `player_metric_values`) power SQL
+leaderboards without pandas:
+
+```bash
+curl "https://your-api/stats/leaders?entity=team&metric=off_epa_per_play&limit=10"
+curl "https://your-api/stats/leaders?entity=player&position=QB&metric=fantasy_points_ppr"
+```
+
+Populated by the worker derive pipeline (after materialize) or manually:
+
+```bash
+curl -X POST https://your-api/admin/refresh/metric-index
+```
+
+**Optional Redis L1** — when running **more than one web replica**, set on every
+**web** service (not required on the worker):
+
+```
+CACHE_BACKEND=redis
+REDIS_URL=${{Redis.REDIS_URL}}
+```
+
+Add a Redis plugin in Railway (**+ New → Database → Redis**), reference `REDIS_URL`
+on each `APP_ROLE=web` service. Artifact/profile JSON caches are shared across
+replicas; large DataFrames still stay in per-process memory or Postgres.
+
+**Multiple web replicas:** duplicate the `nfl-app` web service (same repo root
+`backend`, same `DATABASE_URL`, `APP_ROLE=web`, **no scheduler**). Railway can
+scale replicas horizontally; all instances must share Postgres + Redis. Keep **one
+worker** service for ingest/derive.
+
+`/ready` reports `redis: ok` when `CACHE_BACKEND=redis`.
 
 ---
 

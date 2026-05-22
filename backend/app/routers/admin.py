@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 from ..deps import get_db
 from ..config import get_settings
 from ..services import (
+    analytics_service,
     artifact_cache,
+    materialize_service,
+    metrics_index_service,
     news_service,
     odds_service,
     players_service,
@@ -62,6 +65,45 @@ async def refresh_news(db: Session = Depends(get_db)):
     return {"items": await news_service.refresh_news(db)}
 
 
+@router.post("/refresh/metric-index")
+async def refresh_metric_index(
+    db: Session = Depends(get_db),
+    season: int | None = None,
+):
+    """Rebuild typed metric rows for SQL leaderboards (Phase D)."""
+    seasons = [season] if season is not None else None
+    return await metrics_index_service.sync_metric_index(db, seasons)
+
+
+@router.post("/refresh/materialize")
+async def refresh_materialize(
+    db: Session = Depends(get_db),
+    season: int | None = None,
+):
+    """Pull nflverse seasonal + PBP aggregates into Postgres (Phase B)."""
+    seasons = [season] if season is not None else None
+    return await materialize_service.materialize_seasons(db, seasons)
+
+
+@router.post("/refresh/profiles")
+async def refresh_profiles(db: Session = Depends(get_db), season: int | None = None):
+    """Rebuild team/player profile artifacts from materialized data."""
+    from ..utils.seasons import latest_completed_season
+
+    if season is not None:
+        seasons = [season]
+    else:
+        latest = latest_completed_season()
+        upcoming = current_or_upcoming_season()
+        seasons = [latest] if latest == upcoming else [latest, upcoming]
+    return await analytics_service.build_derived_profiles(seasons)
+
+
+@router.get("/materialization-status")
+def materialization_status(db: Session = Depends(get_db), season: int | None = None):
+    return {"seasons": materialize_service.materialization_status(db, season)}
+
+
 @router.post("/refresh/odds")
 async def refresh_odds(force: bool = True, db: Session = Depends(get_db)):
     """Manual odds pull. Defaults to force=True (a hand-triggered refresh is
@@ -102,6 +144,10 @@ def sync_status(db: Session = Depends(get_db), limit: int = 3):
         "scheduler_enabled": s.scheduler_enabled,
         "boot_warmup_level": s.boot_warmup_level,
         "derive_cron_hours_utc": s.derive_cron_hour_list,
+        "h2h_cron_hours_utc": s.h2h_cron_hour_list,
+        "materialization": materialize_service.materialization_status(db),
+        "metric_index": metrics_index_service.index_status(db),
+        "cache_backend": s.cache_backend,
         "runs": sync_run_service.last_runs(db, limit_per_domain=limit),
     }
 

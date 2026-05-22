@@ -11,6 +11,10 @@ from .model_artifact import ModelArtifact  # noqa: F401
 from .news import NewsItem  # noqa: F401
 from .odds import OddsLine  # noqa: F401
 from .player import Player  # noqa: F401
+from .player_metric_value import PlayerMetricValue  # noqa: F401
+from .player_season_stat import PlayerSeasonStat  # noqa: F401
+from .team_metric_value import TeamMetricValue  # noqa: F401
+from .team_season_aggregate import TeamSeasonAggregate  # noqa: F401
 from .team import Team  # noqa: F401
 from .user import User  # noqa: F401
 from .widget import Widget  # noqa: F401

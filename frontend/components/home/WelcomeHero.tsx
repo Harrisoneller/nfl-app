@@ -51,23 +51,20 @@ export function WelcomeHero({
         </h1>
 
         <p className="welcome-hero__subtitle">
-          Live scores, sharp betting edges, fantasy intel, Elo-driven predictions, and an
-          AI assistant — all backed by transparent, evaluated models.
+          Live scores, betting edges, league intel, ML predictions, and
+          advanced metrics
         </p>
 
         <div className="welcome-hero__tags" aria-label="Capabilities">
           <span>Elo ratings</span>
           <span>EPA &amp; success rate</span>
-          <span>Monte Carlo sims</span>
+          <span>ML predictions</span>
           <span>Live odds</span>
         </div>
 
         <div className="welcome-hero__actions">
           <Link href="/teams" className="welcome-hero__btn welcome-hero__btn--primary">
             Explore teams
-          </Link>
-          <Link href="/ai" className="welcome-hero__btn welcome-hero__btn--ghost">
-            Ask the AI
           </Link>
         </div>
 

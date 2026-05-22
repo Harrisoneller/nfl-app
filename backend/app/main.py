@@ -49,12 +49,16 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     sentry_on = init_sentry()
+    from .cache import get_cache
+
+    get_cache()
     log.info(
         "app_starting",
         env=settings.app_env,
         app_role=settings.app_role,
         scheduler=settings.scheduler_enabled,
         boot_warmup=settings.boot_warmup_level if settings.scheduler_enabled else "n/a",
+        cache_backend=settings.cache_backend,
         llm_provider=settings.llm_provider,
         sentry=sentry_on,
     )
@@ -74,6 +78,9 @@ async def lifespan(app: FastAPI):
         log.info("app_stopping")
         stop_scheduler()
         await _close_global_clients()
+        from .cache import close_cache
+
+        close_cache()
 
 
 async def _close_global_clients() -> None:

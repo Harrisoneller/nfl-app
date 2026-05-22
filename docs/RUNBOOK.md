@@ -97,6 +97,22 @@ Edit `.env` → `ENABLE_TWITTER=true` + `TWITTER_BEARER_TOKEN=...`. Restart back
 curl http://localhost:8000/admin/sync-status
 ```
 
+**Materialize nflverse into Postgres (Phase B):**
+```bash
+curl -X POST http://localhost:8000/admin/refresh/materialize
+curl http://localhost:8000/admin/materialization-status
+curl -X POST http://localhost:8000/admin/refresh/profiles
+curl -X POST http://localhost:8000/admin/refresh/metric-index
+```
+
+**Leaderboards (typed SQL index):**
+```bash
+curl "http://localhost:8000/stats/metrics/catalog?position=QB"
+curl "http://localhost:8000/stats/leaders?entity=team&metric=off_epa_per_play&limit=5"
+```
+
+**Redis L1 (optional, multi-replica):** set `CACHE_BACKEND=redis` and `REDIS_URL` in `.env`.
+
 **Force a data refresh:**
 ```bash
 curl -X POST http://localhost:8000/admin/refresh/scores
