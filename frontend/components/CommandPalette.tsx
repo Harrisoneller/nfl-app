@@ -12,9 +12,8 @@ type Hit =
 const NAV_ITEMS: Hit[] = [
   { kind: "nav", id: "/", label: "Home", sub: "Scores + news + widgets", color: "#94a3b8" },
   { kind: "nav", id: "/teams", label: "Teams", sub: "All 32, grouped by division", color: "#94a3b8" },
-  { kind: "nav", id: "/fantasy", label: "Fantasy", sub: "News, trending, advisor", color: "#94a3b8" },
   { kind: "nav", id: "/odds", label: "Odds", sub: "Sportsbook markets", color: "#94a3b8" },
-  { kind: "nav", id: "/ai", label: "AI assistant", sub: "Ask anything NFL", color: "#94a3b8" },
+  // /fantasy and /ai hidden until ready — see Nav.tsx
 ];
 
 /**

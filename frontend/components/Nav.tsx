@@ -1,14 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { ThemeToggle } from "./ThemeProvider";
-
-const BRAND_LOGO = {
-  src: "/brand/statletics-sports.png",
-  width: 127,
-  height: 36,
-} as const;
 
 // NOTE: /players, /compare, and /performance are intentionally hidden from the
 // nav while they're being stabilized. The pages still exist if you navigate
@@ -17,9 +10,8 @@ const links = [
   { href: "/", label: "Home" },
   { href: "/teams", label: "Teams" },
   { href: "/h2h/PHI/SF", label: "H2H" },
-  { href: "/fantasy", label: "Fantasy" },
   { href: "/odds", label: "Odds" },
-  { href: "/ai", label: "AI" },
+  // /fantasy and /ai hidden until ready — routes still work via direct URL
 ];
 
 export function Nav() {
@@ -38,19 +30,9 @@ export function Nav() {
   return (
     <header className="border-b divider sticky top-0 z-30 backdrop-blur bg-bg/70">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
-        <Link
-          href="/"
-          className="flex shrink-0 items-center"
-          aria-label="Statletics NFL home"
-        >
-          <Image
-            src={BRAND_LOGO.src}
-            alt="Statletics NFL"
-            width={BRAND_LOGO.width}
-            height={BRAND_LOGO.height}
-            className="h-9 w-auto max-w-[160px] object-contain object-left"
-            priority
-          />
+        <Link href="/" className="nav-brand group shrink-0" aria-label="Statletics NFL home">
+          <span className="nav-brand__primary">Statletics</span>
+          <span className="nav-brand__accent">NFL</span>
         </Link>
         <nav className="hidden md:flex items-center gap-5 text-sm">
           {links.map((l) => (

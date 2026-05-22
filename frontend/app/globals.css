@@ -46,6 +46,55 @@ a { color: inherit; }
 }
 .divider { border-color: var(--border); }
 
+/* === Nav brand: Statletics NFL === */
+.nav-brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  line-height: 1;
+  text-decoration: none;
+  letter-spacing: -0.02em;
+}
+.nav-brand__primary {
+  font-size: 1.125rem;
+  font-weight: 800;
+  background: linear-gradient(105deg, #f8fafc 0%, #bae6fd 35%, #38bdf8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.35));
+  transition: filter 150ms ease;
+}
+.group:hover .nav-brand__primary {
+  filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.55));
+}
+.nav-brand__accent {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #f87171;
+  text-shadow: 0 0 10px rgba(248, 113, 113, 0.4);
+  transition: color 150ms ease, text-shadow 150ms ease;
+}
+.group:hover .nav-brand__accent {
+  color: #fca5a5;
+  text-shadow: 0 0 14px rgba(248, 113, 113, 0.55);
+}
+:root[data-theme="light"] .nav-brand__primary {
+  background: linear-gradient(105deg, #0c4a6e 0%, #0284c7 100%);
+  filter: none;
+}
+:root[data-theme="light"] .group:hover .nav-brand__primary {
+  filter: drop-shadow(0 0 6px rgba(2, 132, 199, 0.2));
+}
+:root[data-theme="light"] .nav-brand__accent {
+  color: #dc2626;
+  text-shadow: none;
+}
+:root[data-theme="light"] .group:hover .nav-brand__accent {
+  color: #ef4444;
+}
+
 /* === Home hero === */
 .hero-glow {
   position: relative;

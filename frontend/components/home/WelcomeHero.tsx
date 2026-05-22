@@ -52,7 +52,7 @@ export function WelcomeHero({
 
         <p className="welcome-hero__subtitle">
           Live scores, betting edges, league intel, ML predictions, and
-          advanced metrics — all backed by transparent, evaluated models.
+          advanced metrics
         </p>
 
         <div className="welcome-hero__tags" aria-label="Capabilities">
@@ -65,9 +65,6 @@ export function WelcomeHero({
         <div className="welcome-hero__actions">
           <Link href="/teams" className="welcome-hero__btn welcome-hero__btn--primary">
             Explore teams
-          </Link>
-          <Link href="/ai" className="welcome-hero__btn welcome-hero__btn--ghost">
-            Ask the AI
           </Link>
         </div>
 

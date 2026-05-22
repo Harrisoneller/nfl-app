@@ -28,12 +28,11 @@ function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePredi
   return scored[0].g;
 }
 
+// /fantasy and /ai hidden from quick links until ready — routes still work via direct URL
 const QUICK_LINKS = [
   { href: "/teams", label: "Teams", icon: "🏟" },
   { href: "/odds", label: "Odds", icon: "📊" },
-  { href: "/fantasy", label: "Fantasy", icon: "⭐" },
   { href: "/h2h/PHI/SF", label: "H2H", icon: "⚔️" },
-  { href: "/ai", label: "AI", icon: "✨" },
 ] as const;
 
 export default async function HomePage() {
@@ -215,7 +214,7 @@ export default async function HomePage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <Card title="Fantasy: trending adds" action={<Link href="/fantasy" className="text-[11px] hover:underline">More →</Link>}>
+        <Card title="Fantasy: trending adds">
           {trendingAdds.items.length === 0 ? (
             <p className="text-sm text-muted">Sleeper refreshes every 5 min.</p>
           ) : (
@@ -241,7 +240,7 @@ export default async function HomePage() {
           )}
         </Card>
 
-        <Card title="Ask the AI" action={<Link href="/ai" className="text-[11px] hover:underline">Open →</Link>}>
+        <Card title="Ask the AI">
           <p className="text-sm text-muted mb-3">Specific questions, real data, instant answer.</p>
           <ul className="text-sm space-y-2">
             {[
@@ -259,7 +258,7 @@ export default async function HomePage() {
           </ul>
         </Card>
 
-        <Card title="Your widgets" action={<Link href="/ai" className="text-[11px] hover:underline">Build →</Link>}>
+        <Card title="Your widgets">
           {widgets.length === 0 ? (
             <p className="text-sm text-muted">
               Use the AI page to create a widget. Saved widgets appear here.
