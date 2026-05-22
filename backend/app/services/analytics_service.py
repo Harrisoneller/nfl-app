@@ -27,7 +27,7 @@ import pandas as pd
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
-from ..utils.seasons import current_or_upcoming_season
+from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
 from . import artifact_cache
 
@@ -41,6 +41,13 @@ CACHE_TTL_LONG = 60 * 60 * 24  # 24h for stable historical seasons
 # ============================================================================
 # Helpers
 # ============================================================================
+
+
+def percentile_rank(
+    value: float | None, distribution: np.ndarray | list, higher_is_better: bool = True,
+) -> float | None:
+    """Public alias for percentile rank (0–100)."""
+    return _pct_rank(value, distribution, higher_is_better)
 
 
 def _pct_rank(value: float | None, distribution: np.ndarray | list, higher_is_better: bool = True) -> float | None:
@@ -95,25 +102,30 @@ TEAM_METRICS: list[tuple[str, str, bool]] = [
 
 
 async def _team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
-    """Compute every team's offensive + defensive aggregates from PBP.
-
-    Returns: { team_id: { metric: value } }. Cached in process for 6h.
-    """
+    """Team PBP aggregates: L1 cache → Postgres (Phase B) → live nflverse compute."""
     key = f"team_pbp_agg:{season}"
     if (v := cache.get(key)) is not None:
         return v
 
-    # Singleflight: without this, N concurrent cold-cache requests (e.g. several
-    # users hitting the home page, which fans out to predictions/betting) would
-    # EACH load a full PBP frame into memory at once — the exact multi-user OOM
-    # we're fixing. Serialize the load; the losers get the cached result.
     async with _lock_for(key):
         if (v := cache.get(key)) is not None:
             return v
-        return await _compute_team_pbp_aggregates(season, key)
+        from ..db import SessionLocal
+        from . import materialize_service
+
+        db = SessionLocal()
+        try:
+            loaded = materialize_service.load_team_aggregates(db, season)
+        finally:
+            db.close()
+        if loaded:
+            cache.set(key, loaded, CACHE_TTL)
+            return loaded
+        return await _compute_team_pbp_aggregates_cached(season, key)
 
 
-async def _compute_team_pbp_aggregates(season: int, key: str) -> dict[str, dict[str, float]]:
+async def compute_team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
+    """Compute aggregates from PBP (worker ingest path — loads parquet once)."""
     pbp = await _nfl.pbp_df(season)
     if pbp is None or len(pbp) == 0:
         return {}
@@ -194,7 +206,13 @@ async def _compute_team_pbp_aggregates(season: int, key: str) -> dict[str, dict[
             if f is not None and c is not None:
                 row["turnover_margin_per_game"] = round(f - c, 3)
 
-    cache.set(key, out, CACHE_TTL)
+    return out
+
+
+async def _compute_team_pbp_aggregates_cached(season: int, key: str) -> dict[str, dict[str, float]]:
+    out = await compute_team_pbp_aggregates(season)
+    if out:
+        cache.set(key, out, CACHE_TTL)
     return out
 
 
@@ -330,70 +348,80 @@ def _lock_for(key: str) -> asyncio.Lock:
     return _inflight[key]
 
 
-async def _seasonal_player_table(season: int) -> pd.DataFrame | None:
-    """One row per (player_id, season) with derived columns + position.
+async def build_seasonal_player_dataframe(season: int) -> pd.DataFrame | None:
+    """Build enriched seasonal table from nflverse (worker ingest / cache miss)."""
+    df = await _nfl.seasonal_df(season)
+    if df is None or len(df) == 0:
+        return None
+    df = df.copy()
 
-    Vectorized derived columns (10x+ faster than the previous .apply approach).
-    Cached for 24h since historical seasons don't change.
-    """
+    if "position" not in df.columns:
+        rosters = await _nfl.rosters_df(season)
+        if rosters is not None and len(rosters):
+            ros = rosters[["player_id", "position", "team"]].drop_duplicates(subset=["player_id"])
+            df = df.merge(ros, on="player_id", how="left")
+
+    if "team" not in df.columns and "recent_team" in df.columns:
+        df["team"] = df["recent_team"]
+    df["team"] = df["team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
+
+    df["completion_pct"] = _safe_div_series(df.get("completions", 0), df.get("attempts", 0))
+    df["yards_per_attempt"] = _safe_div_series(df.get("passing_yards", 0), df.get("attempts", 0))
+    df["yards_per_carry"] = _safe_div_series(df.get("rushing_yards", 0), df.get("carries", 0))
+    df["yards_per_reception"] = _safe_div_series(df.get("receiving_yards", 0), df.get("receptions", 0))
+
+    targets = pd.to_numeric(df.get("targets", 0), errors="coerce")
+    ry = pd.to_numeric(df.get("receiving_yards", 0), errors="coerce").fillna(0)
+    df["yards_per_target"] = (ry / targets).where(targets != 0, np.nan)
+    df["catch_rate"] = _safe_div_series(df.get("receptions", 0), df.get("targets", 0))
+
+    carries = pd.to_numeric(df.get("carries", 0), errors="coerce").fillna(0)
+    recs = pd.to_numeric(df.get("receptions", 0), errors="coerce").fillna(0)
+    df["touches"] = carries + recs
+    epa = pd.to_numeric(df.get("epa", np.nan), errors="coerce")
+    df["epa_per_touch"] = (epa / df["touches"]).where(df["touches"] != 0, np.nan)
+
+    opps = (
+        pd.to_numeric(df.get("attempts", 0), errors="coerce").fillna(0)
+        + pd.to_numeric(df.get("targets", 0), errors="coerce").fillna(0)
+        + carries
+    )
+    df["epa_per_play"] = (epa / opps).where(opps != 0, np.nan)
+
+    sacks = pd.to_numeric(df.get("sacks", 0), errors="coerce").fillna(0)
+    atts = pd.to_numeric(df.get("attempts", 0), errors="coerce").fillna(0)
+    df["sack_rate"] = (sacks / (atts + sacks)).where((atts + sacks) > 0, np.nan)
+
+    if "fantasy_points_ppr" not in df.columns and "fantasy_points" in df.columns:
+        df["fantasy_points_ppr"] = df["fantasy_points"]
+
+    if "player_id" in df.columns:
+        df = df.set_index("player_id", drop=False)
+    return df
+
+
+async def _seasonal_player_table(season: int) -> pd.DataFrame | None:
+    """Enriched seasonal table: L1 cache → Postgres → live nflverse."""
     key = f"player_seasonal_enriched:{season}"
     if (v := cache.get(key)) is not None:
         return v
 
     async with _lock_for(key):
-        # Double-check under the lock
         if (v := cache.get(key)) is not None:
             return v
 
-        df = await _nfl.seasonal_df(season)
+        from ..db import SessionLocal
+        from . import materialize_service
+
+        db = SessionLocal()
+        try:
+            df = materialize_service.load_player_dataframe(db, season)
+        finally:
+            db.close()
+        if df is None or len(df) == 0:
+            df = await build_seasonal_player_dataframe(season)
         if df is None or len(df) == 0:
             return None
-        df = df.copy()
-
-        if "position" not in df.columns:
-            rosters = await _nfl.rosters_df(season)
-            if rosters is not None and len(rosters):
-                ros = rosters[["player_id", "position", "team"]].drop_duplicates(subset=["player_id"])
-                df = df.merge(ros, on="player_id", how="left")
-
-        if "team" not in df.columns and "recent_team" in df.columns:
-            df["team"] = df["recent_team"]
-        df["team"] = df["team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
-
-        # Vectorized derived columns
-        df["completion_pct"]    = _safe_div_series(df.get("completions", 0), df.get("attempts", 0))
-        df["yards_per_attempt"] = _safe_div_series(df.get("passing_yards", 0), df.get("attempts", 0))
-        df["yards_per_carry"]   = _safe_div_series(df.get("rushing_yards", 0), df.get("carries", 0))
-        df["yards_per_reception"] = _safe_div_series(df.get("receiving_yards", 0), df.get("receptions", 0))
-
-        # yards_per_target: receivers use receiving_yards, RBs occasionally use rushing+receiving
-        targets = pd.to_numeric(df.get("targets", 0), errors="coerce")
-        ry = pd.to_numeric(df.get("receiving_yards", 0), errors="coerce").fillna(0)
-        df["yards_per_target"] = (ry / targets).where(targets != 0, np.nan)
-        df["catch_rate"] = _safe_div_series(df.get("receptions", 0), df.get("targets", 0))
-
-        carries = pd.to_numeric(df.get("carries", 0), errors="coerce").fillna(0)
-        recs = pd.to_numeric(df.get("receptions", 0), errors="coerce").fillna(0)
-        df["touches"] = carries + recs
-        epa = pd.to_numeric(df.get("epa", np.nan), errors="coerce")
-        df["epa_per_touch"] = (epa / df["touches"]).where(df["touches"] != 0, np.nan)
-
-        opps = (pd.to_numeric(df.get("attempts", 0), errors="coerce").fillna(0)
-                + pd.to_numeric(df.get("targets", 0), errors="coerce").fillna(0)
-                + carries)
-        df["epa_per_play"] = (epa / opps).where(opps != 0, np.nan)
-
-        sacks = pd.to_numeric(df.get("sacks", 0), errors="coerce").fillna(0)
-        atts = pd.to_numeric(df.get("attempts", 0), errors="coerce").fillna(0)
-        df["sack_rate"] = (sacks / (atts + sacks)).where((atts + sacks) > 0, np.nan)
-
-        if "fantasy_points_ppr" not in df.columns and "fantasy_points" in df.columns:
-            df["fantasy_points_ppr"] = df["fantasy_points"]
-
-        # Index for O(1) player lookup
-        if "player_id" in df.columns:
-            df = df.set_index("player_id", drop=False)
-
         cache.set(key, df, CACHE_TTL_LONG)
         return df
 
@@ -579,33 +607,42 @@ async def player_trend(
 
 
 async def warmup(seasons: list[int]) -> None:
-    """Pre-populate caches for hot seasons on startup.
-
-    Loads in parallel: team aggregates + player seasonal tables + all four
-    position percentile tables per season. After this finishes, profile
-    queries hit cache and return in ~10ms.
-    """
+    """Warm L1 percentile tables from materialized DB (no PBP if Postgres is warm)."""
     log.info("analytics_warmup_starting", seasons=seasons)
-    # Process seasons SEQUENTIALLY so at most one full PBP frame is resident at
-    # a time. Loading every season's PBP concurrently (the old behavior) spiked
-    # memory on each boot and, in the crash-loop, kept re-triggering the OOM.
-    # Within a season the position tables reuse the already-cached seasonal
-    # frame, so those few can run together cheaply.
     for s in seasons:
         try:
-            await _team_pbp_aggregates(s)   # loads + releases one PBP frame
+            await _team_pbp_aggregates(s)
             await _seasonal_player_table(s)
             await asyncio.gather(
                 *[_position_percentile_table(s, pos) for pos in ("QB", "RB", "WR", "TE")],
                 return_exceptions=True,
             )
-            # Pre-compute top fantasy-relevant players so the first player-page
-            # load is a cache hit, not a 1-2s DataFrame scan.
-            await _precompute_popular_players(s, per_position=75)
         except Exception as e:  # noqa: BLE001
             log.warning("analytics_warmup_partial_failure", season=s, error=str(e))
-
     log.info("analytics_warmup_complete", seasons=seasons)
+
+
+async def build_derived_profiles(
+    seasons: list[int] | None = None,
+    *,
+    per_position: int = 75,
+) -> dict[str, int]:
+    """Pre-compute team + player profiles into model_artifacts (derive pipeline)."""
+    from ..models.seed import NFL_TEAMS
+
+    if seasons is None:
+        latest = latest_completed_season()
+        seasons = [latest]
+
+    teams_done = 0
+    for s in seasons:
+        for t in NFL_TEAMS:
+            await team_profile(t["id"], s)
+            teams_done += 1
+        await _precompute_popular_players(s, per_position=per_position)
+
+    log.info("derived_profiles_built", seasons=seasons, teams=teams_done)
+    return {"teams": teams_done, "seasons": len(seasons)}
 
 
 async def _precompute_popular_players(season: int, per_position: int = 100) -> None:

@@ -75,9 +75,10 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""           # set to enable Sentry
     sentry_traces_sample_rate: float = 0.0  # 0.0 = errors only
 
-    # Cache backend (redis support is wired but optional)
+    # Cache backend — use redis on multi-replica web tiers (shared L1 for JSON artifacts)
     cache_backend: Literal["memory", "redis"] = "memory"
     redis_url: str = "redis://localhost:6379/0"
+    cache_max_entries: int = 2048
 
     # Data sources
     espn_base_url: str = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
@@ -116,8 +117,10 @@ class Settings(BaseSettings):
     schedule_scores_seconds: int = 30
     schedule_news_seconds: int = 300
     schedule_odds_seconds: int = 900  # deprecated for odds (cron-driven now); kept for back-compat
-    # Heavy derive chain (analytics, elo, MC, h2h) — UTC hours, comma-separated
+    # Heavy derive chain (materialize, elo, profiles, MC, awards) — UTC hours
     derive_cron_hours_utc: str = "6,18"
+    # H2H prewarm only (separate from derive) — default 03:30 UTC
+    h2h_cron_hours_utc: str = "3"
 
     # Odds budget controls — The Odds API free tier = 500 credits/mo, and each
     # pull costs (markets × regions) credits (our standard pull = 3). Only the
@@ -160,6 +163,21 @@ class Settings(BaseSettings):
     def derive_cron_hours_expr(self) -> str:
         """Comma-separated hours for APScheduler (expects a string, not a list)."""
         return ",".join(str(h) for h in self.derive_cron_hour_list)
+
+    @property
+    def h2h_cron_hour_list(self) -> list[int]:
+        out: list[int] = []
+        for part in self.h2h_cron_hours_utc.split(","):
+            part = part.strip()
+            if part.isdigit():
+                h = int(part)
+                if 0 <= h <= 23:
+                    out.append(h)
+        return out or [3]
+
+    @property
+    def h2h_cron_hours_expr(self) -> str:
+        return ",".join(str(h) for h in self.h2h_cron_hour_list)
 
 
 @lru_cache(maxsize=1)

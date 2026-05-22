@@ -23,6 +23,10 @@ EXPECTED_TABLES = [
     "team_elo_ratings",
     "model_artifacts",
     "data_sync_runs",
+    "player_season_stats",
+    "team_season_aggregates",
+    "team_metric_values",
+    "player_metric_values",
 ]
 
 

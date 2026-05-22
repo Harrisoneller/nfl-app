@@ -52,7 +52,7 @@ def _rows_from_result(result: Any) -> int | None:
     if isinstance(result, int):
         return result
     if isinstance(result, dict):
-        for key in ("lines", "lines_in_db", "games_upserted", "count", "rows", "pairs", "deleted"):
+        for key in ("lines", "lines_in_db", "games_upserted", "count", "rows", "pairs", "deleted", "teams", "players"):
             if key in result and isinstance(result[key], int):
                 return result[key]
         if "added" in result and isinstance(result["added"], int):

@@ -140,6 +140,8 @@ async def _backtest_elo_compute(
 
     overall = _aggregate(all_rows) if all_rows else {}
     calibration = _calibration_table(all_rows)
+    if all_rows:
+        overall["expected_calibration_error"] = _expected_calibration_error(calibration)
 
     return {
         "seasons": seasons,
@@ -147,6 +149,13 @@ async def _backtest_elo_compute(
         "overall": overall,
         "per_season": per_season,
         "calibration": calibration,
+        # Does our margin distribution have the right SPREAD, not just the right
+        # center? CRPS grades the full distribution; the PIT histogram should be
+        # flat if NFL_MARGIN_SIGMA is calibrated (U-shape = too narrow).
+        "distribution": _distribution_eval(all_rows),
+        # The only external standard that matters: how do we compare to the
+        # closing line (and to naive baselines) on the same games?
+        "baselines": _baseline_metrics(all_rows),
     }
 
 
