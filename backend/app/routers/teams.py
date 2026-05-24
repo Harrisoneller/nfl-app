@@ -103,7 +103,7 @@ async def get_upcoming_season(team_id: str):
     sched_rows = await _team_upcoming_schedule(tid, upcoming)
 
     # Build per-opponent rating from the previous season's profile
-    prev_aggs = await analytics_service._team_pbp_aggregates(previous)
+    prev_aggs = await analytics_service._team_pbp_aggregates(previous, allow_live_fallback=False)
     opponents = []
     for g in sched_rows:
         opp = g["away_team_id"] if g["home_team_id"] == tid else g["home_team_id"]

@@ -11,6 +11,8 @@ import { LeaguePulse } from "@/components/LeaguePulse";
 import { WelcomeHero } from "@/components/home/WelcomeHero";
 import { Week1Schedule } from "@/components/Week1Schedule";
 
+export const revalidate = 60;
+
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   try { return await p; } catch { return fallback; }
 }
@@ -38,14 +40,14 @@ const QUICK_LINKS = [
 export default async function HomePage() {
   const [scoreboard, predictions, week1Predictions, news, standings, eloRatings, trendingAdds, widgets] =
     await Promise.all([
-      safe(api.scoreboard(12), []),
-      safe(api.predictGames(undefined, undefined, true), { season: 0, week: null, games: [] }),
-      safe(api.predictGames(undefined, 1, true), { season: 0, week: 1, games: [] }),
-      safe(api.news(8), []),
-      safe(api.projectedStandings(), { season: 0, divisions: [] }),
-      safe(api.currentElo(), { ratings: [] }),
-      safe(api.fantasyTrending("add", 6), { kind: "add", items: [] }),
-      safe(api.listWidgets(), []),
+      safe(api.scoreboard(12, { revalidate: 15 }), []),
+      safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }),
+      safe(api.predictGames(undefined, 1, true, { revalidate: 1800 }), { season: 0, week: 1, games: [] }),
+      safe(api.news(8, undefined, { revalidate: 60 }), []),
+      safe(api.projectedStandings(undefined, { revalidate: 900 }), { season: 0, divisions: [] }),
+      safe(api.currentElo({ revalidate: 300 }), { ratings: [] }),
+      safe(api.fantasyTrending("add", 6, { revalidate: 300 }), { kind: "add", items: [] }),
+      safe(api.listWidgets({ revalidate: 300 }), []),
     ]);
 
   const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));

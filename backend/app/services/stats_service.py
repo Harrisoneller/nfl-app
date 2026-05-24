@@ -85,31 +85,26 @@ async def team_aggregate(season: int, team_id: str) -> dict[str, Any]:
         cache.set(key, out, CACHE_TTL_SECONDS)
         return out
 
-    weekly = await _adapter.weekly_player_stats(season)
-    metrics = [
-        "passing_yards", "passing_tds", "interceptions",
-        "rushing_yards", "rushing_tds",
-        "receiving_yards", "receiving_tds", "receptions",
-        "completions", "attempts", "carries", "targets",
-        "fumbles_lost", "sacks",
-    ]
-    totals: dict[str, float] = {m: 0.0 for m in metrics}
-    games_seen: set[Any] = set()
-    for row in weekly:
-        if (row.get("recent_team") or row.get("team")) != team_id:
-            continue
-        gid = row.get("game_id") or row.get("week")
-        games_seen.add(gid)
-        for m in metrics:
-            v = row.get(m)
-            if v is None:
-                continue
-            try:
-                totals[m] += float(v)
-            except (TypeError, ValueError):
-                pass
+    # Hot path fallback: prefer seasonal team rows over per-player weekly scans.
+    season_rows = await team_season_stats(season)
+    row = next(
+        (
+            r for r in season_rows
+            if (r.get("team_id") or r.get("team") or r.get("recent_team")) == team_id
+        ),
+        None,
+    )
+    if row is not None:
+        out = {
+            "team_id": team_id,
+            "season": season,
+            "source": "team_season_stats_fallback",
+            **{k: v for k, v in row.items() if k not in {"team_id", "team", "recent_team"}},
+        }
+        cache.set(key, out, CACHE_TTL_SECONDS)
+        return out
 
-    out = {"team_id": team_id, "season": season, "games": len(games_seen), **totals}
+    out = {"team_id": team_id, "season": season, "source": "no_materialized_data"}
     cache.set(key, out, CACHE_TTL_SECONDS)
     return out
 

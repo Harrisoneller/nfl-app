@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@/context/AuthProvider";
 import { ThemeToggle } from "./ThemeProvider";
 
 // NOTE: /players, /compare, and /performance are intentionally hidden from the
@@ -15,6 +16,7 @@ const links = [
 ];
 
 export function Nav() {
+  const { user, loading } = useAuth();
   const [isMac, setIsMac] = useState(true);
   useEffect(() => {
     setIsMac(/Mac|iPhone|iPad/.test(navigator.userAgent));
@@ -42,6 +44,30 @@ export function Nav() {
           ))}
         </nav>
         <div className="flex items-center gap-2">
+          {!loading &&
+            (user ? (
+              <Link
+                href="/account"
+                className="hidden sm:inline-flex items-center gap-1.5 text-xs text-muted hover:text-team-primary border divider rounded px-2 py-1"
+              >
+                <span
+                  className="w-5 h-5 rounded-full bg-team-primary/25 text-[10px] font-bold flex items-center justify-center text-team-primary"
+                  aria-hidden
+                >
+                  {(user.display_name || user.email)[0]?.toUpperCase()}
+                </span>
+                <span className="max-w-[100px] truncate">
+                  {user.display_name || user.email.split("@")[0]}
+                </span>
+              </Link>
+            ) : (
+              <Link
+                href="/login"
+                className="hidden sm:inline text-xs text-muted hover:text-team-primary border divider rounded px-2 py-1"
+              >
+                Sign in
+              </Link>
+            ))}
           <button
             onClick={openPalette}
             className="hidden sm:flex items-center gap-2 text-xs text-muted bg-bg border divider rounded px-2 py-1 hover:text-text"

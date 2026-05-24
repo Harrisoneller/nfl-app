@@ -101,8 +101,10 @@ TEAM_METRICS: list[tuple[str, str, bool]] = [
 ]
 
 
-async def _team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
-    """Team PBP aggregates: L1 cache → Postgres (Phase B) → live nflverse compute."""
+async def _team_pbp_aggregates(
+    season: int, *, allow_live_fallback: bool = True,
+) -> dict[str, dict[str, float]]:
+    """Team PBP aggregates: L1 cache → Postgres (preferred) → optional live compute."""
     key = f"team_pbp_agg:{season}"
     if (v := cache.get(key)) is not None:
         return v
@@ -121,6 +123,9 @@ async def _team_pbp_aggregates(season: int) -> dict[str, dict[str, float]]:
         if loaded:
             cache.set(key, loaded, CACHE_TTL)
             return loaded
+        if not allow_live_fallback:
+            # Hot read paths should avoid on-request parquet/PBP computation.
+            return {}
         return await _compute_team_pbp_aggregates_cached(season, key)
 
 
@@ -234,7 +239,7 @@ async def team_profile(team_id: str, season: int) -> dict[str, Any]:
 
 
 async def _compute_team_profile(team_id: str, season: int) -> dict[str, Any]:
-    aggs = await _team_pbp_aggregates(season)
+    aggs = await _team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
         return {"team_id": team_id, "season": season, "error": "no data"}
     me = aggs.get(team_id)
@@ -284,7 +289,9 @@ async def _team_record(team_id: str, season: int) -> dict[str, Any]:
 
 async def team_trend(team_id: str, seasons: list[int], metric: str) -> dict[str, Any]:
     """Parallel fan-out across seasons — 5x faster than serial."""
-    aggs_all = await asyncio.gather(*[_team_pbp_aggregates(s) for s in seasons])
+    aggs_all = await asyncio.gather(
+        *[_team_pbp_aggregates(s, allow_live_fallback=False) for s in seasons]
+    )
     points = []
     for s, aggs in zip(seasons, aggs_all):
         v = (aggs.get(team_id) or {}).get(metric)
@@ -400,8 +407,10 @@ async def build_seasonal_player_dataframe(season: int) -> pd.DataFrame | None:
     return df
 
 
-async def _seasonal_player_table(season: int) -> pd.DataFrame | None:
-    """Enriched seasonal table: L1 cache → Postgres → live nflverse."""
+async def _seasonal_player_table(
+    season: int, *, allow_live_fallback: bool = True,
+) -> pd.DataFrame | None:
+    """Enriched seasonal table: L1 cache → Postgres → optional live nflverse."""
     key = f"player_seasonal_enriched:{season}"
     if (v := cache.get(key)) is not None:
         return v
@@ -419,6 +428,8 @@ async def _seasonal_player_table(season: int) -> pd.DataFrame | None:
         finally:
             db.close()
         if df is None or len(df) == 0:
+            if not allow_live_fallback:
+                return None
             df = await build_seasonal_player_dataframe(season)
         if df is None or len(df) == 0:
             return None
@@ -426,7 +437,9 @@ async def _seasonal_player_table(season: int) -> pd.DataFrame | None:
         return df
 
 
-async def _position_percentile_table(season: int, position: str) -> dict[str, np.ndarray]:
+async def _position_percentile_table(
+    season: int, position: str, *, allow_live_fallback: bool = True,
+) -> dict[str, np.ndarray]:
     """Pre-compute the value array (sorted) per metric for one (season, position).
 
     Cached, so percentile lookups across many players in the same position
@@ -436,7 +449,7 @@ async def _position_percentile_table(season: int, position: str) -> dict[str, np
     if (v := cache.get(key)) is not None:
         return v
 
-    df = await _seasonal_player_table(season)
+    df = await _seasonal_player_table(season, allow_live_fallback=allow_live_fallback)
     if df is None or len(df) == 0:
         return {}
 
@@ -486,12 +499,12 @@ async def _compute_player_profile(
     in offseason before nflverse publishes), transparently fall back to the
     most recent completed season and mark `fallback_from`.
     """
-    df = await _seasonal_player_table(season)
+    df = await _seasonal_player_table(season, allow_live_fallback=False)
     fallback_from: int | None = None
     if df is None or len(df) == 0:
         # Walk back up to 3 seasons looking for data.
         for fallback in range(season - 1, season - 4, -1):
-            df = await _seasonal_player_table(fallback)
+            df = await _seasonal_player_table(fallback, allow_live_fallback=False)
             if df is not None and len(df) > 0:
                 fallback_from = season
                 season = fallback
@@ -516,7 +529,9 @@ async def _compute_player_profile(
     if me_row is None:
         return {"player_id": player_id, "season": season, "error": "player not found in season data"}
 
-    pct_table = await _position_percentile_table(season, pos)
+    pct_table = await _position_percentile_table(
+        season, pos, allow_live_fallback=False
+    )
     peer_count = int(pct_table.get("_peer_count", np.array([0]))[0])
     metric_defs = POSITION_METRICS.get(pos, POSITION_METRICS["WR"])
     metrics_out: dict[str, dict[str, Any]] = {}

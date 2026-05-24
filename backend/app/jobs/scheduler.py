@@ -124,7 +124,7 @@ async def _sync_metric_index(db: Session) -> dict[str, int]:
 
 
 async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
-    """schedules → materialize → metric index → elo → profiles → MC → awards (no H2H)."""
+    """schedules → materialize → metric index → elo → profiles → MC → awards → H2H."""
     parts: list[str] = []
     n_sched = await _sync_schedules_all(db)
     parts.append(f"schedules={n_sched}")
@@ -140,6 +140,8 @@ async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
     parts.append(f"profiles_teams={prof.get('teams', 0)}")
     pred = await _warmup_predictions(db)
     parts.append(f"predictions={pred.get('season', 'ok')}")
+    h2h = await _warmup_h2h(db)
+    parts.append(f"h2h_pairs={h2h}")
     return {"status": "ok", "message": "; ".join(parts)}
 
 

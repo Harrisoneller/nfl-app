@@ -50,7 +50,9 @@ async def _award_leaderboard(
     season: int, position_filter: list[str], weights: dict[str, float], top: int = 12,
 ) -> list[dict[str, Any]]:
     """Compute composite scores for the position filter, return top N."""
-    df = await analytics_service._seasonal_player_table(season)  # noqa: SLF001 — internal but stable
+    df = await analytics_service._seasonal_player_table(
+        season, allow_live_fallback=False
+    )  # noqa: SLF001 — internal but stable
     if df is None or len(df) == 0:
         return []
     sub = df[df["position"].isin(position_filter)] if "position" in df.columns else df

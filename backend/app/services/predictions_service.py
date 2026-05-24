@@ -160,9 +160,9 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
 
     ratings = elo_service.current_ratings(db, season=season) or elo_service.current_ratings(db)
     # Pull team scoring tendencies once for the season; fall back to previous if empty.
-    aggs = await analytics_service._team_pbp_aggregates(season)
+    aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
-        aggs = await analytics_service._team_pbp_aggregates(season - 1)
+        aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
     games = sched[sched["week"] == week]
     if "game_type" in games.columns:
         games = games[games["game_type"].astype(str).str.upper() == "REG"]
@@ -387,9 +387,9 @@ async def team_remaining_schedule_predictions(
     team_games = team_games.sort_values("week")
 
     ratings = elo_service.current_ratings(db, season=season) or elo_service.current_ratings(db)
-    aggs = await analytics_service._team_pbp_aggregates(season)
+    aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
-        aggs = await analytics_service._team_pbp_aggregates(season - 1)
+        aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
 
     out_games = []
     cumulative_expected_wins = 0.0

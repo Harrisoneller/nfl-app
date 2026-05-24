@@ -32,7 +32,12 @@ export default function H2HPage({ params }: { params: { a: string; b: string } }
   const { data, isLoading, error } = useSWR(
     ["h2h", a, b],
     () => api.h2h(a, b),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, dedupingInterval: 30_000 },
+  );
+  useSWR(
+    a !== b ? ["h2h-prefetch-swap", b, a] : null,
+    () => api.h2h(b, a),
+    { revalidateOnFocus: false, dedupingInterval: 60_000 },
   );
 
   const swap = () => router.push(`/h2h/${b}/${a}`);

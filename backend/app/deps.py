@@ -5,6 +5,7 @@ When MULTI_USER_MODE=false the app always resolves to the seeded
 """
 from __future__ import annotations
 
+import uuid
 from collections.abc import Generator
 
 from fastapi import Depends, Header, HTTPException, status
@@ -49,7 +50,12 @@ def get_current_user(
     if not payload or "sub" not in payload:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
-    user = db.query(User).filter(User.id == payload["sub"]).first()
+    try:
+        user_id = uuid.UUID(str(payload["sub"]))
+    except ValueError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token") from None
+
+    user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Inactive or unknown user")
     return user

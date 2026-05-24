@@ -2,8 +2,10 @@ import { api } from "@/lib/api";
 import { Card } from "@/components/Card";
 import Link from "next/link";
 
+export const revalidate = 3600;
+
 export default async function TeamsPage() {
-  const teams = await api.listTeams().catch(() => []);
+  const teams = await api.listTeams({ revalidate: 3600 }).catch(() => []);
   const byConference: Record<string, Record<string, typeof teams>> = {};
   for (const t of teams) {
     byConference[t.conference] ??= {};

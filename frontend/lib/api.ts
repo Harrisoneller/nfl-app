@@ -1,6 +1,21 @@
 // Typed API client — every call goes through here.
 
+import { getStoredToken } from "./auth-storage";
+
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+export type UserProfile = {
+  id: string;
+  email: string;
+  display_name: string;
+  is_admin: boolean;
+};
+
+export type AuthTokenResponse = {
+  access_token: string;
+  token_type: string;
+  expires_in_minutes: number;
+};
 
 export type Team = {
   id: string;
@@ -81,13 +96,51 @@ export type Widget = {
   created_at: string;
 };
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+function buildHeaders(extra?: HeadersInit): Record<string, string> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const token = getStoredToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (extra) {
+    const raw = extra instanceof Headers ? Object.fromEntries(extra.entries()) : extra;
+    Object.assign(headers, raw as Record<string, string>);
+  }
+  return headers;
+}
+
+async function parseApiError(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text) as { detail?: string | { msg?: string }[] };
+    const d = body.detail;
+    if (typeof d === "string") return d;
+    if (Array.isArray(d) && d[0] && typeof d[0] === "object" && "msg" in d[0]) {
+      return String(d[0].msg);
+    }
+  } catch {
+    /* not JSON */
+  }
+  return text || `${res.status} ${res.statusText}`;
+}
+
+type FetchPolicy = {
+  cache?: RequestCache;
+  revalidate?: number;
+};
+
+async function req<T>(path: string, init?: RequestInit, policy?: FetchPolicy): Promise<T> {
+  const nextConfig = policy?.revalidate != null
+    ? ({ revalidate: policy.revalidate } as RequestInit["next"])
+    : undefined;
+  const resolvedCache = policy
+    ? (policy.cache ?? (policy.revalidate != null ? undefined : "no-store"))
+    : "no-store";
   const res = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
-    headers: { "content-type": "application/json", ...(init?.headers || {}) },
+    ...(resolvedCache ? { cache: resolvedCache } : {}),
+    headers: buildHeaders(init?.headers),
+    next: nextConfig,
     ...init,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+  if (!res.ok) throw new Error(await parseApiError(res));
   return res.json();
 }
 
@@ -459,6 +512,26 @@ export type UpcomingSeason = {
 };
 
 export const api = {
+  // auth
+  authRegister: (email: string, password: string, display_name?: string) =>
+    req<AuthTokenResponse>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password, display_name: display_name ?? "" }),
+    }),
+  authLogin: (email: string, password: string) =>
+    req<AuthTokenResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  authMe: () => req<UserProfile>("/auth/me"),
+  authUpdateMe: (body: { display_name?: string }) =>
+    req<UserProfile>("/auth/me", { method: "PATCH", body: JSON.stringify(body) }),
+  authChangePassword: (current_password: string, new_password: string) =>
+    req<{ ok: boolean }>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+
   // meta
   seasons: () => req<SeasonInfo>("/meta/seasons"),
 
@@ -466,7 +539,7 @@ export const api = {
   health: () => req<{ ok: boolean; env: string; llm_provider: string }>("/health"),
 
   // teams
-  listTeams: () => req<Team[]>("/teams"),
+  listTeams: (policy?: FetchPolicy) => req<Team[]>("/teams", undefined, policy),
   getTeam: (id: string) => req<Team>(`/teams/${id}`),
   getTeamRoster: (id: string) => req<Player[]>(`/teams/${id}/roster`),
   getTeamSchedule: (id: string, season?: number) =>
@@ -516,7 +589,8 @@ export const api = {
     req<NewsItem[]>(`/players/${id}/news?limit=${limit}`),
 
   // scores
-  scoreboard: (limit = 32) => req<Game[]>(`/scores?limit=${limit}`),
+  scoreboard: (limit = 32, policy?: FetchPolicy) =>
+    req<Game[]>(`/scores?limit=${limit}`, undefined, policy),
 
   // stats / comparison
   compareTeams: (teams: string[], season = 2024) =>
@@ -529,16 +603,18 @@ export const api = {
     ),
 
   // news
-  news: (limit = 30, source?: string) =>
-    req<NewsItem[]>(`/news?limit=${limit}${source ? `&source=${source}` : ""}`),
+  news: (limit = 30, source?: string, policy?: FetchPolicy) =>
+    req<NewsItem[]>(`/news?limit=${limit}${source ? `&source=${source}` : ""}`, undefined, policy),
 
   // odds
-  oddsStatus: () =>
+  oddsStatus: (policy?: FetchPolicy) =>
     req<{ configured: boolean; lines_in_db: number; ready: boolean; last_updated: string | null }>(
       "/odds/status",
+      undefined,
+      policy,
     ),
-  odds: (market?: string, limit = 100) =>
-    req<OddsLine[]>(`/odds?limit=${limit}${market ? `&market=${market}` : ""}`),
+  odds: (market?: string, limit = 100, policy?: FetchPolicy) =>
+    req<OddsLine[]>(`/odds?limit=${limit}${market ? `&market=${market}` : ""}`, undefined, policy),
 
   // fantasy
   enrichRoster: (names_or_ids: string[]) =>
@@ -547,8 +623,12 @@ export const api = {
       body: JSON.stringify({ names_or_ids }),
     }),
   fantasyNews: (limit = 30) => req<NewsItem[]>(`/fantasy/news?limit=${limit}`),
-  fantasyTrending: (kind: "add" | "drop" = "add", limit = 20) =>
-    req<{ kind: string; items: any[] }>(`/fantasy/trending?kind=${kind}&limit=${limit}`),
+  fantasyTrending: (kind: "add" | "drop" = "add", limit = 20, policy?: FetchPolicy) =>
+    req<{ kind: string; items: any[] }>(
+      `/fantasy/trending?kind=${kind}&limit=${limit}`,
+      undefined,
+      policy,
+    ),
   fantasyAdvise: (roster: string[], question?: string) =>
     req<{ session_id: string; content: string; transcript: any[]; widget: any }>(
       "/fantasy/advise",
@@ -559,13 +639,20 @@ export const api = {
     ),
 
   // predictions
-  predictGames: (season?: number, week?: number, includeML = true) => {
+  predictGames: (
+    season?: number,
+    week?: number,
+    includeML = true,
+    policy?: FetchPolicy,
+  ) => {
     const qs = new URLSearchParams();
     if (season) qs.set("season", String(season));
     if (week) qs.set("week", String(week));
     qs.set("include_ml", String(includeML));
     return req<{ season: number; week: number | null; games: GamePrediction[] }>(
       `/predictions/games?${qs.toString()}`,
+      undefined,
+      policy,
     );
   },
   teamSeasonOutlook: (teamId: string, season?: number) =>
@@ -576,10 +663,13 @@ export const api = {
     req<{ team_id: string; history: EloHistoryPoint[] }>(
       `/predictions/teams/${teamId}/elo-history${seasons?.length ? `?seasons=${seasons.join(",")}` : ""}`,
     ),
-  currentElo: () => req<{ ratings: EloRow[] }>(`/predictions/elo/current`),
-  projectedStandings: (season?: number) =>
+  currentElo: (policy?: FetchPolicy) =>
+    req<{ ratings: EloRow[] }>(`/predictions/elo/current`, undefined, policy),
+  projectedStandings: (season?: number, policy?: FetchPolicy) =>
     req<{ season: number; divisions: ProjectedDivision[] }>(
       `/predictions/standings/projected${season ? `?season=${season}` : ""}`,
+      undefined,
+      policy,
     ),
   teamRemainingSchedule: (teamId: string, season?: number) =>
     req<TeamRemainingSchedule>(
@@ -593,8 +683,12 @@ export const api = {
     req<PlayerSeasonProjection>(
       `/predictions/players/${playerId}/season${season ? `?season=${season}` : ""}`,
     ),
-  awards: (season?: number) =>
-    req<AwardsResponse>(`/predictions/awards${season ? `?season=${season}` : ""}`),
+  awards: (season?: number, policy?: FetchPolicy) =>
+    req<AwardsResponse>(
+      `/predictions/awards${season ? `?season=${season}` : ""}`,
+      undefined,
+      policy,
+    ),
 
   // betting
   teamBettingHistory: (teamId: string, seasons?: number[]) =>
@@ -639,7 +733,7 @@ export const api = {
     }),
 
   // widgets
-  listWidgets: () => req<Widget[]>("/widgets"),
+  listWidgets: (policy?: FetchPolicy) => req<Widget[]>("/widgets", undefined, policy),
   renderWidget: (id: string) =>
     req<{ widget: Record<string, unknown>; data: Record<string, unknown> }>(
       `/widgets/${id}/render`,
