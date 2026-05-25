@@ -13,11 +13,13 @@ from collections import Counter, defaultdict
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
+from ..models.game import Game
 from ..models.seed import NFL_TEAMS
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
@@ -202,7 +204,59 @@ def predict_game(
 # ---- Season-level: read schedule once, simulate ----------------------------
 
 
-async def _season_schedule(season: int) -> pd.DataFrame | None:
+def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
+    """Read the schedule from the games table (fast, no network).
+
+    Deduplicates by (week, home_team, away_team) — ESPN scoreboard and nflverse
+    can both create records for the same real-world game with different IDs.
+    Prefers the nflverse record (game_id like "2026_01_AWAY_HOME") because it
+    has accurate NULL scores for unplayed games (ESPN reports 0).
+    """
+    stmt = select(Game).where(Game.season == season, Game.season_type == 2)
+    games = db.execute(stmt).scalars().all()
+    if not games:
+        return None
+
+    seen: dict[tuple, dict] = {}
+    for g in games:
+        key = (g.week, g.home_team_id, g.away_team_id)
+        is_nflverse_id = g.id and "_" in g.id and g.id[:4].isdigit()
+        row = {
+            "game_id": g.id,
+            "season": g.season,
+            "week": g.week,
+            "home_team": g.home_team_id,
+            "away_team": g.away_team_id,
+            "home_score": g.home_score,
+            "away_score": g.away_score,
+            "gameday": g.start_time.strftime("%Y-%m-%d") if g.start_time else "",
+            "gametime": g.start_time.strftime("%H:%M") if g.start_time else "",
+            "game_type": "REG",
+            "_is_nflverse": is_nflverse_id,
+        }
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = row
+        elif is_nflverse_id and not existing.get("_is_nflverse"):
+            seen[key] = row
+        elif not is_nflverse_id and existing.get("_is_nflverse"):
+            pass  # keep existing nflverse record
+        elif g.home_score is None and existing.get("home_score") is not None:
+            seen[key] = row
+
+    rows = [{k: v for k, v in r.items() if k != "_is_nflverse"} for r in seen.values()]
+    return pd.DataFrame(rows) if rows else None
+
+
+async def _season_schedule(season: int, db: Session | None = None) -> pd.DataFrame | None:
+    """Get schedule from DB first (synced by worker), fall back to nflverse."""
+    if db is not None:
+        df = _schedule_from_db(db, season)
+        if df is not None and len(df) > 0:
+            df["home_team"] = df["home_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
+            df["away_team"] = df["away_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
+            return df
+
     df = await _nfl.schedules_df(season)
     if df is None or len(df) == 0:
         return None
@@ -217,7 +271,7 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
 
     If `week` is None, picks the next upcoming week (lowest week with unplayed games).
     """
-    sched = await _season_schedule(season)
+    sched = await _season_schedule(season, db=db)
     if sched is None:
         return {"season": season, "week": None, "games": []}
 
@@ -329,7 +383,7 @@ async def _simulate_season_compute(
     db: Session, season: int, n_sims: int,
 ) -> dict[str, Any]:
     """The real Monte Carlo. Separated so artifact_cache can wrap it."""
-    sched = await _season_schedule(season)
+    sched = await _season_schedule(season, db=db)
     if sched is None:
         return {"season": season, "n_sims": 0, "teams": {}}
 
@@ -477,7 +531,7 @@ async def team_remaining_schedule_predictions(
     can chart the expected trajectory.
     """
     season = season or current_or_upcoming_season()
-    sched = await _season_schedule(season)
+    sched = await _season_schedule(season, db=db)
     if sched is None:
         return {"team_id": team_id, "season": season, "games": []}
 

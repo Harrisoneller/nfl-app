@@ -80,6 +80,20 @@ def run() -> None:
             hint="Scheduler is off on APP_ROLE=web. Run a separate worker service with "
             "APP_ROLE=worker and the same DATABASE_URL, or data will not refresh.",
         )
+        if s.cors_allows_only_localhost and not s.cors_allow_vercel_regex:
+            log.warning(
+                "doctor_cors_localhost_only",
+                cors_origins=s.cors_origins,
+                hint="Set CORS_ORIGINS to your Vercel URL on the web service, then redeploy. "
+                "Browser CORS preflight will fail with 400 until the Origin matches.",
+            )
+            issues.append("CORS_ORIGINS not set for production frontend")
+        elif s.cors_allows_only_localhost and s.cors_allow_vercel_regex:
+            log.info(
+                "doctor_cors_vercel_regex_fallback",
+                hint="CORS_ORIGINS is localhost-only but *.vercel.app is allowed via regex. "
+                "Add your canonical Vercel URL to CORS_ORIGINS for custom domains.",
+            )
     if s.app_env == "production" and s.app_role == "worker":
         log.info("doctor_worker_role", boot_warmup=s.boot_warmup_level)
 
