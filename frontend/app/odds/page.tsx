@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { api, OddsLine } from "@/lib/api";
@@ -26,6 +26,12 @@ export default function OddsPage() {
   const { data, isLoading, error } = useSWR(["odds-all"], oddsFetcher);
   const { data: status } = useSWR(["odds-status"], statusFetcher);
   const [showExplainer, setShowExplainer] = useState(true);
+  const [showBoard, setShowBoard] = useState(false);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setShowBoard(true), 0);
+    return () => window.clearTimeout(id);
+  }, []);
 
   const grouped = useMemo(() => groupByEvent(data ?? []), [data]);
 
@@ -59,11 +65,15 @@ export default function OddsPage() {
         <OddsEmptyState status={status} />
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {grouped.map((g) => (
-          <GameCard key={g.eventId} game={g} />
-        ))}
-      </div>
+      {!showBoard ? (
+        <Card><p className="text-sm text-muted">Loading matchup cards…</p></Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {grouped.map((g) => (
+            <GameCard key={g.eventId} game={g} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

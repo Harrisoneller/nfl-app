@@ -201,6 +201,14 @@ async def _compute_head_to_head(
             "home_team": a, "away_team": b, "week": None, "gameday": None,
             "neutral_site": True, "hypothetical": True, "prediction": pred,
         }
+    market_context = None
+    if predicted_game:
+        market_context = await betting_service.matchup_market_context(
+            db,
+            home_team_id=predicted_game["home_team"],
+            away_team_id=predicted_game["away_team"],
+            prediction=predicted_game.get("prediction"),
+        )
 
     # ---- Profile delta + cross-side matchup breakdown ----------------------
     profile_season = season - 1 if season > last_completed else season
@@ -219,6 +227,14 @@ async def _compute_head_to_head(
     league_stats = _league_metric_stats(league_aggs)
     deltas = _profile_deltas(profile_a, profile_b)
     matchup_breakdown = _cross_side_matchups(profile_a, profile_b, a, b, league_stats)
+    decision_metrics = _decision_metrics(
+        profile_a=profile_a,
+        profile_b=profile_b,
+        predicted_game=predicted_game,
+        market_context=market_context,
+        team_a=a,
+        team_b=b,
+    )
 
     # ---- Historical H2H ------------------------------------------------------
     history = await _historical_h2h(a, b, n_seasons=8)
@@ -238,6 +254,8 @@ async def _compute_head_to_head(
         "grade": {"a": grade_a, "b": grade_b},
         "record": {"a": record_a, "b": record_b, "season": last_completed},
         "predicted_matchup": predicted_game,
+        "market_context": market_context,
+        "decision_metrics": decision_metrics,
         "profile": {
             "a": profile_a, "b": profile_b,
             "deltas": deltas,
@@ -535,6 +553,89 @@ def _profile_deltas(profile_a: dict, profile_b: dict) -> list[dict]:
             "delta": round(abs(a_val - b_val), 3),
         })
     return out
+
+
+def _decision_metrics(
+    *,
+    profile_a: dict,
+    profile_b: dict,
+    predicted_game: dict[str, Any] | None,
+    market_context: dict[str, Any] | None,
+    team_a: str,
+    team_b: str,
+) -> list[dict[str, Any]]:
+    """Top-of-page decision metrics for quick H2H reads."""
+
+    def val(profile: dict, key: str) -> float | None:
+        metric = (profile.get("metrics") or {}).get(key) or {}
+        raw = metric.get("value")
+        return float(raw) if isinstance(raw, (int, float)) else None
+
+    out: list[dict[str, Any]] = []
+    off_epa_a = val(profile_a, "off_epa_per_play")
+    off_epa_b = val(profile_b, "off_epa_per_play")
+    if off_epa_a is not None and off_epa_b is not None:
+        diff = off_epa_a - off_epa_b
+        out.append({
+            "key": "epa_diff",
+            "label": "Offensive EPA diff",
+            "value": round(diff, 3),
+            "favored": team_a if diff >= 0 else team_b,
+            "detail": f"{team_a} {off_epa_a:.3f} vs {team_b} {off_epa_b:.3f}",
+        })
+
+    sacks_a = val(profile_a, "sacks_per_game")
+    sacks_b = val(profile_b, "sacks_per_game")
+    if sacks_a is not None and sacks_b is not None:
+        diff = sacks_a - sacks_b
+        out.append({
+            "key": "pressure_proxy_diff",
+            "label": "Pressure proxy diff (sacks/g)",
+            "value": round(diff, 2),
+            "favored": team_a if diff >= 0 else team_b,
+            "detail": f"{team_a} {sacks_a:.2f} vs {team_b} {sacks_b:.2f}",
+        })
+
+    pred = predicted_game.get("prediction") if predicted_game else None
+    if pred:
+        spread = pred.get("predicted_spread")
+        if isinstance(spread, (int, float)):
+            proxy = round(float(spread) * 0.85, 2)
+            favored = predicted_game.get("home_team") if proxy <= 0 else predicted_game.get("away_team")
+            out.append({
+                "key": "injury_adjusted_spread_proxy",
+                "label": "Availability-adjusted spread proxy",
+                "value": proxy,
+                "favored": favored,
+                "detail": "Heuristic: 15% shrink toward pick'em to absorb unknown availability shocks.",
+            })
+
+        explainability = pred.get("explainability") or {}
+        confidence = explainability.get("confidence_context") if isinstance(explainability, dict) else {}
+        out.append({
+            "key": "confidence",
+            "label": "Confidence / calibration",
+            "value": confidence.get("calibration_score") if isinstance(confidence, dict) else pred.get("calibration_score"),
+            "favored": None,
+            "detail": (
+                f"{confidence.get('tier', pred.get('confidence_tier', 'n/a'))} confidence"
+                if isinstance(confidence, dict)
+                else f"{pred.get('confidence_tier', 'n/a')} confidence"
+            ),
+        })
+
+    if market_context and market_context.get("market_delta"):
+        delta = market_context["market_delta"]
+        spread_delta = delta.get("spread")
+        if isinstance(spread_delta, (int, float)):
+            out.append({
+                "key": "market_delta_spread",
+                "label": "Model vs market spread delta",
+                "value": round(float(spread_delta), 2),
+                "favored": predicted_game.get("home_team") if spread_delta > 0 else predicted_game.get("away_team"),
+                "detail": "Positive means market is more home-favoring than our model.",
+            })
+    return out[:5]
 
 
 def _safe_int(v) -> int | None:

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { api, Game, GamePrediction } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { PredictionCard } from "@/components/predictions/PredictionCard";
@@ -10,6 +11,9 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { LeaguePulse } from "@/components/LeaguePulse";
 import { WelcomeHero } from "@/components/home/WelcomeHero";
 import { Week1Schedule } from "@/components/Week1Schedule";
+import { FreshnessBadges } from "@/components/FreshnessBadges";
+import { ExperimentedInsightCards } from "@/components/home/ExperimentedInsightCards";
+import { PersonaGate } from "@/components/persona/PersonaGate";
 
 export const revalidate = 60;
 
@@ -38,16 +42,13 @@ const QUICK_LINKS = [
 ] as const;
 
 export default async function HomePage() {
-  const [scoreboard, predictions, week1Predictions, news, standings, eloRatings, trendingAdds, widgets] =
+  const [scoreboard, predictions, week1Predictions, eloRatings, freshness] =
     await Promise.all([
       safe(api.scoreboard(12, { revalidate: 15 }), []),
       safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }),
       safe(api.predictGames(undefined, 1, true, { revalidate: 1800 }), { season: 0, week: 1, games: [] }),
-      safe(api.news(8, undefined, { revalidate: 60 }), []),
-      safe(api.projectedStandings(undefined, { revalidate: 900 }), { season: 0, divisions: [] }),
       safe(api.currentElo({ revalidate: 300 }), { ratings: [] }),
-      safe(api.fantasyTrending("add", 6, { revalidate: 300 }), { kind: "add", items: [] }),
-      safe(api.listWidgets({ revalidate: 300 }), []),
+      safe(api.freshness({ revalidate: 60 }), null),
     ]);
 
   const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));
@@ -63,10 +64,20 @@ export default async function HomePage() {
   const hasLiveGames = scoreboard.some((g) => g.status === "in" || g.status === "live");
   const liveGames = scoreboard.filter((g) => g.status === "in" || g.status === "live");
   const weekLabel = predictions.week ? `Week ${predictions.week}` : null;
+  const tossup = predictions.games
+    .filter((g) => g.home_score == null)
+    .sort((x, y) => Math.abs(x.prediction.home_win_prob - 0.5) - Math.abs(y.prediction.home_win_prob - 0.5))[0];
+  const likelyShootout = predictions.games
+    .filter((g) => g.home_score == null)
+    .sort((x, y) => y.prediction.predicted_total - x.prediction.predicted_total)[0];
+  const highestConfidence = predictions.games
+    .filter((g) => g.home_score == null && g.prediction.confidence_tier === "high")
+    .sort((x, y) => Math.abs(y.prediction.home_win_prob - 0.5) - Math.abs(x.prediction.home_win_prob - 0.5))[0];
 
   return (
     <div className="space-y-10">
       <WelcomeHero hasLiveGames={hasLiveGames} weekLabel={weekLabel} />
+      <FreshnessBadges freshness={freshness} />
 
       <QuickExploreBar />
 
@@ -81,6 +92,12 @@ export default async function HomePage() {
 
       {featured && <FeaturedGame game={featured} weekLabel={weekLabel} />}
 
+      <ExperimentedInsightCards
+        tossup={tossup}
+        likelyShootout={likelyShootout}
+        highestConfidence={highestConfidence}
+      />
+
       {hasLiveGames && liveGames.length > 0 && (
         <section>
           <SectionHeader title="Live now" />
@@ -88,17 +105,63 @@ export default async function HomePage() {
         </section>
       )}
 
-      {(eloRatings.ratings.length > 0 || standings.divisions.length > 0) && (
+      <Suspense fallback={<DeferredHomeSkeleton />}>
+        <HomeDeferredSections
+          eloRatings={eloRatings.ratings}
+          otherGames={otherGames}
+          weekLabel={weekLabel}
+          week={predictions.week}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+function DeferredHomeSkeleton() {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <p className="text-sm text-muted">Loading deeper insights…</p>
+      </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card><p className="text-sm text-muted">Loading analysis cards…</p></Card>
+        <Card><p className="text-sm text-muted">Loading models and market context…</p></Card>
+      </div>
+    </div>
+  );
+}
+
+async function HomeDeferredSections({
+  eloRatings,
+  otherGames,
+  weekLabel,
+  week,
+}: {
+  eloRatings: Array<{ team_id: string; rating: number; grade: string }>;
+  otherGames: GamePrediction[];
+  weekLabel: string | null;
+  week: number | null;
+}) {
+  const [news, standings, trendingAdds, widgets] = await Promise.all([
+    safe(api.news(8, undefined, { revalidate: 60 }), []),
+    safe(api.projectedStandings(undefined, { revalidate: 900 }), { season: 0, divisions: [] }),
+    safe(api.fantasyTrending("add", 6, { revalidate: 300 }), { kind: "add", items: [] }),
+    safe(api.listWidgets({ revalidate: 300 }), []),
+  ]);
+
+  return (
+    <>
+      {(eloRatings.length > 0 || standings.divisions.length > 0) && (
         <section>
           <SectionHeader title="League pulse" />
-          <LeaguePulse elo={eloRatings.ratings} standings={standings.divisions} />
+          <LeaguePulse elo={eloRatings} standings={standings.divisions} />
         </section>
       )}
 
       {otherGames.length > 0 && (
         <section>
           <SectionHeader
-            title={predictions.week ? `Week ${predictions.week} slate` : "Upcoming games"}
+            title={week ? `Week ${week} slate` : "Upcoming games"}
             href="/odds"
             linkLabel="Full board →"
           />
@@ -152,11 +215,11 @@ export default async function HomePage() {
         </Card>
 
         <Card title="Power rankings" action={<span className="text-[11px] text-muted">via Elo</span>}>
-          {eloRatings.ratings.length === 0 ? (
+          {eloRatings.length === 0 ? (
             <p className="text-sm text-muted">Ratings build on first boot.</p>
           ) : (
             <ol className="space-y-1.5 text-sm">
-              {eloRatings.ratings.slice(0, 12).map((r, i) => (
+              {eloRatings.slice(0, 12).map((r, i) => (
                 <li key={r.team_id} className="flex items-center justify-between gap-2 group">
                   <div className="flex items-center gap-2 min-w-0">
                     <span
@@ -179,68 +242,76 @@ export default async function HomePage() {
         </Card>
       </div>
 
-      {standings.divisions.length > 0 && (
-        <Card title="Projected standings" action={<span className="text-[11px] text-muted">10,000 Monte Carlo sims</span>}>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
-            {standings.divisions.map((d) => (
-              <div key={`${d.conference}-${d.division}`}>
-                <h3 className="text-xs uppercase tracking-wide text-muted mb-2">
-                  {d.conference} {d.division}
-                </h3>
-                <ul className="space-y-1 text-sm">
-                  {d.teams.map((t, i) => (
-                    <li key={t.team_id} className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted text-xs w-3 text-right">{i + 1}</span>
-                        <TeamLogo teamId={t.team_id} size={18} />
-                        <Link href={`/teams/${t.team_id}`} className="hover:underline font-medium">
-                          {t.team_id}
-                        </Link>
-                      </div>
-                      <span className="text-[11px] tabular-nums">
-                        <span className="font-medium">{t.mean_wins.toFixed(1)}W</span>
-                        <span className="text-muted ml-1.5">{t.playoff_pct.toFixed(0)}% PO</span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
+      <PersonaGate allowed={["analyst"]}>
+        {standings.divisions.length > 0 && (
+          <Card title="Projected standings" action={<span className="text-[11px] text-muted">10,000 Monte Carlo sims</span>}>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
+              {standings.divisions.map((d) => (
+                <div key={`${d.conference}-${d.division}`}>
+                  <h3 className="text-xs uppercase tracking-wide text-muted mb-2">
+                    {d.conference} {d.division}
+                  </h3>
+                  <ul className="space-y-1 text-sm">
+                    {d.teams.map((t, i) => (
+                      <li key={t.team_id} className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted text-xs w-3 text-right">{i + 1}</span>
+                          <TeamLogo teamId={t.team_id} size={18} />
+                          <Link href={`/teams/${t.team_id}`} className="hover:underline font-medium">
+                            {t.team_id}
+                          </Link>
+                        </div>
+                        <span className="text-[11px] tabular-nums">
+                          <span className="font-medium">{t.mean_wins.toFixed(1)}W</span>
+                          <span className="text-muted ml-1.5">{t.playoff_pct.toFixed(0)}% PO</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+      </PersonaGate>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <AwardRaceCard />
-        <LeagueBestBetsCard />
+        <PersonaGate allowed={["fantasy", "analyst"]}>
+          <AwardRaceCard />
+        </PersonaGate>
+        <PersonaGate allowed={["bettor", "analyst"]}>
+          <LeagueBestBetsCard />
+        </PersonaGate>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <Card title="Fantasy: trending adds">
-          {trendingAdds.items.length === 0 ? (
-            <p className="text-sm text-muted">Sleeper refreshes every 5 min.</p>
-          ) : (
-            <ol className="space-y-1.5 text-sm">
-              {trendingAdds.items.slice(0, 6).map((r: any) => (
-                <li key={r.player_id} className="flex justify-between">
-                  <span className="truncate pr-2">
-                    {r.player_id ? (
-                      <Link href={`/players/${r.player_id}`} className="hover:underline font-medium">
-                        {r.name ?? r.player_id}
-                      </Link>
-                    ) : (
-                      <span>{r.name ?? r.player_id}</span>
-                    )}
-                    <span className="text-muted text-xs ml-2">{r.position} · {r.team ?? "—"}</span>
-                  </span>
-                  <span className="text-muted text-xs tabular-nums whitespace-nowrap">
-                    +{r.count?.toLocaleString?.()}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </Card>
+        <PersonaGate allowed={["fantasy", "analyst"]}>
+          <Card title="Fantasy: trending adds">
+            {trendingAdds.items.length === 0 ? (
+              <p className="text-sm text-muted">Sleeper refreshes every 5 min.</p>
+            ) : (
+              <ol className="space-y-1.5 text-sm">
+                {trendingAdds.items.slice(0, 6).map((r: any) => (
+                  <li key={r.player_id} className="flex justify-between">
+                    <span className="truncate pr-2">
+                      {r.player_id ? (
+                        <Link href={`/players/${r.player_id}`} className="hover:underline font-medium">
+                          {r.name ?? r.player_id}
+                        </Link>
+                      ) : (
+                        <span>{r.name ?? r.player_id}</span>
+                      )}
+                      <span className="text-muted text-xs ml-2">{r.position} · {r.team ?? "—"}</span>
+                    </span>
+                    <span className="text-muted text-xs tabular-nums whitespace-nowrap">
+                      +{r.count?.toLocaleString?.()}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </Card>
+        </PersonaGate>
 
         <Card title="Ask the AI">
           <p className="text-sm text-muted mb-3">Specific questions, real data, instant answer.</p>
@@ -260,24 +331,30 @@ export default async function HomePage() {
           </ul>
         </Card>
 
-        <Card title="Your widgets">
-          {widgets.length === 0 ? (
-            <p className="text-sm text-muted">
-              Use the AI page to create a widget. Saved widgets appear here.
-            </p>
-          ) : (
-            <ul className="space-y-1 text-sm">
-              {widgets.slice(0, 6).map((w) => (
-                <li key={w.id}>
-                  <Link href={`/widget/${w.id}`} className="hover:underline">{w.title}</Link>
-                  <span className="text-muted text-xs"> · {w.kind}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+        <PersonaGate allowed={["analyst"]}>
+          <Card title="Your widgets">
+            {widgets.length === 0 ? (
+              <p className="text-sm text-muted">
+                Use the AI page to create a widget. Saved widgets appear here.
+              </p>
+            ) : (
+              <ul className="space-y-1 text-sm">
+                {widgets.slice(0, 6).map((w) => (
+                  <li key={w.id}>
+                    <Link href={`/widget/${w.id}`} className="hover:underline">{w.title}</Link>
+                    <span className="text-muted text-xs"> · {w.kind}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </PersonaGate>
       </div>
-    </div>
+
+      <div className="text-[10px] text-muted">
+        Deeper cards load after the first insight so this page stays fast on slower networks.
+      </div>
+    </>
   );
 }
 

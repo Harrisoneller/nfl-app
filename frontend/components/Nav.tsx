@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/context/AuthProvider";
 import { ThemeToggle } from "./ThemeProvider";
+import { PersonaToggle } from "./persona/PersonaToggle";
 
 // NOTE: /players, /compare, and /performance are intentionally hidden from the
 // nav while they're being stabilized. The pages still exist if you navigate
@@ -44,6 +45,7 @@ export function Nav() {
           ))}
         </nav>
         <div className="flex items-center gap-2">
+          <PersonaToggle />
           {!loading &&
             (user ? (
               <Link

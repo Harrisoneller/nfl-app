@@ -18,6 +18,7 @@ from .jobs.scheduler import start_scheduler, stop_scheduler
 from .logging_config import configure_logging, get_logger
 from .middleware.access_log import AccessLogMiddleware
 from .middleware.cache_control import CacheControlMiddleware
+from .middleware.endpoint_slo import EndpointSLOMiddleware
 from .middleware.request_id import RequestIDMiddleware
 from .rate_limits import limiter
 from .routers import (
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     # CacheControl runs before the response leaves; CORS handles preflights.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(EndpointSLOMiddleware)
     app.add_middleware(CacheControlMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(

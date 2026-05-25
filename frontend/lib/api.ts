@@ -178,12 +178,19 @@ export type GamePrediction = {
   prediction: {
     home_win_prob: number;
     away_win_prob: number;
+    home_win_prob_interval_80?: [number, number];
+    away_win_prob_interval_80?: [number, number];
     predicted_spread: number;
     predicted_total: number;
     predicted_home_score: number;
     predicted_away_score: number;
     game_script?: string;
+    calibration_score?: number;
+    expected_calibration_error?: number | null;
+    confidence_tier?: "low" | "medium" | "high";
+    model_version?: string;
     inputs?: PredictionInputs;
+    explainability?: PredictionExplainability;
   };
   ml_prediction?: {
     predicted_spread: number;
@@ -202,6 +209,23 @@ export type PredictionInputs = {
   away_def_ppg_allowed: number;
   expected_home_pts: number;
   expected_away_pts: number;
+};
+
+export type PredictionExplainability = {
+  method: string;
+  summary: string;
+  top_contributors: Array<{
+    feature: string;
+    label: string;
+    impact: number;
+    direction: "home" | "away";
+  }>;
+  confidence_context?: {
+    tier?: "low" | "medium" | "high" | string;
+    calibration_score?: number;
+    expected_calibration_error?: number | null;
+    interval_80_home_win_prob?: [number, number];
+  };
 };
 
 export type BacktestRow = {
@@ -320,6 +344,26 @@ export type H2HMatchup = {
     away_score?: number | null;
     prediction: GamePrediction["prediction"];
   } | null;
+  market_context?: {
+    market?: {
+      market_spread_home?: number | null;
+      market_total?: number | null;
+      market_home_win_prob?: number | null;
+      books?: number;
+    };
+    market_delta?: {
+      spread?: number | null;
+      total?: number | null;
+      home_win_prob?: number | null;
+    };
+  } | null;
+  decision_metrics?: Array<{
+    key: string;
+    label: string;
+    value: number | null;
+    favored?: string | null;
+    detail?: string;
+  }>;
   profile: {
     a: any;
     b: any;
@@ -485,6 +529,27 @@ export type SeasonInfo = {
   info: Record<number, { season: number; is_upcoming: boolean; is_latest_completed: boolean }>;
 };
 
+export type FreshnessModule = {
+  module: string;
+  domains: string[];
+  last_updated_at: string | null;
+  age_seconds: number | null;
+  sla_seconds: number;
+  status: "ok" | "warn" | "stale";
+};
+
+export type FreshnessSnapshot = {
+  generated_at: string;
+  modules: FreshnessModule[];
+};
+
+export type ExperimentAssignment = {
+  experiment_key: string;
+  variant: string;
+  enabled: boolean;
+  bucket?: number;
+};
+
 export type UpcomingSeason = {
   team_id: string;
   season: number;
@@ -534,6 +599,16 @@ export const api = {
 
   // meta
   seasons: () => req<SeasonInfo>("/meta/seasons"),
+  freshness: (policy?: FetchPolicy) => req<FreshnessSnapshot>("/meta/freshness", undefined, policy),
+  experimentAssign: (experimentKey: string, sessionId: string) =>
+    req<ExperimentAssignment>(
+      `/meta/experiments/assign?experiment_key=${encodeURIComponent(experimentKey)}&session_id=${encodeURIComponent(sessionId)}`,
+    ),
+  trackExperimentEvents: (events: Array<Record<string, unknown>>) =>
+    req<{ inserted: number }>("/meta/experiments/events", {
+      method: "POST",
+      body: JSON.stringify({ events }),
+    }),
 
   // health
   health: () => req<{ ok: boolean; env: string; llm_provider: string }>("/health"),

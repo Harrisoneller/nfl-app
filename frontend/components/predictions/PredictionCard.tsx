@@ -4,12 +4,15 @@ import { GamePrediction } from "@/lib/api";
 import { WinProbBar } from "./WinProbBar";
 import { ExplainPopover } from "./ExplainPopover";
 import { TeamLogo } from "../TeamLogo";
+import { usePersona } from "@/context/PersonaProvider";
+import { WhyPredictionPanel } from "./WhyPredictionPanel";
 
 /**
  * Compact game prediction card. Logos for casual readability, Elo + win
  * prob + spread + total for analytics readers, ML overlay when it diverges.
  */
 export function PredictionCard({ game }: { game: GamePrediction }) {
+  const { persona } = usePersona();
   const p = game.prediction;
   const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
   const absSpread = Math.abs(p.predicted_spread);
@@ -17,6 +20,13 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
   const winner = played ? (
     (game.home_score! > game.away_score!) ? game.home_team_id : (game.away_score! > game.home_score!) ? game.away_team_id : null
   ) : null;
+
+  const confidenceTone =
+    p.confidence_tier === "high"
+      ? "text-emerald-400"
+      : p.confidence_tier === "medium"
+        ? "text-amber-300"
+        : "text-rose-300";
 
   return (
     <div className="panel panel-hover-lift p-3 space-y-2">
@@ -47,11 +57,34 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
               homeProb={p.home_win_prob}
             />
           </ExplainPopover>
-          <div className="flex items-center justify-between text-[11px] text-muted pt-1">
-            <span>Pick: <span className="text-text font-medium">{fav} -{absSpread.toFixed(1)}</span></span>
-            <span>O/U <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>
-          </div>
-          {game.ml_prediction && Math.abs(game.ml_prediction.predicted_spread - p.predicted_spread) > 0.5 && (
+          {persona !== "fantasy" && (
+            <div className="flex items-center justify-between text-[11px] text-muted pt-1">
+              <span>Pick: <span className="text-text font-medium">{fav} -{absSpread.toFixed(1)}</span></span>
+              <span>O/U <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>
+            </div>
+          )}
+          {persona === "fantasy" && (
+            <div className="flex items-center justify-between text-[11px] text-muted pt-1">
+              <span>Scoring env: <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>
+              <span>{p.game_script ?? "neutral script"}</span>
+            </div>
+          )}
+          {(p.home_win_prob_interval_80 || p.calibration_score != null) && persona !== "fantasy" && (
+            <div className="flex items-center justify-between text-[10px] text-muted pt-0.5">
+              <span>
+                80% CI{" "}
+                {p.home_win_prob_interval_80
+                  ? `${Math.round(p.home_win_prob_interval_80[0] * 100)}-${Math.round(p.home_win_prob_interval_80[1] * 100)}%`
+                  : "—"}
+              </span>
+              <span className={confidenceTone}>
+                {p.confidence_tier ?? "low"} confidence
+                {p.calibration_score != null ? ` · cal ${Math.round(p.calibration_score * 100)}%` : ""}
+              </span>
+            </div>
+          )}
+          {persona !== "fantasy" && <WhyPredictionPanel game={game} compact />}
+          {persona === "analyst" && game.ml_prediction && Math.abs(game.ml_prediction.predicted_spread - p.predicted_spread) > 0.5 && (
             <div className="text-[10px] text-muted pt-0.5">
               ML: {game.ml_prediction.predicted_spread <= 0 ? game.home_team_id : game.away_team_id}{" "}
               -{Math.abs(game.ml_prediction.predicted_spread).toFixed(1)}

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
-from ..services import comparison_service, metrics_index_service
+from ..services import comparison_service, metrics_index_service, request_budget_service
 from ..utils.seasons import latest_completed_season
 
 router = APIRouter()
@@ -14,13 +14,28 @@ router = APIRouter()
 
 @router.get("/compare/teams")
 async def compare_teams(
+    response: Response,
     teams: str = Query(..., description="Comma-separated team ids"),
     season: int = 2024,
 ):
     ids = [t.strip().upper() for t in teams.split(",") if t.strip()]
     if not (2 <= len(ids) <= 8):
         raise HTTPException(400, "Provide 2–8 team ids")
-    return await comparison_service.compare_teams(ids, season)
+    payload, budget = await request_budget_service.run_with_budget(
+        budget_name="stats.compare_teams",
+        timeout_ms=1800,
+        execute=lambda: comparison_service.compare_teams(ids, season),
+        summary_fallback=lambda: {
+            "season": season,
+            "metrics": [],
+            "rows": [{"team_id": tid, "partial": True} for tid in ids],
+            "winners": {},
+            "partial": True,
+        },
+    )
+    response.headers["X-Budget-Tier"] = str(budget.get("tier", "primary"))
+    response.headers["X-Cache-Status"] = "miss"
+    return payload
 
 
 @router.get("/compare/team-vs-league")
@@ -30,13 +45,26 @@ async def compare_team_vs_league(team: str, season: int = 2024):
 
 @router.get("/compare/players")
 async def compare_players(
+    response: Response,
     names: str = Query(..., description="Comma-separated full names"),
     season: int = 2024,
 ):
     name_list = [n.strip() for n in names.split(",") if n.strip()]
     if not (2 <= len(name_list) <= 8):
         raise HTTPException(400, "Provide 2–8 player names")
-    return await comparison_service.compare_players(name_list, season)
+    payload, budget = await request_budget_service.run_with_budget(
+        budget_name="stats.compare_players",
+        timeout_ms=1800,
+        execute=lambda: comparison_service.compare_players(name_list, season),
+        summary_fallback=lambda: {
+            "season": season,
+            "rows": [{"player": name, "stats": {}, "partial": True} for name in name_list],
+            "partial": True,
+        },
+    )
+    response.headers["X-Budget-Tier"] = str(budget.get("tier", "primary"))
+    response.headers["X-Cache-Status"] = "miss"
+    return payload
 
 
 @router.get("/metrics/catalog")

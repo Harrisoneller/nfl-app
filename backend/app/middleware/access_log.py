@@ -37,8 +37,23 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         method = request.method
         path = request.url.path
+        cache_status = response.headers.get("X-Cache-Status") or getattr(request.state, "cache_status", "unknown")
         if path in QUIET_PATHS:
-            log.debug("request", method=method, path=path, status=status, duration_ms=elapsed_ms)
+            log.debug(
+                "request",
+                method=method,
+                path=path,
+                status=status,
+                duration_ms=elapsed_ms,
+                cache_status=cache_status,
+            )
         else:
-            log.info("request", method=method, path=path, status=status, duration_ms=elapsed_ms)
+            log.info(
+                "request",
+                method=method,
+                path=path,
+                status=status,
+                duration_ms=elapsed_ms,
+                cache_status=cache_status,
+            )
         return response

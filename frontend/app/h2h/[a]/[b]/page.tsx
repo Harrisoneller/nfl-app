@@ -1,16 +1,28 @@
 "use client";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { api, H2HMatchup, MatchupSide, Team } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { TeamLogo } from "@/components/TeamLogo";
 import { EloBadge } from "@/components/predictions/EloBadge";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
-import { MultiRadar, RadarSeries } from "@/components/charts/MultiRadar";
-import { MultiTrendLine, TrendSeries } from "@/components/charts/MultiTrendLine";
+import { RadarSeries } from "@/components/charts/MultiRadar";
+import { TrendSeries } from "@/components/charts/MultiTrendLine";
+import { usePersona } from "@/context/PersonaProvider";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
+import { WhyPredictionPanel } from "@/components/predictions/WhyPredictionPanel";
+
+const MultiRadar = dynamic(
+  () => import("@/components/charts/MultiRadar").then((m) => m.MultiRadar),
+  { loading: () => <p className="text-xs text-muted">Loading profile chart…</p> },
+);
+const MultiTrendLine = dynamic(
+  () => import("@/components/charts/MultiTrendLine").then((m) => m.MultiTrendLine),
+  { loading: () => <p className="text-xs text-muted">Loading trend chart…</p> },
+);
 
 const OFFENSE_RADAR = [
   "off_epa_per_play", "off_success_rate", "off_explosive_play_rate",
@@ -23,8 +35,13 @@ const DEFENSE_RADAR = [
 
 export default function H2HPage({ params }: { params: { a: string; b: string } }) {
   const router = useRouter();
+  const { persona } = usePersona();
   const a = params.a.toUpperCase();
   const b = params.b.toUpperCase();
+  const [showProfiles, setShowProfiles] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showHistory, setShowHistory] = useState(persona === "analyst");
+  const [showTrends, setShowTrends] = useState(false);
 
   const { data: allTeams } = useSWR(["teams-list"], () => api.listTeams());
   const { data: teamA } = useSWR(["team", a], () => api.getTeam(a));
@@ -55,12 +72,51 @@ export default function H2HPage({ params }: { params: { a: string; b: string } }
       ) : (
         <>
           <Banner data={data} teamA={teamA} teamB={teamB} />
+          <DecisionMetricsStrip data={data} />
           {data.predicted_matchup && <PredictionHero data={data} />}
           <MatchupBreakdownCard data={data} />
-          <RadarSection data={data} teamA={teamA} teamB={teamB} />
-          <DeltaTable data={data} />
-          <HistorySection data={data} />
-          <EloTrendCard data={data} />
+
+          {(persona === "analyst" || persona === "fantasy") && (
+            <ExpandableSection
+              title="Profile comparison charts"
+              subtitle="Percentile radar by offense and defense"
+              open={showProfiles}
+              onToggle={() => setShowProfiles((v) => !v)}
+            >
+              {showProfiles && <RadarSection data={data} teamA={teamA} teamB={teamB} />}
+            </ExpandableSection>
+          )}
+
+          {persona !== "fantasy" && (
+            <ExpandableSection
+              title="Deep stat table"
+              subtitle="Direct same-side deltas and edges"
+              open={showDetails}
+              onToggle={() => setShowDetails((v) => !v)}
+            >
+              {showDetails && <DeltaTable data={data} />}
+            </ExpandableSection>
+          )}
+
+          <ExpandableSection
+            title="Head-to-head history"
+            subtitle="Recent results and line context"
+            open={showHistory}
+            onToggle={() => setShowHistory((v) => !v)}
+          >
+            {showHistory && <HistorySection data={data} />}
+          </ExpandableSection>
+
+          {persona === "analyst" && (
+            <ExpandableSection
+              title="Elo trajectories"
+              subtitle="Longitudinal rating trend context"
+              open={showTrends}
+              onToggle={() => setShowTrends((v) => !v)}
+            >
+              {showTrends && <EloTrendCard data={data} />}
+            </ExpandableSection>
+          )}
         </>
       )}
     </div>
@@ -205,6 +261,15 @@ function PredictionHero({ data }: { data: H2HMatchup }) {
         <Mini label="Score" value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`} />
         <Mini label="Game script" value={(p as any).game_script || "—"} />
       </div>
+      <div className="mt-3">
+        <WhyPredictionPanel
+          game={{
+            home_team_id: pred.home_team,
+            away_team_id: pred.away_team,
+            prediction: p,
+          }}
+        />
+      </div>
       {pred.played && pred.home_score != null && (
         <p className="text-xs text-muted mt-3">
           Final: {pred.away_team} {pred.away_score} – {pred.home_team} {pred.home_score}
@@ -217,6 +282,67 @@ function PredictionHero({ data }: { data: H2HMatchup }) {
         </p>
       )}
     </Card>
+  );
+}
+
+function DecisionMetricsStrip({ data }: { data: H2HMatchup }) {
+  const rows = (data.decision_metrics ?? []).slice(0, 5);
+  if (rows.length === 0) return null;
+  return (
+    <Card
+      title="Decision snapshot"
+      action={<span className="text-[11px] text-muted">Comparison-first read</span>}
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2.5">
+        {rows.map((m) => (
+          <div key={m.key} className="rounded-lg border divider bg-bg/60 px-3 py-2.5">
+            <div className="text-[10px] uppercase tracking-wide text-muted">{m.label}</div>
+            <div className="text-sm font-semibold tabular-nums mt-1">
+              {typeof m.value === "number"
+                ? `${m.value > 0 ? "+" : ""}${m.value.toFixed(m.key.includes("prob") ? 3 : 2)}`
+                : "—"}
+            </div>
+            <div className="text-[10px] text-muted mt-1">
+              {m.favored ? `Lean: ${m.favored}` : m.detail ?? "Context unavailable"}
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-muted mt-2.5">
+        Availability-adjusted spread proxy is a transparent heuristic, not an injury-report model.
+      </p>
+    </Card>
+  );
+}
+
+function ExpandableSection({
+  title,
+  subtitle,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="panel p-3">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between text-left"
+        onClick={onToggle}
+      >
+        <div>
+          <h3 className="text-sm font-semibold">{title}</h3>
+          <p className="text-[11px] text-muted">{subtitle}</p>
+        </div>
+        <span className="text-xs text-muted">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && <div className="mt-3">{children}</div>}
+    </section>
   );
 }
 

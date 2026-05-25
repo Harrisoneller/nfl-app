@@ -21,12 +21,20 @@ from ..logging_config import get_logger
 from ..models.seed import NFL_TEAMS
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import analytics_service, artifact_cache, elo_service, prediction_dist
+from . import (
+    analytics_service,
+    artifact_cache,
+    backtest_service,
+    elo_service,
+    prediction_dist,
+    uncertainty_service,
+)
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
+PREDICTION_MODEL_VERSION = "elo-v2"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
@@ -41,6 +49,59 @@ GAME_SIGMA = prediction_dist.NFL_MARGIN_SIGMA  # ~13.5 points
 # an over-tight sum of independent coin flips. TUNABLE: validate against the
 # backtest PIT histogram / observed win-total dispersion (see PREDICTION_MODEL_SPEC).
 RATING_SIGMA_ELO = 55.0
+
+
+def _build_explainability(
+    *,
+    home_rating: float,
+    away_rating: float,
+    neutral_site: bool,
+    home_off_ppg: float,
+    away_off_ppg: float,
+    home_def_ppg_allowed: float,
+    away_def_ppg_allowed: float,
+) -> dict[str, Any]:
+    """Transparent v1 feature contribution heuristic for prediction UI."""
+    hfa = 0.0 if neutral_site else elo_service.HOME_FIELD_ADVANTAGE
+    rating_edge = home_rating + hfa - away_rating
+    home_matchup_edge = home_off_ppg - away_def_ppg_allowed
+    away_matchup_edge = away_off_ppg - home_def_ppg_allowed
+    scoring_edge = home_matchup_edge - away_matchup_edge
+    pace_bias = (home_off_ppg + away_off_ppg) - (2 * LEAGUE_AVG_POINTS_PER_TEAM)
+    defense_resistance_edge = away_def_ppg_allowed - home_def_ppg_allowed
+
+    contributors = [
+        {
+            "feature": "elo_rating_gap",
+            "label": "Elo + home-field gap",
+            "impact": round(rating_edge / 28.0, 2),
+            "direction": "home" if rating_edge >= 0 else "away",
+        },
+        {
+            "feature": "offense_vs_defense_gap",
+            "label": "Offense vs opposing defense",
+            "impact": round(scoring_edge / 2.8, 2),
+            "direction": "home" if scoring_edge >= 0 else "away",
+        },
+        {
+            "feature": "defensive_resistance_gap",
+            "label": "Defensive resistance edge",
+            "impact": round(defense_resistance_edge / 2.2, 2),
+            "direction": "home" if defense_resistance_edge >= 0 else "away",
+        },
+        {
+            "feature": "game_pace_environment",
+            "label": "Expected scoring environment",
+            "impact": round(pace_bias / 6.0, 2),
+            "direction": "home" if pace_bias >= 0 else "away",
+        },
+    ]
+    contributors.sort(key=lambda x: abs(float(x["impact"])), reverse=True)
+    return {
+        "method": "heuristic_inputs_v1",
+        "summary": "Directional feature impacts estimated from Elo and scoring tendency inputs.",
+        "top_contributors": contributors[:3],
+    }
 
 
 def predict_game(
@@ -126,6 +187,15 @@ def predict_game(
             "expected_home_pts": round(expected_home_pts, 1),
             "expected_away_pts": round(expected_away_pts, 1),
         },
+        "explainability": _build_explainability(
+            home_rating=home_rating,
+            away_rating=away_rating,
+            neutral_site=neutral_site,
+            home_off_ppg=h_off,
+            away_off_ppg=a_off,
+            home_def_ppg_allowed=h_def,
+            away_def_ppg_allowed=a_def,
+        ),
     }
 
 
@@ -167,6 +237,7 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
     if "game_type" in games.columns:
         games = games[games["game_type"].astype(str).str.upper() == "REG"]
     out = []
+    calibration_score, expected_calibration_error = await _calibration_context(db)
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
         if not h or not a:
@@ -179,6 +250,20 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
                             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def)
+        pred = uncertainty_service.attach_uncertainty(
+            pred,
+            model_version=PREDICTION_MODEL_VERSION,
+            expected_calibration_error=expected_calibration_error,
+        )
+        explainability = pred.get("explainability")
+        if isinstance(explainability, dict):
+            explainability["confidence_context"] = {
+                "tier": pred.get("confidence_tier"),
+                "calibration_score": pred.get("calibration_score"),
+                "expected_calibration_error": pred.get("expected_calibration_error"),
+                "interval_80_home_win_prob": pred.get("home_win_prob_interval_80"),
+            }
+        pred["global_calibration_score"] = calibration_score
         out.append({
             "id": str(g.get("game_id") or ""),
             "season": season,
@@ -194,6 +279,19 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             "prediction": pred,
         })
     return {"season": season, "week": week, "games": out}
+
+
+async def _calibration_context(db: Session) -> tuple[float, float | None]:
+    """Load calibration metadata from backtest artifacts."""
+    try:
+        backtest = await backtest_service.backtest_elo(db)
+        overall = backtest.get("overall", {})
+        ece = overall.get("expected_calibration_error")
+        score = uncertainty_service.calibration_score_from_ece(ece)
+        return score, ece
+    except Exception as e:  # noqa: BLE001
+        log.warning("prediction_calibration_lookup_failed", error=str(e)[:200])
+        return 0.5, None
 
 
 # ---- Monte Carlo ----------------------------------------------------------
