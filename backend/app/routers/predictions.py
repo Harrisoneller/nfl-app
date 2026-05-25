@@ -36,7 +36,7 @@ async def games(
     season = season or current_or_upcoming_season()
     base, base_budget = await request_budget_service.run_with_budget(
         budget_name="predictions.games.base",
-        timeout_ms=2400,
+        timeout_ms=8000,
         execute=lambda: predictions_service.predict_week(db, season, week),
         summary_fallback=lambda: {
             "season": season,

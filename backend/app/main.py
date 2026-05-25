@@ -116,13 +116,20 @@ def create_app() -> FastAPI:
     app.add_middleware(EndpointSLOMiddleware)
     app.add_middleware(CacheControlMiddleware)
     app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origin_list,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
+    cors_kwargs: dict = {
+        "allow_origins": settings.cors_origin_list,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+        "expose_headers": ["X-Request-ID", "X-Cache-Status"],
+    }
+    if settings.cors_origin_regex:
+        cors_kwargs["allow_origin_regex"] = settings.cors_origin_regex
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
+    log.info(
+        "cors_configured",
+        origins=settings.cors_origin_list,
+        vercel_regex=bool(settings.cors_origin_regex),
     )
 
     # Rate limiter (slowapi)

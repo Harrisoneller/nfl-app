@@ -27,6 +27,8 @@ def health() -> dict:
         "app_role": s.app_role,
         "scheduler_enabled": s.scheduler_enabled,
         "cache_backend": s.cache_backend,
+        "cors_origins": s.cors_origin_list,
+        "cors_vercel_regex": bool(s.cors_origin_regex),
         "llm_provider": s.llm_provider,
         "multi_user": s.multi_user_mode,
         "twitter_enabled": s.enable_twitter,

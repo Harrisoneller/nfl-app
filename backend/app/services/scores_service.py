@@ -51,8 +51,14 @@ async def refresh_scoreboard(db: Session) -> int:
         game.status_detail = ev.get("status_detail") or ""
         game.home_team_id = home_id
         game.away_team_id = away_id
-        game.home_score = ev.get("home_score")
-        game.away_score = ev.get("away_score")
+        # ESPN returns 0 for scheduled/upcoming games — treat as NULL unless game is live/final
+        status = (ev.get("status") or "scheduled").lower()
+        if status in ("final", "in", "live", "in progress"):
+            game.home_score = ev.get("home_score")
+            game.away_score = ev.get("away_score")
+        else:
+            game.home_score = None
+            game.away_score = None
         game.venue = ev.get("venue") or ""
         game.broadcast = ev.get("broadcast") or ""
         game.raw = ev.get("raw") or {}

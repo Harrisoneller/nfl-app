@@ -9,11 +9,37 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _cors_www_alias(origin: str) -> str | None:
+    """Return the www ↔ apex alternate for a site origin, or None if not applicable."""
+    parsed = urlparse(origin)
+    host = parsed.hostname
+    if not host or host in ("localhost", "127.0.0.1") or host.endswith(".vercel.app"):
+        return None
+    port = f":{parsed.port}" if parsed.port else ""
+    scheme = parsed.scheme or "https"
+    if host.startswith("www."):
+        return f"{scheme}://{host[4:]}{port}"
+    return f"{scheme}://www.{host}{port}"
+
+
+def expand_cors_origins(origins: list[str]) -> list[str]:
+    """Dedupe and add www/apex pairs so both https://site.com and https://www.site.com work."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for origin in origins:
+        for candidate in (origin, _cors_www_alias(origin)):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                out.append(candidate)
+    return out
 
 
 class Settings(BaseSettings):
@@ -130,8 +156,23 @@ class Settings(BaseSettings):
     odds_min_refresh_hours: float = 6.0    # floor: skip an auto-pull if we pulled more recently than this
     odds_lookahead_days: int = 10          # offseason guard: skip auto-pull if no game kicks off within this window
 
-    # CORS
+    # CORS — browser Origin must match allow_origins and/or cors_origin_regex (see main.py).
+    # Production: set CORS_ORIGINS to your Vercel URL(s), comma-separated, no trailing slash.
     cors_origins: str = "http://localhost:3000"
+    # Also allow https://<anything>.vercel.app (production + preview deploys).
+    cors_allow_vercel_regex: bool = True
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def normalize_cors_origins(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        parts = []
+        for origin in v.split(","):
+            o = origin.strip().rstrip("/")
+            if o:
+                parts.append(o)
+        return ",".join(parts)
 
     @property
     def rss_feed_list(self) -> list[str]:
@@ -143,7 +184,22 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [u.strip() for u in self.cors_origins.split(",") if u.strip()]
+        raw = [u.strip().rstrip("/") for u in self.cors_origins.split(",") if u.strip()]
+        return expand_cors_origins(raw)
+
+    @property
+    def cors_origin_regex(self) -> str | None:
+        if not self.cors_allow_vercel_regex:
+            return None
+        return r"https://.*\.vercel\.app"
+
+    @property
+    def cors_allows_only_localhost(self) -> bool:
+        """True when no production frontend origin is configured."""
+        return all(
+            "localhost" in o or "127.0.0.1" in o
+            for o in self.cors_origin_list
+        )
 
     @property
     def scheduler_enabled(self) -> bool:
