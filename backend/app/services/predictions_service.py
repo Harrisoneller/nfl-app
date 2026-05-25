@@ -212,43 +212,12 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
     Prefers the nflverse record (game_id like "2026_01_AWAY_HOME") because it
     has accurate NULL scores for unplayed games (ESPN reports 0).
     """
-    # #region agent log
-    import json as _json, time as _time
-    _log_path = "/Users/HarrisonEller/Documents/Claude/Projects/Principal Developer/nfl-app/.cursor/debug-7730a3.log"
-    def _dlog(msg, data, hyp=""):
-        with open(_log_path, "a") as _f:
-            _f.write(_json.dumps({"sessionId":"7730a3","timestamp":int(_time.time()*1000),"location":"predictions_service.py:_schedule_from_db","message":msg,"data":data,"hypothesisId":hyp}) + "\n")
-    # #endregion
-
     stmt = select(Game).where(Game.season == season, Game.season_type == 2)
     games = db.execute(stmt).scalars().all()
-
-    # #region agent log
-    _dlog("db_query_result", {"season": season, "total_games": len(games),
-                              "season_types_in_db": list(set(g.season_type for g in games)) if games else [],
-                              "sample_ids": [g.id for g in games[:5]] if games else []}, "H2,H3")
-    # #endregion
-
     if not games:
-        # #region agent log
-        from sqlalchemy import text as _text
-        all_count = db.execute(_text("SELECT season, season_type, count(*) FROM games GROUP BY season, season_type ORDER BY season DESC LIMIT 10")).fetchall()
-        _dlog("db_empty_for_season", {"season": season, "all_game_counts": [{"season": r[0], "type": r[1], "count": r[2]} for r in all_count]}, "H3")
-        # #endregion
         return None
 
-    # #region agent log
-    _dlog("raw_games_from_db", {"total_count": len(games), "season": season, "week1_sample": [
-        {"id": g.id, "week": g.week, "home": g.home_team_id, "away": g.away_team_id,
-         "home_score": g.home_score, "away_score": g.away_score, "status": g.status}
-        for g in games if g.week == 1
-    ][:20]}, "H1,H3")
-    # #endregion
-
-    # Deduplicate: keep one record per (week, home, away). Prefer nflverse
-    # format IDs (YYYY_WW_*) which have correct NULL scores for future games.
     seen: dict[tuple, dict] = {}
-    duplicates_found = []
     for g in games:
         key = (g.week, g.home_team_id, g.away_team_id)
         is_nflverse_id = g.id and "_" in g.id and g.id[:4].isdigit()
@@ -268,25 +237,12 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
         existing = seen.get(key)
         if existing is None:
             seen[key] = row
-        else:
-            # #region agent log
-            duplicates_found.append({"key": str(key), "existing_id": existing["game_id"], "new_id": g.id,
-                                     "existing_nflverse": existing.get("_is_nflverse"), "new_nflverse": is_nflverse_id,
-                                     "existing_score": f"{existing.get('home_score')}-{existing.get('away_score')}",
-                                     "new_score": f"{g.home_score}-{g.away_score}"})
-            # #endregion
-            if is_nflverse_id and not existing.get("_is_nflverse"):
-                seen[key] = row
-            elif not is_nflverse_id and existing.get("_is_nflverse"):
-                pass  # keep existing nflverse record
-            elif g.home_score is None and existing.get("home_score") is not None:
-                seen[key] = row
-
-    # #region agent log
-    _dlog("dedup_result", {"before": len(games), "after": len(seen),
-                           "duplicates_found": duplicates_found[:10],
-                           "week1_final": [r for r in seen.values() if r["week"] == 1][:5]}, "H1,H3,H4")
-    # #endregion
+        elif is_nflverse_id and not existing.get("_is_nflverse"):
+            seen[key] = row
+        elif not is_nflverse_id and existing.get("_is_nflverse"):
+            pass  # keep existing nflverse record
+        elif g.home_score is None and existing.get("home_score") is not None:
+            seen[key] = row
 
     rows = [{k: v for k, v in r.items() if k != "_is_nflverse"} for r in seen.values()]
     return pd.DataFrame(rows) if rows else None
@@ -294,24 +250,12 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
 
 async def _season_schedule(season: int, db: Session | None = None) -> pd.DataFrame | None:
     """Get schedule from DB first (synced by worker), fall back to nflverse."""
-    # #region agent log
-    import json as _json3, time as _time3
-    _log_path3 = "/Users/HarrisonEller/Documents/Claude/Projects/Principal Developer/nfl-app/.cursor/debug-7730a3.log"
-    with open(_log_path3, "a") as _f3:
-        _f3.write(_json3.dumps({"sessionId":"7730a3","timestamp":int(_time3.time()*1000),"location":"predictions_service.py:_season_schedule","message":"entry","data":{"season":season,"db_is_none":db is None},"hypothesisId":"H2"}) + "\n")
-    # #endregion
-
     if db is not None:
         df = _schedule_from_db(db, season)
         if df is not None and len(df) > 0:
             df["home_team"] = df["home_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
             df["away_team"] = df["away_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
             return df
-
-    # #region agent log
-    with open(_log_path3, "a") as _f3:
-        _f3.write(_json3.dumps({"sessionId":"7730a3","timestamp":int(_time3.time()*1000),"location":"predictions_service.py:_season_schedule","message":"falling_back_to_nflverse","data":{"season":season,"db_was_none":db is None},"hypothesisId":"H2"}) + "\n")
-    # #endregion
 
     df = await _nfl.schedules_df(season)
     if df is None or len(df) == 0:
@@ -388,12 +332,6 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             "away_elo": round(ar, 1),
             "prediction": pred,
         })
-    # #region agent log
-    import json as _json2, time as _time2
-    _log_path2 = "/Users/HarrisonEller/Documents/Claude/Projects/Principal Developer/nfl-app/.cursor/debug-7730a3.log"
-    with open(_log_path2, "a") as _f2:
-        _f2.write(_json2.dumps({"sessionId":"7730a3","timestamp":int(_time2.time()*1000),"location":"predictions_service.py:predict_week","message":"predict_week_result","data":{"season":season,"week":week,"num_games":len(out),"game_summaries":[{"id":g["id"],"home":g["home_team_id"],"away":g["away_team_id"],"home_score":g["home_score"],"away_score":g["away_score"]} for g in out][:20]},"hypothesisId":"H2,H3"}) + "\n")
-    # #endregion
     return {"season": season, "week": week, "games": out}
 
 
