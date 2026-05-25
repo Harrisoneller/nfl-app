@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
@@ -15,7 +15,8 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[TeamOut])
-def list_teams(db: Session = Depends(get_db)):
+def list_teams(response: Response, db: Session = Depends(get_db)):
+    response.headers["X-Cache-Status"] = "hit"
     teams_service.ensure_seeded(db)
     return teams_service.list_teams(db)
 
@@ -44,8 +45,9 @@ def get_schedule(
 
 
 @router.get("/{team_id}/profile")
-async def get_team_profile(team_id: str, season: int | None = None):
+async def get_team_profile(team_id: str, response: Response, season: int | None = None):
     season = season or latest_completed_season()
+    response.headers["X-Cache-Status"] = "miss"
     return await analytics_service.team_profile(team_id.upper(), season)
 
 
@@ -103,7 +105,7 @@ async def get_upcoming_season(team_id: str):
     sched_rows = await _team_upcoming_schedule(tid, upcoming)
 
     # Build per-opponent rating from the previous season's profile
-    prev_aggs = await analytics_service._team_pbp_aggregates(previous)
+    prev_aggs = await analytics_service._team_pbp_aggregates(previous, allow_live_fallback=False)
     opponents = []
     for g in sched_rows:
         opp = g["away_team_id"] if g["home_team_id"] == tid else g["home_team_id"]

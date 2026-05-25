@@ -10,6 +10,9 @@ from ..config import get_settings
 from ..services import (
     analytics_service,
     artifact_cache,
+    endpoint_slo_service,
+    experiment_service,
+    feature_store_service,
     materialize_service,
     metrics_index_service,
     news_service,
@@ -197,3 +200,61 @@ async def data_availability():
             row["seasonal_rows"] = None
         out.append(row)
     return {"seasons": out, "latest_completed": latest}
+
+
+@router.get("/feature-store/snapshots")
+def feature_store_snapshots(
+    db: Session = Depends(get_db),
+    season: int | None = None,
+    week: int | None = None,
+    game_id: str | None = None,
+    entity_id: str | None = None,
+    limit: int = 100,
+):
+    """Inspect persisted train/serve feature snapshots."""
+    rows = feature_store_service.get_snapshots(
+        db,
+        season=season,
+        week=week,
+        game_id=game_id,
+        entity_id=entity_id,
+        limit=limit,
+    )
+    return {"count": len(rows), "rows": rows}
+
+
+@router.get("/slo/endpoints")
+def slo_endpoints(window_seconds: int = 900):
+    """Current rolling per-endpoint latency/cache snapshot."""
+    return endpoint_slo_service.current_snapshot(window_seconds=window_seconds)
+
+
+@router.post("/slo/flush")
+def slo_flush(db: Session = Depends(get_db), window_seconds: int = 900):
+    """Persist current in-memory SLO stats for deploy history."""
+    return endpoint_slo_service.flush_snapshot(db, window_seconds=window_seconds)
+
+
+@router.get("/slo/history")
+def slo_history(
+    db: Session = Depends(get_db),
+    endpoint: str | None = None,
+    limit: int = 200,
+):
+    return {
+        "rows": endpoint_slo_service.recent_history(
+            db,
+            endpoint=endpoint,
+            limit=limit,
+        )
+    }
+
+
+@router.get("/experiments/report")
+def experiment_report(
+    experiment_key: str = "insight_card_order_v1",
+    days: int = 7,
+    db: Session = Depends(get_db),
+):
+    """CTR + retention proxy report by variant."""
+    return experiment_service.report(db, experiment_key=experiment_key, days=days)

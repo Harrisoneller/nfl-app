@@ -6,8 +6,12 @@ autogenerate.
 from .chat import ChatMessage, ChatSession  # noqa: F401
 from .data_sync_run import DataSyncRun  # noqa: F401
 from .elo import TeamEloRating  # noqa: F401
+from .endpoint_slo_snapshot import EndpointSloSnapshot  # noqa: F401
+from .experiment_event import ExperimentEvent  # noqa: F401
+from .feature_snapshot import FeatureSnapshot  # noqa: F401
 from .game import Game, GameStat  # noqa: F401
 from .model_artifact import ModelArtifact  # noqa: F401
+from .model_lifecycle_run import ModelLifecycleRun  # noqa: F401
 from .news import NewsItem  # noqa: F401
 from .odds import OddsLine  # noqa: F401
 from .player import Player  # noqa: F401

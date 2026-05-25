@@ -3,6 +3,9 @@ import type { Metadata } from "next";
 import { Nav } from "@/components/Nav";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ToastProvider } from "@/components/Toast";
+import { AuthProvider } from "@/context/AuthProvider";
+import { ExperimentProvider } from "@/context/ExperimentProvider";
+import { PersonaProvider } from "@/context/PersonaProvider";
 
 export const metadata: Metadata = {
   title: {
@@ -31,8 +34,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className="min-h-screen">
         <ToastProvider>
-          <Nav />
-          <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+          <ExperimentProvider>
+            <PersonaProvider>
+              <AuthProvider>
+                <Nav />
+                <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+              </AuthProvider>
+            </PersonaProvider>
+          </ExperimentProvider>
           <footer className="max-w-7xl mx-auto px-4 py-8 text-xs text-muted">
             Statletics NFL · data via ESPN, Sleeper, nfl-data-py, The Odds API, Open-Meteo
           </footer>

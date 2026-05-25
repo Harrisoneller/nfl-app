@@ -1,7 +1,7 @@
 """Predictions API — Elo + ML, game-level + season-level."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
@@ -10,8 +10,10 @@ from ..services import (
     backtest_service,
     elo_service,
     ml_predictions_service,
+    model_lifecycle_service,
     player_predictions_service,
     predictions_service,
+    request_budget_service,
 )
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 
@@ -20,6 +22,7 @@ router = APIRouter()
 
 @router.get("/games")
 async def games(
+    response: Response,
     season: int | None = None,
     week: int | None = None,
     include_ml: bool = True,
@@ -31,9 +34,28 @@ async def games(
     XGBoost ML predictions side-by-side.
     """
     season = season or current_or_upcoming_season()
-    base = await predictions_service.predict_week(db, season, week)
+    base, base_budget = await request_budget_service.run_with_budget(
+        budget_name="predictions.games.base",
+        timeout_ms=2400,
+        execute=lambda: predictions_service.predict_week(db, season, week),
+        summary_fallback=lambda: {
+            "season": season,
+            "week": week,
+            "games": [],
+            "partial": True,
+        },
+    )
     if include_ml and base["week"] is not None:
-        ml = await ml_predictions_service.predict_week_ml(db, season, base["week"])
+        ml, ml_budget = await request_budget_service.run_with_budget(
+            budget_name="predictions.games.ml",
+            timeout_ms=1200,
+            execute=lambda: ml_predictions_service.predict_week_ml(db, season, base["week"]),
+            summary_fallback=lambda: {
+                "available": False,
+                "reason": "budget_limited",
+                "games": [],
+            },
+        )
         if ml.get("available"):
             ml_by_id = {g["game_id"]: g for g in ml["games"]}
             for g in base["games"]:
@@ -42,7 +64,24 @@ async def games(
                     g["ml_prediction"] = {
                         "predicted_spread": ml_g["predicted_spread"],
                         "predicted_home_margin": ml_g["predicted_home_margin"],
+                        "predicted_home_win_prob": ml_g.get("predicted_home_win_prob"),
+                        "market_baseline": ml_g.get("market_baseline"),
+                        "residual_diagnostics": ml_g.get("residual_diagnostics"),
+                        "calibration": ml_g.get("calibration"),
+                        "task_model_versions": ml_g.get("task_model_versions"),
                     }
+    else:
+        ml_budget = None
+    base["_budget"] = {
+        "base": base_budget,
+        "ml": ml_budget,
+    }
+    response.headers["X-Budget-Tier"] = (
+        "summary_fallback"
+        if base_budget.get("tier") != "primary"
+        else (ml_budget or {}).get("tier", "primary")
+    )
+    response.headers["X-Cache-Status"] = "miss"
     return base
 
 
@@ -197,3 +236,25 @@ async def train_ml(seasons: str | None = None, db: Session = Depends(get_db)):
         latest = latest_completed_season()
         season_list = list(range(latest - 3, latest + 1))
     return await ml_predictions_service.train(db, season_list)
+
+
+@router.get("/admin/lifecycle/latest")
+def lifecycle_latest(db: Session = Depends(get_db)):
+    """Latest lifecycle run summary + promotion decision."""
+    latest = model_lifecycle_service.latest_run(db)
+    champion = model_lifecycle_service.latest_promoted_run(db)
+    return {"latest": latest, "champion": champion}
+
+
+@router.post("/admin/lifecycle/run")
+async def lifecycle_run(
+    season: int | None = None,
+    force: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Run v1 lifecycle: train -> backtest -> calibrate -> compare -> decision."""
+    return await model_lifecycle_service.run_weekly_lifecycle(
+        db,
+        season=season,
+        force=force,
+    )

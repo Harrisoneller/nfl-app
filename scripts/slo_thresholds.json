@@ -1,0 +1,15 @@
+{
+  "window_seconds": 900,
+  "routes": {
+    "/h2h/{team_a}/{team_b}": { "p95_ms_max": 1500, "p99_ms_max": 2200, "cache_hit_rate_min": 0.0 },
+    "/predictions/games": { "p95_ms_max": 2200, "p99_ms_max": 3200, "cache_hit_rate_min": 0.0 },
+    "/odds": { "p95_ms_max": 700, "p99_ms_max": 1000, "cache_hit_rate_min": 0.0 },
+    "/odds/event/{event_id}": { "p95_ms_max": 800, "p99_ms_max": 1200, "cache_hit_rate_min": 0.0 },
+    "/teams": { "p95_ms_max": 600, "p99_ms_max": 900, "cache_hit_rate_min": 0.0 },
+    "/teams/{team_id}/profile": { "p95_ms_max": 1500, "p99_ms_max": 2200, "cache_hit_rate_min": 0.0 },
+    "/players": { "p95_ms_max": 700, "p99_ms_max": 1000, "cache_hit_rate_min": 0.0 },
+    "/players/{player_id}": { "p95_ms_max": 700, "p99_ms_max": 1000, "cache_hit_rate_min": 0.0 },
+    "/stats/compare/teams": { "p95_ms_max": 1600, "p99_ms_max": 2200, "cache_hit_rate_min": 0.0 },
+    "/stats/compare/players": { "p95_ms_max": 1600, "p99_ms_max": 2200, "cache_hit_rate_min": 0.0 }
+  }
+}

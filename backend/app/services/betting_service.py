@@ -305,6 +305,48 @@ def _lookup_market_entry(
     return None
 
 
+async def matchup_market_context(
+    db: Session,
+    *,
+    home_team_id: str,
+    away_team_id: str,
+    prediction: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Consensus market snapshot and model delta for a specific matchup."""
+    market = await _current_market_odds(db)
+    name_map = _full_name_to_id_map()
+    entry = _lookup_market_entry(market, name_map, home_team_id, away_team_id)
+    if not entry:
+        return None
+
+    out: dict[str, Any] = {"market": entry}
+    if prediction:
+        market_spread = entry.get("market_spread_home")
+        market_total = entry.get("market_total")
+        market_home_wp = entry.get("market_home_win_prob")
+        pred_spread = prediction.get("predicted_spread")
+        pred_total = prediction.get("predicted_total")
+        pred_home_wp = prediction.get("home_win_prob")
+        out["market_delta"] = {
+            "spread": (
+                round(float(market_spread) - float(pred_spread), 2)
+                if market_spread is not None and pred_spread is not None
+                else None
+            ),
+            "total": (
+                round(float(pred_total) - float(market_total), 2)
+                if market_total is not None and pred_total is not None
+                else None
+            ),
+            "home_win_prob": (
+                round(float(market_home_wp) - float(pred_home_wp), 3)
+                if market_home_wp is not None and pred_home_wp is not None
+                else None
+            ),
+        }
+    return out
+
+
 def _enrich_game_with_edge(
     g: dict[str, Any],
     market: dict[str, dict[str, Any]],

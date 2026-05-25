@@ -25,10 +25,12 @@ from ..services import (
     analytics_service,
     artifact_cache,
     awards_service,
+    endpoint_slo_service,
     elo_service,
     h2h_service,
     materialize_service,
     metrics_index_service,
+    model_lifecycle_service,
     news_service,
     odds_service,
     players_service,
@@ -123,8 +125,17 @@ async def _sync_metric_index(db: Session) -> dict[str, int]:
     return await metrics_index_service.sync_metric_index(db)
 
 
+async def _run_model_lifecycle(db: Session) -> dict[str, str]:
+    result = await model_lifecycle_service.run_weekly_lifecycle(db)
+    return {"status": str(result.get("status", "ok"))}
+
+
+async def _flush_endpoint_slo(db: Session) -> dict[str, int]:
+    return endpoint_slo_service.flush_snapshot(db, window_seconds=15 * 60)
+
+
 async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
-    """schedules → materialize → metric index → elo → profiles → MC → awards (no H2H)."""
+    """schedules → materialize → metric index → elo → profiles → MC → awards → H2H."""
     parts: list[str] = []
     n_sched = await _sync_schedules_all(db)
     parts.append(f"schedules={n_sched}")
@@ -140,6 +151,8 @@ async def _daily_derive_pipeline(db: Session) -> dict[str, str]:
     parts.append(f"profiles_teams={prof.get('teams', 0)}")
     pred = await _warmup_predictions(db)
     parts.append(f"predictions={pred.get('season', 'ok')}")
+    h2h = await _warmup_h2h(db)
+    parts.append(f"h2h_pairs={h2h}")
     return {"status": "ok", "message": "; ".join(parts)}
 
 
@@ -204,6 +217,14 @@ async def _job_materialize_only() -> None:
 
 async def _job_profiles_only() -> None:
     await sync_run_service.run_job("profiles", _build_profiles)
+
+
+async def _job_model_lifecycle() -> None:
+    await sync_run_service.run_job("model_lifecycle", _run_model_lifecycle)
+
+
+async def _job_endpoint_slo_snapshot() -> None:
+    await sync_run_service.run_job("endpoint_slo_snapshot", _flush_endpoint_slo)
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +326,21 @@ def start_scheduler() -> None:
         IntervalTrigger(hours=24 * 7),
         next_run_time=_soon(60 * 60 * 24),
         id="cache_vacuum_weekly",
+        coalesce=True,
+        max_instances=1,
+    )
+    sched.add_job(
+        _job_model_lifecycle,
+        CronTrigger(day_of_week="mon", hour=7, minute=45, timezone="UTC"),
+        id="model_lifecycle_weekly",
+        coalesce=True,
+        max_instances=1,
+    )
+    sched.add_job(
+        _job_endpoint_slo_snapshot,
+        IntervalTrigger(minutes=5),
+        next_run_time=_soon(60 * 3),
+        id="endpoint_slo_snapshot",
         coalesce=True,
         max_instances=1,
     )

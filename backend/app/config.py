@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     rate_limit_default: str = "60/minute"
     rate_limit_ai: str = "20/hour"
     rate_limit_search: str = "120/minute"
+    rate_limit_auth: str = "10/minute"
 
     # Observability
     sentry_dsn: str = ""           # set to enable Sentry

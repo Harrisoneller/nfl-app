@@ -149,7 +149,9 @@ async def _opponent_def_z(season: int, opp_team_id: str | None) -> float:
     """Z-score of opponent's def_epa_per_play vs league. Higher z = WORSE defense."""
     if not opp_team_id:
         return 0.0
-    aggs = await analytics_service._team_pbp_aggregates(season)  # noqa: SLF001 — internal but stable
+    aggs = await analytics_service._team_pbp_aggregates(
+        season, allow_live_fallback=False
+    )  # noqa: SLF001 — internal but stable
     if not aggs:
         return 0.0
     epas = [t.get("def_epa_per_play") for t in aggs.values()]

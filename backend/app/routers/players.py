@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..deps import get_db
@@ -14,6 +14,7 @@ router = APIRouter()
 
 @router.get("", response_model=list[PlayerOut])
 def list_players(
+    response: Response,
     q: str | None = Query(default=None, description="Name search"),
     position: str | None = None,
     team_id: str | None = None,
@@ -21,13 +22,15 @@ def list_players(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    response.headers["X-Cache-Status"] = "hit"
     return players_service.list_players(
         db, search=q, position=position, team_id=team_id, limit=limit, offset=offset
     )
 
 
 @router.get("/{player_id}", response_model=PlayerOut)
-def get_player(player_id: str, db: Session = Depends(get_db)):
+def get_player(player_id: str, response: Response, db: Session = Depends(get_db)):
+    response.headers["X-Cache-Status"] = "hit"
     p = players_service.get_player(db, player_id)
     if not p:
         raise HTTPException(404, "player not found")

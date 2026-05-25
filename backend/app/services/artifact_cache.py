@@ -71,6 +71,48 @@ def get(db: Session, kind: str, key: str) -> dict | None:
     return row.payload
 
 
+def latest_by_prefix(
+    db: Session,
+    kind: str,
+    key_prefix: str,
+    *,
+    include_expired: bool = True,
+) -> dict[str, Any] | None:
+    """Return latest artifact metadata for a key prefix, else None.
+
+    Useful for stale-safe read paths that use versioned keys (e.g. `...:v17`)
+    and want to serve the most recent prior payload if the newest version is
+    still computing or temporarily failing.
+    """
+    try:
+        row = db.execute(
+            select(ModelArtifact).where(
+                ModelArtifact.kind == kind,
+                ModelArtifact.key.like(f"{key_prefix}%"),
+            ).order_by(ModelArtifact.updated_at.desc()).limit(1)
+        ).scalar_one_or_none()
+    except Exception as e:  # noqa: BLE001
+        log.debug(
+            "artifact_latest_by_prefix_failed",
+            kind=kind,
+            prefix=key_prefix,
+            error=str(e)[:120],
+        )
+        return None
+    if row is None:
+        return None
+    is_stale = row.valid_until is not None and row.valid_until < _now()
+    if is_stale and not include_expired:
+        return None
+    return {
+        "key": row.key,
+        "payload": row.payload,
+        "is_stale": is_stale,
+        "updated_at": row.updated_at,
+        "valid_until": row.valid_until,
+    }
+
+
 def set_(
     db: Session, kind: str, key: str, payload: dict | list,
     ttl_seconds: int | None = None,

@@ -6,6 +6,7 @@ feel instant once warmed.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from collections import defaultdict
 from statistics import fmean, pstdev
@@ -15,6 +16,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
+from ..db import SessionLocal
 from ..logging_config import get_logger
 from ..models.game import Game
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
@@ -26,6 +28,9 @@ _nfl = NflDataPyAdapter()
 
 # In-process layer TTL (L2/Postgres handles durability + cross-restart reuse).
 L1_TTL = 60 * 30  # 30 min
+ACTIVE_TTL = 60 * 60 * 24  # 24h
+RECOMPUTE_BUDGET_SECONDS = 2.5
+PREWARM_CONCURRENCY = 8
 
 
 async def head_to_head(
@@ -42,7 +47,9 @@ async def head_to_head(
       - results survive restarts/redeploys instead of recomputing on the next
         click (the latency this is meant to remove).
     """
-    a, b = team_a.upper(), team_b.upper()
+    a_raw, b_raw = team_a.upper(), team_b.upper()
+    a = canonical_team(a_raw) or a_raw
+    b = canonical_team(b_raw) or b_raw
     if a == b:
         return {"error": "Pick two different teams"}  # never cache the error case
     season = season or current_or_upcoming_season()
@@ -51,15 +58,39 @@ async def head_to_head(
     # Completed seasons are immutable; the active/upcoming season gets a 24h
     # backstop on top of the version key (covers schedule corrections etc.).
     is_completed = season < current_or_upcoming_season()
-    ttl = None if is_completed else 60 * 60 * 24
-
-    return await artifact_cache.get_or_compute(
+    ttl = None if is_completed else ACTIVE_TTL
+    key = f"{a}:{b}:{season}:v{final_count}"
+    cache_args = dict(
         kind="h2h",
-        key=f"{a}:{b}:{season}:v{final_count}",
+        key=key,
         compute=lambda: _compute_head_to_head(db, a, b, season),
         ttl_seconds=ttl,
         l1_ttl_seconds=L1_TTL,
     )
+    fallback = _latest_cached_h2h(a, b, season)
+    if fallback is None:
+        return await artifact_cache.get_or_compute(**cache_args)
+    try:
+        return await asyncio.wait_for(
+            artifact_cache.get_or_compute(**cache_args),
+            timeout=RECOMPUTE_BUDGET_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        log.warning("h2h_recompute_timed_out_serving_stale", key=key, stale_key=fallback["key"])
+        return _with_stale_cache_meta(
+            fallback["payload"],
+            requested_key=key,
+            stale_key=fallback["key"],
+            reason="timeout",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("h2h_recompute_failed_serving_stale", key=key, error=str(e)[:160])
+        return _with_stale_cache_meta(
+            fallback["payload"],
+            requested_key=key,
+            stale_key=fallback["key"],
+            reason="compute_error",
+        )
 
 
 def _final_games_count(db: Session, season: int) -> int:
@@ -72,6 +103,48 @@ def _final_games_count(db: Session, season: int) -> int:
         )
     except Exception:  # noqa: BLE001 — versioning must never break the request
         return 0
+
+
+def _latest_cached_h2h(a: str, b: str, season: int) -> dict[str, Any] | None:
+    """Most recent H2H payload for this ordered pair/season (fresh or stale)."""
+    prefix = f"{a}:{b}:{season}:v"
+    try:
+        local = SessionLocal()
+        try:
+            return artifact_cache.latest_by_prefix(
+                local,
+                kind="h2h",
+                key_prefix=prefix,
+                include_expired=True,
+            )
+        finally:
+            local.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _with_stale_cache_meta(
+    payload: Any,
+    *,
+    requested_key: str,
+    stale_key: str,
+    reason: str,
+) -> Any:
+    """Attach cache metadata to stale-served responses without mutating source."""
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    meta = dict(out.get("_cache") or {})
+    meta.update(
+        {
+            "served_stale": True,
+            "reason": reason,
+            "requested_key": requested_key,
+            "stale_key": stale_key,
+        }
+    )
+    out["_cache"] = meta
+    return out
 
 
 async def _compute_head_to_head(
@@ -93,9 +166,9 @@ async def _compute_head_to_head(
     # ---- Predicted matchup ---------------------------------------------------
     # If the two teams play in the current season, surface the game prediction.
     upcoming_game = await _scheduled_meeting(season, a, b)
-    aggs = await analytics_service._team_pbp_aggregates(season)
+    aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
-        aggs = await analytics_service._team_pbp_aggregates(season - 1)
+        aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
 
     predicted_game = None
     if upcoming_game:
@@ -128,6 +201,14 @@ async def _compute_head_to_head(
             "home_team": a, "away_team": b, "week": None, "gameday": None,
             "neutral_site": True, "hypothetical": True, "prediction": pred,
         }
+    market_context = None
+    if predicted_game:
+        market_context = await betting_service.matchup_market_context(
+            db,
+            home_team_id=predicted_game["home_team"],
+            away_team_id=predicted_game["away_team"],
+            prediction=predicted_game.get("prediction"),
+        )
 
     # ---- Profile delta + cross-side matchup breakdown ----------------------
     profile_season = season - 1 if season > last_completed else season
@@ -136,12 +217,24 @@ async def _compute_head_to_head(
     # League distribution for the SAME season the profiles came from — needed to
     # turn raw offense-vs-defense gaps into matchup-adjusted expectations and
     # significance-scored edges (not "any positive delta = edge").
-    league_aggs = await analytics_service._team_pbp_aggregates(profile_season)  # noqa: SLF001
+    league_aggs = await analytics_service._team_pbp_aggregates(
+        profile_season, allow_live_fallback=False
+    )  # noqa: SLF001
     if not league_aggs:
-        league_aggs = await analytics_service._team_pbp_aggregates(profile_season - 1)  # noqa: SLF001
+        league_aggs = await analytics_service._team_pbp_aggregates(
+            profile_season - 1, allow_live_fallback=False
+        )  # noqa: SLF001
     league_stats = _league_metric_stats(league_aggs)
     deltas = _profile_deltas(profile_a, profile_b)
     matchup_breakdown = _cross_side_matchups(profile_a, profile_b, a, b, league_stats)
+    decision_metrics = _decision_metrics(
+        profile_a=profile_a,
+        profile_b=profile_b,
+        predicted_game=predicted_game,
+        market_context=market_context,
+        team_a=a,
+        team_b=b,
+    )
 
     # ---- Historical H2H ------------------------------------------------------
     history = await _historical_h2h(a, b, n_seasons=8)
@@ -161,6 +254,8 @@ async def _compute_head_to_head(
         "grade": {"a": grade_a, "b": grade_b},
         "record": {"a": record_a, "b": record_b, "season": last_completed},
         "predicted_matchup": predicted_game,
+        "market_context": market_context,
+        "decision_metrics": decision_metrics,
         "profile": {
             "a": profile_a, "b": profile_b,
             "deltas": deltas,
@@ -222,8 +317,10 @@ async def _historical_h2h(a: str, b: str, n_seasons: int) -> dict[str, Any]:
     out_games = []
     a_wins = b_wins = ties = 0
     for _, g in matchups.iterrows():
-        home_score = int(g["home_score"]); away_score = int(g["away_score"])
-        home = g["home_team"]; away = g["away_team"]
+        home_score = int(g["home_score"])
+        away_score = int(g["away_score"])
+        home = g["home_team"]
+        away = g["away_team"]
         if home_score > away_score:
             winner = home
         elif home_score < away_score:
@@ -458,6 +555,89 @@ def _profile_deltas(profile_a: dict, profile_b: dict) -> list[dict]:
     return out
 
 
+def _decision_metrics(
+    *,
+    profile_a: dict,
+    profile_b: dict,
+    predicted_game: dict[str, Any] | None,
+    market_context: dict[str, Any] | None,
+    team_a: str,
+    team_b: str,
+) -> list[dict[str, Any]]:
+    """Top-of-page decision metrics for quick H2H reads."""
+
+    def val(profile: dict, key: str) -> float | None:
+        metric = (profile.get("metrics") or {}).get(key) or {}
+        raw = metric.get("value")
+        return float(raw) if isinstance(raw, (int, float)) else None
+
+    out: list[dict[str, Any]] = []
+    off_epa_a = val(profile_a, "off_epa_per_play")
+    off_epa_b = val(profile_b, "off_epa_per_play")
+    if off_epa_a is not None and off_epa_b is not None:
+        diff = off_epa_a - off_epa_b
+        out.append({
+            "key": "epa_diff",
+            "label": "Offensive EPA diff",
+            "value": round(diff, 3),
+            "favored": team_a if diff >= 0 else team_b,
+            "detail": f"{team_a} {off_epa_a:.3f} vs {team_b} {off_epa_b:.3f}",
+        })
+
+    sacks_a = val(profile_a, "sacks_per_game")
+    sacks_b = val(profile_b, "sacks_per_game")
+    if sacks_a is not None and sacks_b is not None:
+        diff = sacks_a - sacks_b
+        out.append({
+            "key": "pressure_proxy_diff",
+            "label": "Pressure proxy diff (sacks/g)",
+            "value": round(diff, 2),
+            "favored": team_a if diff >= 0 else team_b,
+            "detail": f"{team_a} {sacks_a:.2f} vs {team_b} {sacks_b:.2f}",
+        })
+
+    pred = predicted_game.get("prediction") if predicted_game else None
+    if pred:
+        spread = pred.get("predicted_spread")
+        if isinstance(spread, (int, float)):
+            proxy = round(float(spread) * 0.85, 2)
+            favored = predicted_game.get("home_team") if proxy <= 0 else predicted_game.get("away_team")
+            out.append({
+                "key": "injury_adjusted_spread_proxy",
+                "label": "Availability-adjusted spread proxy",
+                "value": proxy,
+                "favored": favored,
+                "detail": "Heuristic: 15% shrink toward pick'em to absorb unknown availability shocks.",
+            })
+
+        explainability = pred.get("explainability") or {}
+        confidence = explainability.get("confidence_context") if isinstance(explainability, dict) else {}
+        out.append({
+            "key": "confidence",
+            "label": "Confidence / calibration",
+            "value": confidence.get("calibration_score") if isinstance(confidence, dict) else pred.get("calibration_score"),
+            "favored": None,
+            "detail": (
+                f"{confidence.get('tier', pred.get('confidence_tier', 'n/a'))} confidence"
+                if isinstance(confidence, dict)
+                else f"{pred.get('confidence_tier', 'n/a')} confidence"
+            ),
+        })
+
+    if market_context and market_context.get("market_delta"):
+        delta = market_context["market_delta"]
+        spread_delta = delta.get("spread")
+        if isinstance(spread_delta, (int, float)):
+            out.append({
+                "key": "market_delta_spread",
+                "label": "Model vs market spread delta",
+                "value": round(float(spread_delta), 2),
+                "favored": predicted_game.get("home_team") if spread_delta > 0 else predicted_game.get("away_team"),
+                "detail": "Positive means market is more home-favoring than our model.",
+            })
+    return out[:5]
+
+
 def _safe_int(v) -> int | None:
     try:
         return int(v) if pd.notna(v) else None
@@ -485,6 +665,31 @@ def _upcoming_week_matchups(db: Session, season: int) -> list[tuple[str, str]]:
     return [(g.home_team_id, g.away_team_id) for g in games if g.home_team_id and g.away_team_id]
 
 
+def _recent_final_matchups(db: Session, season: int, weeks: int = 2) -> list[tuple[str, str]]:
+    """Recently completed games people often click into after scoreboard checks."""
+    row = (
+        db.query(Game.week)
+        .filter(Game.season == season, Game.status == "final", Game.week.isnot(None))
+        .order_by(Game.week.desc())
+        .first()
+    )
+    if not row:
+        return []
+    max_week = row[0]
+    min_week = max(1, int(max_week) - weeks + 1)
+    games = (
+        db.query(Game)
+        .filter(
+            Game.season == season,
+            Game.status == "final",
+            Game.week.isnot(None),
+            Game.week >= min_week,
+        )
+        .all()
+    )
+    return [(g.home_team_id, g.away_team_id) for g in games if g.home_team_id and g.away_team_id]
+
+
 def _prewarm_pairs(db: Session, season: int) -> list[tuple[str, str]]:
     """Pairs to pre-compute: all intra-division rivalries + this week's games.
 
@@ -504,6 +709,8 @@ def _prewarm_pairs(db: Session, season: int) -> list[tuple[str, str]]:
                 unordered.add(frozenset((ids[i], ids[j])))
     for home, away in _upcoming_week_matchups(db, season):
         unordered.add(frozenset((home, away)))
+    for home, away in _recent_final_matchups(db, season):
+        unordered.add(frozenset((home, away)))
 
     pairs: list[tuple[str, str]] = []
     for fs in unordered:
@@ -521,14 +728,23 @@ async def prewarm_h2h(db: Session, season: int | None = None) -> int:
     already cached after the analytics/predictions warmup, so each pair is just
     assembly + a couple of DB reads, landing the result in the L2 store.
     """
-    season = season or current_or_upcoming_season()
-    pairs = _prewarm_pairs(db, season)
-    warmed = 0
-    for a, b in pairs:
-        try:
-            await head_to_head(db, a, b, season)
-            warmed += 1
-        except Exception as e:  # noqa: BLE001 — one bad pair shouldn't stop warmup
-            log.debug("h2h_prewarm_pair_failed", a=a, b=b, error=str(e)[:120])
-    log.info("h2h_prewarmed", season=season, pairs=warmed)
+    target_season = season or current_or_upcoming_season()
+    seasons = sorted({target_season, latest_completed_season()})
+    jobs: list[tuple[int, str, str]] = []
+    for s in seasons:
+        for a, b in _prewarm_pairs(db, s):
+            jobs.append((s, a, b))
+    sem = asyncio.Semaphore(PREWARM_CONCURRENCY)
+
+    async def _warm_one(s: int, a: str, b: str) -> int:
+        async with sem:
+            try:
+                await head_to_head(db, a, b, s)
+                return 1
+            except Exception as e:  # noqa: BLE001 — one bad pair shouldn't stop warmup
+                log.debug("h2h_prewarm_pair_failed", season=s, a=a, b=b, error=str(e)[:120])
+                return 0
+
+    warmed = sum(await asyncio.gather(*[_warm_one(s, a, b) for s, a, b in jobs])) if jobs else 0
+    log.info("h2h_prewarmed", seasons=seasons, pairs=warmed)
     return warmed

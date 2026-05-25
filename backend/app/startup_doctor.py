@@ -27,6 +27,10 @@ EXPECTED_TABLES = [
     "team_season_aggregates",
     "team_metric_values",
     "player_metric_values",
+    "feature_snapshots",
+    "model_lifecycle_runs",
+    "endpoint_slo_snapshots",
+    "experiment_events",
 ]
 
 
