@@ -576,6 +576,170 @@ export type UpcomingSeason = {
   };
 };
 
+// ---- Sparky (betting prediction & parlay intelligence) -------------------- #
+
+export type SparkySignal = {
+  key: string;
+  label: string;
+  side: "home" | "away" | "game";
+  severity: "bullish" | "warning" | "info";
+  magnitude: number;
+  weight: number;
+  explanation: string;
+};
+
+export type SparkyMovementPoint = {
+  label: string;
+  minutes_to_kickoff: number | null;
+  home_prob: number;
+  home_ml: number | null;
+  away_ml: number | null;
+};
+
+export type SparkyMarket = {
+  home_market_prob: number;
+  away_market_prob: number;
+  home_ml: number | null;
+  away_ml: number | null;
+  spread_home: number | null;
+  total: number | null;
+  book_count: number;
+  favorite: "home" | "away";
+  home_win_prob_ensemble?: number;
+};
+
+export type SparkyGame = {
+  event_id: string;
+  home_team_id: string | null;
+  away_team_id: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  commence_time: string | null;
+  predicted_winner: string | null;
+  win_prob: number;
+  home_win_prob?: number;
+  model_prob: number | null;
+  market_prob: number | null;
+  confidence_score: number;
+  base_confidence?: number;
+  signal_delta?: number;
+  classification: string | null;
+  signals: SparkySignal[];
+  explanation: string;
+  market: SparkyMarket;
+  movement?: SparkyMovementPoint[];
+};
+
+export type SparkyParlayLeg = {
+  event_id: string;
+  side: "home" | "away";
+  team_id: string | null;
+  opponent_id: string | null;
+  price_american: number;
+  win_prob: number;
+  confidence: number;
+  is_underdog: boolean;
+};
+
+export type SparkyParlay = {
+  rank: number;
+  legs: SparkyParlayLeg[];
+  parlay_odds_american: number;
+  parlay_odds_decimal: number;
+  implied_prob: number;
+  combined_win_prob: number;
+  underdog_count: number;
+  confidence_score: number;
+  signal_alignment: number;
+  composite_score: number;
+  edge?: number;
+  explanation: string;
+};
+
+export type SparkySlate = {
+  slate_date: string | null;
+  count: number;
+  games: SparkyGame[];
+  recommended_parlays: SparkyParlay[];
+};
+
+export type SparkyGameDetail = {
+  event_id: string;
+  prediction: SparkyGame | null;
+  movement: SparkyMovementPoint[];
+  books: {
+    book: string;
+    home_ml: number | null;
+    away_ml: number | null;
+    home_spread: number | null;
+    total: number | null;
+    home_implied: number | null;
+    captured_at: string | null;
+  }[];
+  book_count: number;
+};
+
+export type SparkyParlayResponse = {
+  slate_id: string;
+  slate_date: string;
+  games: {
+    event_id: string;
+    home_team_id: string | null;
+    away_team_id: string | null;
+    home_ml: number | null;
+    away_ml: number | null;
+    favorite: string;
+    home_prob: number;
+  }[];
+  parlays: SparkyParlay[];
+};
+
+export type AccuracyWindow = { n: number; correct?: number; accuracy_pct: number | null };
+export type ParlayWindow = {
+  n: number;
+  rank_1_hit_rate: number | null;
+  top_3_containment: number | null;
+  top_4_containment: number | null;
+};
+
+export type SparkyAccuracy = {
+  sport: string;
+  as_of: string;
+  individual_picks: {
+    rolling: Record<string, AccuracyWindow>;
+    by_confidence_band: { band: string; n: number; correct: number; accuracy_pct: number | null }[];
+    by_signal: { signal: string; n: number; correct: number; accuracy_pct: number | null }[];
+    overall: AccuracyWindow;
+  };
+  parlays: {
+    rolling: Record<string, ParlayWindow>;
+    overall: ParlayWindow;
+  };
+  trends: {
+    overall_pick_accuracy_pct: number | null;
+    overall_parlay_rank1_pct: number | null;
+    overall_parlay_top3_pct: number | null;
+    best_signal: { signal: string; accuracy_pct: number | null; n: number } | null;
+    worst_signal: { signal: string; accuracy_pct: number | null; n: number } | null;
+    n_picks_settled: number;
+    n_parlays_settled: number;
+  };
+};
+
+export type SparkyAdminStatus = {
+  snapshots: number;
+  snapshot_events: number;
+  last_snapshot_at: string | null;
+  predictions: number;
+  last_slate_date: string | null;
+  settled_results: number;
+  parlay_rankings: number;
+  pipeline_ready: boolean;
+  has_history_for_movement: boolean;
+};
+
+export type SparkyGlossaryEntry = { key: string; label: string; definition: string };
+
 export const api = {
   // auth
   authRegister: (email: string, password: string, display_name?: string) =>
@@ -819,6 +983,42 @@ export const api = {
       body: JSON.stringify(spec),
     }),
   deleteWidget: (id: string) => req<{ ok: boolean }>(`/widgets/${id}`, { method: "DELETE" }),
+
+  // sparky — betting prediction & parlay intelligence
+  sparkySlate: (date?: string, preferReal: boolean = false, policy?: FetchPolicy) => {
+    const params = new URLSearchParams();
+    if (date) params.set("date", date);
+    if (preferReal) params.set("prefer_real", "true");
+    const qs = params.toString() ? `?${params}` : "";
+    return req<SparkySlate>(`/sparky/slate${qs}`, undefined, policy);
+  },
+  sparkyGame: (eventId: string) =>
+    req<SparkyGameDetail>(`/sparky/games/${encodeURIComponent(eventId)}`),
+  sparkyParlay: (event_ids: string[], persist = false) =>
+    req<SparkyParlayResponse>("/sparky/parlay", {
+      method: "POST",
+      body: JSON.stringify({ event_ids, persist }),
+    }),
+  sparkyAccuracy: (asOf?: string, policy?: FetchPolicy) =>
+    req<SparkyAccuracy>(`/sparky/accuracy${asOf ? `?as_of=${asOf}` : ""}`, undefined, policy),
+  sparkyGlossary: () => req<{ signals: SparkyGlossaryEntry[] }>("/sparky/signals/glossary"),
+  sparkyAdminStatus: () => req<SparkyAdminStatus>("/sparky/admin/status"),
+  sparkyAdminRefresh: (date?: string) =>
+    req<SparkySlate>(`/sparky/admin/refresh${date ? `?date=${date}` : ""}`, { method: "POST" }),
+  sparkyAdminBuildReal: () =>
+    req<SparkySlate>("/sparky/admin/build_real", { method: "POST" }),
+  sparkyAdminBackfill: (days = 30) =>
+    req<Record<string, unknown>>(`/sparky/admin/backfill?days=${days}`, { method: "POST" }),
+  sparkyAdminSettle: (days = 14) =>
+    req<{ ok: boolean; settled_picks: number; settled_parlays: number; skipped: number; lookback_days: number }>(
+      `/sparky/admin/settle?days=${days}`,
+      { method: "POST" }
+    ),
+  sparkyAdminBacktest: (start: string, end: string, mode = "replay", hoursCutoff?: number) => {
+    const params = new URLSearchParams({ start, end, mode });
+    if (hoursCutoff != null) params.set("hours_cutoff", String(hoursCutoff));
+    return req<any>(`/sparky/admin/backtest?${params.toString()}`, { method: "POST" });
+  },
 };
 
 export const NFL_BASE = BASE;

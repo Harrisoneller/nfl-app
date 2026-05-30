@@ -13,6 +13,7 @@ const links = [
   { href: "/teams", label: "Teams" },
   { href: "/h2h/PHI/SF", label: "H2H" },
   { href: "/odds", label: "Odds" },
+  { href: "/sparky", label: "Sparky" },
   // /fantasy and /ai hidden until ready — routes still work via direct URL
 ];
 

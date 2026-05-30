@@ -471,3 +471,194 @@ a { color: inherit; }
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* ==========================================================================
+   Sparky — premium betting-intelligence surface (SOW 2 design language)
+   Scoped to .sparky-scope so it never bleeds into the rest of the app. The
+   spec asks for a dark, glassy, emerald-cyan aesthetic; we layer that over the
+   app's existing tokens and force the emerald/cyan accents locally.
+   ========================================================================== */
+.sparky-scope {
+  --spark-emerald: #10b981;
+  --spark-cyan: #22d3ee;
+  --spark-ink: #050a12;
+  --spark-glass: rgba(13, 20, 30, 0.6);
+  --spark-glass-border: rgba(45, 212, 191, 0.18);
+}
+
+.sparky-hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  padding: 1.6rem 1.5rem;
+  border: 1px solid var(--spark-glass-border);
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(16, 185, 129, 0.18), transparent 45%),
+    radial-gradient(120% 140% at 100% 0%, rgba(34, 211, 238, 0.16), transparent 45%),
+    linear-gradient(180deg, rgba(13, 20, 30, 0.92), rgba(5, 10, 18, 0.92));
+}
+.sparky-hero__title {
+  font-size: 1.9rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: linear-gradient(105deg, #ecfeff 0%, #5eead4 45%, #22d3ee 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.sparky-tagline {
+  color: #9fb3c8;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sparky-card {
+  position: relative;
+  border-radius: 16px;
+  border: 1px solid var(--spark-glass-border);
+  background: var(--spark-glass);
+  backdrop-filter: blur(10px);
+  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+.sparky-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(45, 212, 191, 0.4);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.sparky-card--rank1 {
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), 0 12px 40px rgba(16, 185, 129, 0.12);
+}
+
+/* Confidence ring (conic-gradient driven by --pct) */
+.sparky-ring {
+  --pct: 50;
+  width: 64px;
+  height: 64px;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  background:
+    conic-gradient(var(--spark-emerald) calc(var(--pct) * 1%), rgba(148, 163, 184, 0.18) 0);
+  position: relative;
+}
+.sparky-ring::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 9999px;
+  background: var(--spark-ink);
+}
+.sparky-ring__label {
+  position: relative;
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: #ecfeff;
+}
+
+/* Signal pills */
+.sparky-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.sparky-pill--bullish {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.sparky-pill--warning {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.sparky-pill--info {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.sparky-chip {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.5rem;
+  border-radius: 6px;
+}
+.sparky-chip--anchor { color: #052e2b; background: linear-gradient(90deg, #34d399, #22d3ee); }
+.sparky-chip--strong_lean { color: #6ee7b7; background: rgba(16, 185, 129, 0.16); }
+.sparky-chip--lean { color: #93c5fd; background: rgba(59, 130, 246, 0.16); }
+.sparky-chip--coin_flip { color: #cbd5e1; background: rgba(148, 163, 184, 0.18); }
+.sparky-chip--upset_watch { color: #fca5a5; background: rgba(239, 68, 68, 0.16); }
+
+.sparky-tab {
+  padding: 0.45rem 0.9rem;
+  border-radius: 9999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #9fb3c8;
+  border: 1px solid transparent;
+  transition: all 150ms ease;
+  white-space: nowrap;
+}
+.sparky-tab:hover { color: #e2f5f0; }
+.sparky-tab--active {
+  color: #052e2b;
+  background: linear-gradient(90deg, #34d399, #22d3ee);
+  border-color: transparent;
+}
+
+.sparky-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--spark-glass-border);
+  color: #ccfbf1;
+  background: rgba(16, 185, 129, 0.1);
+  transition: all 150ms ease;
+}
+.sparky-btn:hover { border-color: rgba(45, 212, 191, 0.5); background: rgba(16, 185, 129, 0.18); }
+.sparky-btn--solid {
+  color: #052e2b;
+  background: linear-gradient(90deg, #34d399, #22d3ee);
+  border-color: transparent;
+}
+.sparky-btn--solid:hover { opacity: 0.92; }
+.sparky-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sparky-stat {
+  border-radius: 14px;
+  border: 1px solid var(--spark-glass-border);
+  background: var(--spark-glass);
+  padding: 0.9rem 1rem;
+}
+.sparky-stat__value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #ecfeff;
+  font-variant-numeric: tabular-nums;
+}
+.sparky-stat__label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8aa0b6;
+}
+
+/* Selected-for-parlay highlight */
+.sparky-selected {
+  border-color: rgba(34, 211, 238, 0.7) !important;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.4);
+}

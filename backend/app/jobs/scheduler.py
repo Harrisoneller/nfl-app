@@ -36,6 +36,7 @@ from ..services import (
     players_service,
     predictions_service,
     scores_service,
+    sparky_service,
     sync_run_service,
     teams_service,
 )
@@ -110,7 +111,16 @@ async def _warmup_h2h(db: Session) -> int:
 
 
 async def _refresh_scores(db: Session) -> int:
-    return await scores_service.refresh_scoreboard(db)
+    n = await scores_service.refresh_scoreboard(db)
+    # Best-effort: settle any newly-final games into Sparky historical accuracy.
+    # This is what makes the accuracy dashboard reflect real outcomes over time.
+    try:
+        res = sparky_service.settle_sparky_results(db, lookback_days=10)
+        if res.get("settled_picks") or res.get("settled_parlays"):
+            log.info("sparky_auto_settled", **{k: res[k] for k in ("settled_picks", "settled_parlays", "skipped")})
+    except Exception as e:  # noqa: BLE001
+        log.warning("sparky_auto_settle_failed", error=str(e)[:160])
+    return n
 
 
 async def _refresh_news(db: Session) -> int:
@@ -118,7 +128,16 @@ async def _refresh_news(db: Session) -> int:
 
 
 async def _refresh_odds(db: Session) -> dict:
-    return await odds_service.refresh_odds(db)
+    result = await odds_service.refresh_odds(db)
+    # After odds (and their snapshots) are refreshed, rebuild Sparky's slate so
+    # predictions/signals/parlays stay in sync with the latest lines. Best-effort:
+    # never let a Sparky error fail the odds job.
+    try:
+        slate = await sparky_service.build_slate(db)
+        result = {**result, "sparky_slate_games": slate.get("count", 0)}
+    except Exception as e:  # noqa: BLE001
+        log.warning("sparky_slate_build_failed", error=str(e)[:160])
+    return result
 
 
 async def _sync_metric_index(db: Session) -> dict[str, int]:
