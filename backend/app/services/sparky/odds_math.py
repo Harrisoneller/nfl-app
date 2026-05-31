@@ -130,6 +130,25 @@ def expected_value(true_prob: float, decimal_odds: float) -> float:
     return true_prob * (decimal_odds - 1.0) - (1.0 - true_prob)
 
 
+def kelly_fraction(true_prob: float, decimal_odds: float, *, cap: float = 0.25) -> float:
+    """Kelly-criterion bet fraction for a binary wager.
+
+    f* = (bp - q) / b, where b = decimal_odds - 1, p = true_prob, q = 1 - p.
+    Returns 0 when the bet is -EV (Kelly says don't bet). Capped at ``cap`` to
+    discourage aggressive sizing on noisy estimates; default 25% of bankroll is
+    a conservative ceiling that quants commonly call "quarter Kelly" practice.
+    """
+    b = decimal_odds - 1.0
+    if b <= 0:
+        return 0.0
+    p = max(0.0, min(1.0, true_prob))
+    q = 1.0 - p
+    f = (b * p - q) / b
+    if f <= 0:
+        return 0.0
+    return min(cap, f)
+
+
 def edge(true_prob: float, market_implied: float) -> float:
     """Model edge = our probability minus the market's (de-vigged) probability."""
     return true_prob - market_implied

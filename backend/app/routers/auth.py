@@ -26,12 +26,28 @@ from ..security import create_access_token, hash_password, verify_password
 router = APIRouter()
 
 
+def _effective_is_admin(user: User) -> bool:
+    """Resolve the *effective* admin flag the frontend should trust.
+
+    Mirrors ``require_admin`` in ``deps.py`` exactly so the UI's tab gate and
+    the backend's route gate stay in lockstep. When ``ADMIN_EMAILS`` is set,
+    only those emails are admin (even in single-user mode where everyone
+    otherwise resolves to ``system@local`` with ``is_admin=True``). When
+    blank, falls back to the DB column.
+    """
+    allow = get_settings().admin_email_set
+    email = (user.email or "").strip().lower()
+    if allow:
+        return email in allow
+    return bool(user.is_admin)
+
+
 def _user_profile(user: User) -> UserProfile:
     return UserProfile(
         id=str(user.id),
         email=user.email,
         display_name=user.display_name,
-        is_admin=user.is_admin,
+        is_admin=_effective_is_admin(user),
     )
 
 

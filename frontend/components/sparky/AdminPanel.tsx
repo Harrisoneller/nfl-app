@@ -17,7 +17,10 @@ export function AdminPanel({
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const run = async (action: "refresh" | "backfill" | "settle" | "backtest", fn: () => Promise<unknown>) => {
+  const run = async (
+    action: "refresh" | "backfill" | "settle" | "backtest" | "build_real",
+    fn: () => Promise<unknown>,
+  ) => {
     setBusy(action);
     setMsg(null);
     setErr(null);
@@ -38,7 +41,29 @@ export function AdminPanel({
         setMsg(`Backtest done: ${games} games. Accuracy ${acc ?? "—"}%. Brier ${brierStr}. Check console for full report.`);
         console.log("Sparky Backtest Result:", res);
       } else if (action === "build_real") {
-        setMsg("Real Week 1 slate built successfully. Switch back to the Dashboard tab to see it.");
+        const n = res?.count ?? 0;
+        const refresh = res?.odds_refresh;
+        const status = refresh?.status ?? "unknown";
+        const events = refresh?.upstream_events;
+        if (n > 0) {
+          setMsg(
+            `Real slate built — ${n} game${n === 1 ? "" : "s"}` +
+              (refresh ? ` (odds API: ${status}${events != null ? `, ${events} events` : ""})` : "") +
+              ". Switch to Dashboard.",
+          );
+        } else if (status === "ok" && (events ?? 0) === 0) {
+          setMsg(
+            "Odds API returned 0 upcoming NFL events — the Week 1 schedule may not be posted yet. Try again closer to kickoff.",
+          );
+        } else if (status === "error" || status === "unauthorized" || status === "rate_limited") {
+          setMsg(
+            `Odds API ${status}${refresh?.message ? `: ${refresh.message}` : ""}. Check ODDS_API_KEY and try again.`,
+          );
+        } else {
+          setMsg(
+            `Built 0 games (odds API: ${status}${events != null ? `, ${events} events` : ""}). No real upcoming snapshots to build from.`,
+          );
+        }
       } else {
         setMsg("Slate rebuilt from current snapshots.");
       }

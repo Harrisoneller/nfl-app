@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     multi_user_mode: bool = False
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
+    # Comma-separated list of emails that are treated as admins regardless of
+    # the DB `is_admin` flag. Useful when running single-user mode
+    # (everyone resolves to system@local) and you want to restrict admin-only
+    # routes — Sparky admin/debug, backfill, settle, etc. — to specific people
+    # via Authorization: Bearer + the standard /auth flow.
+    # Stored as a single string; parsed via the `admin_email_set` helper below.
+    admin_emails: str = ""
 
     # LLM
     llm_provider: Literal["grok", "anthropic", "openai"] = "grok"
@@ -235,6 +242,23 @@ class Settings(BaseSettings):
     @property
     def h2h_cron_hours_expr(self) -> str:
         return ",".join(str(h) for h in self.h2h_cron_hour_list)
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        """Lowercased, whitespace-trimmed set of admin emails from `admin_emails`.
+
+        Returns an empty set when nothing is configured — `require_admin` then
+        falls back to the DB `is_admin` flag alone. This way the gate is
+        opt-in: leave `ADMIN_EMAILS` blank and behavior matches the previous
+        permissive setup; set it to `you@example.com` to lock admin routes
+        to only that account, even in single-user mode where every visitor
+        otherwise resolves to the seeded `system@local` admin user.
+        """
+        return {
+            part.strip().lower()
+            for part in (self.admin_emails or "").split(",")
+            if part.strip()
+        }
 
 
 @lru_cache(maxsize=1)

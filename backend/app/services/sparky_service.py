@@ -319,7 +319,20 @@ async def _model_prob_map(db: Session) -> dict[tuple[str, str], float]:
 
 
 def _current_event_rows(db: Session) -> dict[str, list[OddsSnapshot]]:
-    """All snapshots grouped by event for games that are upcoming/relevant."""
+    """Snapshots grouped by event for the *current upcoming NFL week*.
+
+    The Odds API often returns more than one week of games once early lines
+    post (Week 1 + Week 2 in the preseason, current + next week mid-season).
+    The Sparky dashboard is a "this week's slate" view, so we anchor the
+    window on the earliest still-upcoming kickoff and cap it at 6 days 12
+    hours. That comfortably covers one NFL week (Thu/Sun/Mon, plus any
+    Saturday international game) while excluding the *next* week's Thursday
+    kickoff — without that cap, the dashboard would show every week the
+    book has posted.
+
+    Snapshots with a NULL commence_time (rare/defensive) are always
+    included, matching the prior behavior.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
     rows = (
         db.query(OddsSnapshot)
@@ -329,6 +342,21 @@ def _current_event_rows(db: Session) -> dict[str, list[OddsSnapshot]]:
         )
         .all()
     )
+    if not rows:
+        return {}
+
+    # Anchor on the earliest upcoming kickoff.
+    earliest = min(
+        (r.commence_time for r in rows if r.commence_time is not None),
+        default=None,
+    )
+    if earliest is not None:
+        upper = earliest + timedelta(days=6, hours=12)
+        rows = [
+            r for r in rows
+            if r.commence_time is None or r.commence_time <= upper
+        ]
+
     by_event: dict[str, list[OddsSnapshot]] = defaultdict(list)
     for r in rows:
         by_event[r.event_id].append(r)
@@ -363,8 +391,27 @@ def _days_rest_for_team(db: Session, team_id: str, reference: datetime) -> float
 
 
 async def build_slate(db: Session, *, slate_date: date | None = None) -> dict[str, Any]:
-    """Compute predictions + signals for the current slate and persist them."""
+    """Compute predictions + signals for the current slate and persist them.
+
+    Idempotency: before writing anything, this wipes every existing
+    ``SparkyGamePrediction`` and ``SparkyParlayRanking`` row for the target
+    slate_date. Without that, ``_upsert_prediction`` only inserts/updates —
+    so predictions from a prior build (e.g. before the week-window filter
+    landed, or when the Odds API returned multiple weeks) would linger on the
+    same slate_date and the dashboard would keep showing them. Settled
+    outcomes live in ``SparkyHistoricalResult`` (a different table), so this
+    wipe doesn't lose accuracy data.
+    """
     slate_date = slate_date or datetime.now(timezone.utc).date()
+
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.slate_date == slate_date
+    ).delete(synchronize_session=False)
+    db.query(SparkyParlayRanking).filter(
+        SparkyParlayRanking.slate_date == slate_date
+    ).delete(synchronize_session=False)
+    db.flush()
+
     by_event = _current_event_rows(db)
     model_probs = await _model_prob_map(db)
 
@@ -548,9 +595,15 @@ def _game_for_parlay_from_prediction(p: SparkyGamePrediction) -> GameForParlay:
 def rank_parlay(
     db: Session, event_ids: list[str], *, slate_date: date | None = None, persist: bool = False,
 ) -> dict[str, Any]:
-    """Rank all 8 combinations for three chosen games."""
-    if len(event_ids) != 3:
-        raise ValueError("Select exactly 3 games for a parlay")
+    """Rank all 2**N winner combinations for the chosen N games (N in [2, 8])."""
+    n = len(event_ids)
+    if not parlay.MIN_LEGS <= n <= parlay.MAX_LEGS:
+        raise ValueError(
+            f"Parlay needs {parlay.MIN_LEGS}..{parlay.MAX_LEGS} games (got {n})"
+        )
+    # Reject duplicates: the same game can't appear twice in one parlay.
+    if len(set(event_ids)) != n:
+        raise ValueError("Parlay event_ids must be unique")
     slate_date = slate_date or datetime.now(timezone.utc).date()
     preds = (
         db.query(SparkyGamePrediction)
@@ -586,17 +639,30 @@ def rank_parlay(
 
 
 def _persist_parlays(db: Session, slate_id: str, slate_date: date, ranked: list) -> None:
+    """Replace persisted rankings for this slate with the freshly-ranked set.
+
+    The ``legs`` JSONB column is the source of truth for the full per-leg
+    detail (works at any N); the leg1/leg2/leg3 columns are populated for
+    quick SQL filtering on the first three legs and stay NULL beyond that.
+    """
     db.query(SparkyParlayRanking).filter(SparkyParlayRanking.slate_id == slate_id).delete()
     for p in ranked:
         legs = p.legs
+        n = len(legs)
+        leg3_event = legs[2].event_id if n >= 3 else None
+        leg3_pick = legs[2].team_id if n >= 3 else None
         db.add(SparkyParlayRanking(
             slate_id=slate_id, slate_date=slate_date, rank=p.rank,
-            leg1_event_id=legs[0].event_id, leg2_event_id=legs[1].event_id, leg3_event_id=legs[2].event_id,
-            leg1_pick=legs[0].team_id, leg2_pick=legs[1].team_id, leg3_pick=legs[2].team_id,
+            leg1_event_id=legs[0].event_id, leg2_event_id=legs[1].event_id,
+            leg3_event_id=leg3_event,
+            leg1_pick=legs[0].team_id, leg2_pick=legs[1].team_id,
+            leg3_pick=leg3_pick,
+            n_legs=n,
             parlay_odds_american=p.parlay_odds_american, parlay_odds_decimal=p.parlay_odds_decimal,
             implied_prob=p.implied_prob, combined_win_prob=p.combined_win_prob,
             underdog_count=p.underdog_count, confidence_score=p.confidence_score,
             signal_alignment=p.signal_alignment, composite_score=p.composite_score,
+            expected_value=p.expected_value, kelly_fraction=p.kelly_fraction,
             explanation=p.explanation, legs=[leg.as_dict() for leg in legs],
         ))
 
@@ -675,37 +741,20 @@ def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool 
     games = [_persisted_prediction_payload(p) for p in preds]
     games.sort(key=lambda g: g["confidence_score"], reverse=True)
 
-    rec_rows = (
+    rec_query = (
         db.query(SparkyParlayRanking)
         .filter(SparkyParlayRanking.slate_date == slate_date)
-        .order_by(SparkyParlayRanking.rank.asc())
-        .all()
     )
+    if prefer_real:
+        # Same filter as predictions above: don't let a demo parlay header sit
+        # above real game cards just because they share a slate_date.
+        rec_query = rec_query.filter(
+            ~SparkyParlayRanking.slate_id.like("demo-%"),
+            ~SparkyParlayRanking.leg1_event_id.like("demo-%"),
+        )
+    rec_rows = rec_query.order_by(SparkyParlayRanking.rank.asc()).all()
     recommended = [_parlay_row_payload(r) for r in rec_rows]
 
-    return {
-        "slate_date": slate_date.isoformat(),
-        "games": games,
-        "recommended_parlays": recommended,
-        "count": len(games),
-        "real_data_available": False,
-    }
-
-    preds = (
-        db.query(SparkyGamePrediction)
-        .filter(SparkyGamePrediction.slate_date == slate_date)
-        .all()
-    )
-    games = [_persisted_prediction_payload(p) for p in preds]
-    games.sort(key=lambda g: g["confidence_score"], reverse=True)
-
-    rec_rows = (
-        db.query(SparkyParlayRanking)
-        .filter(SparkyParlayRanking.slate_date == slate_date)
-        .order_by(SparkyParlayRanking.rank.asc())
-        .all()
-    )
-    recommended = [_parlay_row_payload(r) for r in rec_rows]
     return {
         "slate_date": slate_date.isoformat(),
         "games": games,
@@ -736,9 +785,11 @@ def _persisted_prediction_payload(p: SparkyGamePrediction) -> dict[str, Any]:
 
 
 def _parlay_row_payload(r: SparkyParlayRanking) -> dict[str, Any]:
+    ev = r.expected_value
     return {
         "rank": r.rank,
         "legs": r.legs or [],
+        "n_legs": r.n_legs,
         "parlay_odds_american": r.parlay_odds_american,
         "parlay_odds_decimal": round(r.parlay_odds_decimal, 3) if r.parlay_odds_decimal else None,
         "implied_prob": round(r.implied_prob, 4) if r.implied_prob is not None else None,
@@ -747,6 +798,15 @@ def _parlay_row_payload(r: SparkyParlayRanking) -> dict[str, Any]:
         "confidence_score": round(r.confidence_score, 1),
         "signal_alignment": round(r.signal_alignment, 3),
         "composite_score": round(r.composite_score, 1),
+        "expected_value": round(ev, 4) if ev is not None else None,
+        "is_value": bool(ev is not None and ev > 0),
+        "kelly_fraction": round(r.kelly_fraction, 4) if r.kelly_fraction is not None else None,
+        # Also expose edge for parity with the engine's live ranking payload.
+        "edge": (
+            round((r.combined_win_prob or 0.0) - (r.implied_prob or 0.0), 4)
+            if r.combined_win_prob is not None and r.implied_prob is not None
+            else None
+        ),
         "explanation": r.explanation,
     }
 

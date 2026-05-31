@@ -10,6 +10,7 @@ import {
   YAxis,
 } from "recharts";
 import { SparkyAccuracy } from "@/lib/api";
+import { HelpTip, TERMS } from "./HelpTip";
 import { pctPoints } from "./format";
 
 const WINDOW_LABELS: Record<string, string> = {
@@ -29,11 +30,30 @@ export function AccuracyPanel({ data }: { data: SparkyAccuracy }) {
     <div className="space-y-5">
       {/* Headline trends */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat label="Pick accuracy" value={pctPoints(trends.overall_pick_accuracy_pct)} sub={`${trends.n_picks_settled} settled`} />
-        <Stat label="Parlay rank #1" value={pctPoints(trends.overall_parlay_rank1_pct)} sub={`${trends.n_parlays_settled} slates`} />
-        <Stat label="Parlay top-3" value={pctPoints(trends.overall_parlay_top3_pct)} sub="containment" />
+        <Stat
+          label="Pick accuracy"
+          tip={{ label: "Pick Accuracy", body: "How often Sparky's predicted winner was the actual winner." }}
+          value={pctPoints(trends.overall_pick_accuracy_pct)}
+          sub={`${trends.n_picks_settled} settled`}
+        />
+        <Stat
+          label="Best parlay hits"
+          tip={TERMS.rank1_hit}
+          value={pctPoints(trends.overall_parlay_rank1_pct)}
+          sub={`${trends.n_parlays_settled} slates · Rank #1`}
+        />
+        <Stat
+          label="Close enough (Top 3)"
+          tip={TERMS.top3}
+          value={pctPoints(trends.overall_parlay_top3_pct)}
+          sub="winner in top 3 ranked"
+        />
         <Stat
           label="Best signal"
+          tip={{
+            label: "Best Signal",
+            body: "Which named market signal has historically had the highest win rate when Sparky's pick included it.",
+          }}
           value={trends.best_signal ? labelize(trends.best_signal.signal) : "—"}
           sub={trends.best_signal ? pctPoints(trends.best_signal.accuracy_pct) : ""}
         />
@@ -41,10 +61,16 @@ export function AccuracyPanel({ data }: { data: SparkyAccuracy }) {
 
       {/* Rolling windows */}
       <div className="sparky-card p-4">
-        <h3 className="text-sm font-semibold text-white mb-3">Rolling accuracy</h3>
+        <h3 className="text-sm font-semibold text-white mb-1 flex items-center">
+          Recent track record
+          <HelpTip label={TERMS.rolling.label} body={TERMS.rolling.body} />
+        </h3>
+        <p className="text-xs text-muted mb-3">
+          7-day reacts fast to a streak; 30-day smooths out noise and shows the underlying trend.
+        </p>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div>
-            <div className="text-xs text-muted mb-2">Individual picks</div>
+            <div className="text-xs text-muted mb-2">Individual picks (winner correct)</div>
             <div className="grid grid-cols-4 gap-2">
               {Object.entries(picks.rolling).map(([k, w]) => (
                 <Window key={k} label={WINDOW_LABELS[k] ?? k} value={pctPoints(w.accuracy_pct)} n={w.n} />
@@ -52,7 +78,10 @@ export function AccuracyPanel({ data }: { data: SparkyAccuracy }) {
             </div>
           </div>
           <div>
-            <div className="text-xs text-muted mb-2">Parlay rank #1 hit rate</div>
+            <div className="text-xs text-muted mb-2 flex items-center">
+              Top-ranked parlay hit rate
+              <HelpTip label={TERMS.rank1_hit.label} body={TERMS.rank1_hit.body} />
+            </div>
             <div className="grid grid-cols-4 gap-2">
               {Object.entries(parlays.rolling).map(([k, w]) => (
                 <Window key={k} label={WINDOW_LABELS[k] ?? k} value={pctPoints(w.rank_1_hit_rate)} n={w.n} />
@@ -64,9 +93,13 @@ export function AccuracyPanel({ data }: { data: SparkyAccuracy }) {
 
       {/* Calibration: accuracy by confidence band */}
       <div className="sparky-card p-4">
-        <h3 className="text-sm font-semibold text-white mb-1">Calibration by confidence band</h3>
+        <h3 className="text-sm font-semibold text-white mb-1 flex items-center">
+          Is Sparky's confidence honest?
+          <HelpTip label={TERMS.calibration.label} body={TERMS.calibration.body} />
+        </h3>
         <p className="text-xs text-muted mb-3">
-          Higher-confidence picks should win more often — bars should rise left → right.
+          An 80%-confidence pick should win about 80% of the time. If Sparky is well-calibrated,
+          these bars rise from left to right.
         </p>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart
@@ -136,11 +169,24 @@ export function AccuracyPanel({ data }: { data: SparkyAccuracy }) {
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({
+  label,
+  value,
+  sub,
+  tip,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tip?: { label: string; body: string };
+}) {
   return (
     <div className="sparky-stat">
       <div className="sparky-stat__value">{value}</div>
-      <div className="sparky-stat__label">{label}</div>
+      <div className="sparky-stat__label inline-flex items-center">
+        {label}
+        {tip && <HelpTip label={tip.label} body={tip.body} />}
+      </div>
       {sub && <div className="text-[10px] text-muted mt-0.5">{sub}</div>}
     </div>
   );

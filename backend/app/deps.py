@@ -59,3 +59,31 @@ def get_current_user(
     if not user or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Inactive or unknown user")
     return user
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    """Gate a route to admin-only.
+
+    Logic
+    -----
+    * If ``ADMIN_EMAILS`` is set, the caller's email MUST be in that allowlist.
+      This is the strict path and works even in single-user mode (where
+      ``get_current_user`` would otherwise resolve everyone to the seeded
+      ``system@local`` admin user).
+    * If ``ADMIN_EMAILS`` is unset, we fall back to the DB ``is_admin`` flag
+      — same behavior as before.
+
+    Apply with ``Depends(require_admin)`` on any route that should be
+    restricted, e.g. Sparky's ``/admin/*`` endpoints.
+    """
+    settings = get_settings()
+    allow = settings.admin_email_set
+    email = (user.email or "").strip().lower()
+
+    if allow:
+        if email not in allow:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
+    elif not user.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
+
+    return user

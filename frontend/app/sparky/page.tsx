@@ -1,25 +1,45 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import useSWR from "swr";
 import { api, SparkyParlay } from "@/lib/api";
+import { useAuth } from "@/context/AuthProvider";
 import { TeamLogo } from "@/components/TeamLogo";
 import { PredictionCard } from "@/components/sparky/PredictionCard";
 import { ParlayBuilder } from "@/components/sparky/ParlayBuilder";
 import { AccuracyPanel } from "@/components/sparky/AccuracyPanel";
 import { AdminPanel } from "@/components/sparky/AdminPanel";
+import { HowSparkyWorks } from "@/components/sparky/HowSparkyWorks";
+import { SparkyGlossary } from "@/components/sparky/SparkyGlossary";
+import { HelpTip, TERMS } from "@/components/sparky/HelpTip";
 import { americanOdds, pct } from "@/components/sparky/format";
 
 type TabId = "dashboard" | "parlay" | "accuracy" | "admin";
 
-const TABS: { id: TabId; label: string }[] = [
+const ALL_TABS: { id: TabId; label: string; adminOnly?: boolean }[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "parlay", label: "Parlay Builder" },
   { id: "accuracy", label: "Historical Accuracy" },
-  { id: "admin", label: "Admin / Debug" },
+  { id: "admin", label: "Admin / Debug", adminOnly: true },
 ];
 
 export default function SparkyPage() {
+  const { user } = useAuth();
+  // Effective admin flag is computed server-side in /auth/me — it reflects the
+  // ADMIN_EMAILS allowlist when set, falling back to the DB is_admin column.
+  // Same logic as require_admin on the backend, so the tab and the API agree.
+  const isAdmin = !!user?.is_admin;
+  const TABS = useMemo(
+    () => ALL_TABS.filter((t) => !t.adminOnly || isAdmin),
+    [isAdmin],
+  );
+
   const [tab, setTab] = useState<TabId>("dashboard");
+  // If a user lands on /sparky already on the admin tab (URL persistence,
+  // back-button, etc.) and turns out not to be an admin, bounce them home.
+  useEffect(() => {
+    if (tab === "admin" && !isAdmin) setTab("dashboard");
+  }, [tab, isAdmin]);
+
   const [forceReal, setForceReal] = useState(true); // Prefer real Week 1 data by default
   const slate = useSWR(
     ["sparky-slate", forceReal],
@@ -34,7 +54,7 @@ export default function SparkyPage() {
   }, []);
   // Lazy: only fetch accuracy / admin status when those tabs are active.
   const accuracy = useSWR(tab === "accuracy" ? ["sparky-accuracy"] : null, () => api.sparkyAccuracy());
-  const admin = useSWR(tab === "admin" ? ["sparky-admin"] : null, () => api.sparkyAdminStatus());
+  const admin = useSWR(tab === "admin" && isAdmin ? ["sparky-admin"] : null, () => api.sparkyAdminStatus());
 
   const games = slate.data?.games ?? [];
   const recommended = slate.data?.recommended_parlays ?? [];
@@ -69,6 +89,9 @@ export default function SparkyPage() {
       )}
 
       <Hero count={games.length} slateDate={slate.data?.slate_date ?? null} />
+
+      {/* First-visit orientation — dismissible, persisted in localStorage */}
+      {tab === "dashboard" && <HowSparkyWorks />}
 
       {/* Tabs */}
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -127,7 +150,7 @@ export default function SparkyPage() {
         )
       )}
 
-      {tab === "admin" && (
+      {tab === "admin" && isAdmin && (
         <AdminPanel
           status={admin.data}
           onChanged={() => {
@@ -136,6 +159,9 @@ export default function SparkyPage() {
           }}
         />
       )}
+
+      {/* Persistent glossary — single source of truth for every Sparky term */}
+      <SparkyGlossary />
 
       <p className="text-[11px] text-muted/70">
         Sparky is an analytics tool — predictions and signals are informational, not betting advice.
@@ -151,6 +177,18 @@ function Hero({ count, slateDate }: { count: number; slateDate: string | null })
         <div>
           <div className="sparky-tagline">Sharp NFL Predictions · Intelligent Parlays · Real Edge</div>
           <h1 className="sparky-hero__title mt-1">Sparky</h1>
+          <p className="text-xs text-slate-300/80 mt-1 max-w-2xl">
+            Sparky reads the live sportsbook market, compares it to its own NFL model, and tells you
+            which games and parlays the combination actually favors. Hover any{" "}
+            <span
+              className="sparky-help__btn"
+              aria-hidden
+              style={{ cursor: "default", verticalAlign: "middle" }}
+            >
+              ?
+            </span>{" "}
+            icon for a plain-English explanation.
+          </p>
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-white tabular-nums">{count}</div>
@@ -168,7 +206,13 @@ function RecommendedParlay({ parlay }: { parlay: SparkyParlay }) {
     <div className="sparky-card sparky-card--rank1 p-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <div className="sparky-tagline text-emerald-300">Recommended parlay · rank #1</div>
+          <div className="sparky-tagline text-emerald-300">
+            Sparky's top-ranked parlay
+            <HelpTip
+              label="Sparky's #1 parlay"
+              body="The single best-blended pick from today's slate — ranked by confidence, signal support, mix of favorites and underdogs, and value (+EV), not just the longest payout."
+            />
+          </div>
           <div className="mt-2 flex items-center gap-3 flex-wrap">
             {parlay.legs.map((leg) => (
               <span key={leg.event_id} className="flex items-center gap-1.5">
@@ -185,9 +229,12 @@ function RecommendedParlay({ parlay }: { parlay: SparkyParlay }) {
           <div className="text-2xl font-bold text-white tabular-nums">
             {americanOdds(parlay.parlay_odds_american)}
           </div>
-          <div className="text-[11px] text-muted">
-            {pct(parlay.combined_win_prob, 1)} model hit · composite{" "}
-            <span className="text-emerald-300 font-semibold">{parlay.composite_score.toFixed(0)}</span>
+          <div className="text-[11px] text-muted flex items-center justify-end">
+            {pct(parlay.combined_win_prob, 1)} Sparky-hit
+            <HelpTip label={TERMS.combined_win_prob.label} body={TERMS.combined_win_prob.body} />
+            · composite{" "}
+            <span className="text-emerald-300 font-semibold ml-1">{parlay.composite_score.toFixed(0)}</span>
+            <HelpTip label={TERMS.composite.label} body={TERMS.composite.body} />
           </div>
         </div>
       </div>

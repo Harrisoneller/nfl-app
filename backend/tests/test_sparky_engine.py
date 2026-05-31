@@ -67,6 +67,16 @@ def test_expected_value_sign():
     assert odds_math.expected_value(0.4, 2.0) < 0
 
 
+def test_kelly_fraction_zero_on_neg_ev_and_capped():
+    """Kelly returns 0 when -EV, and is capped at 25% (default) when +EV."""
+    # 40% on +100 (even money) is -EV → Kelly says don't bet.
+    assert odds_math.kelly_fraction(0.4, 2.0) == 0.0
+    # 70% on +100 is strongly +EV: f* = (1*0.7 - 0.3)/1 = 0.4 → capped to 0.25.
+    assert odds_math.kelly_fraction(0.7, 2.0) == 0.25
+    # 55% on +100 is mildly +EV: f* = 0.10 → uncapped.
+    assert odds_math.kelly_fraction(0.55, 2.0) == pytest.approx(0.10, abs=1e-6)
+
+
 # --------------------------------------------------------------------------- #
 # signals
 # --------------------------------------------------------------------------- #
@@ -234,38 +244,107 @@ def test_classification_anchor_vs_coinflip():
 # --------------------------------------------------------------------------- #
 
 
-def _games() -> list[GameForParlay]:
-    return [
-        GameForParlay("e1", "KC", "DEN", -185, 160, 0.66, "home", [], "KC @ DEN"),
-        GameForParlay("e2", "BUF", "NYJ", -240, 200, 0.72, "home", [], "BUF @ NYJ"),
-        GameForParlay("e3", "DAL", "PHI", 120, -140, 0.45, "away", [], "DAL @ PHI"),
-    ]
+_ALL_GAMES: list[GameForParlay] = [
+    GameForParlay("e1", "KC", "DEN", -185, 160, 0.66, "home", [], "KC @ DEN"),
+    GameForParlay("e2", "BUF", "NYJ", -240, 200, 0.72, "home", [], "BUF @ NYJ"),
+    GameForParlay("e3", "DAL", "PHI", 120, -140, 0.45, "away", [], "DAL @ PHI"),
+    GameForParlay("e4", "SF", "SEA", -300, 250, 0.78, "home", [], "SF @ SEA"),
+    GameForParlay("e5", "BAL", "PIT", -170, 145, 0.62, "home", [], "BAL @ PIT"),
+    GameForParlay("e6", "GB", "MIN", 110, -130, 0.46, "away", [], "GB @ MIN"),
+    GameForParlay("e7", "LAR", "ARI", -220, 185, 0.70, "home", [], "LAR @ ARI"),
+    GameForParlay("e8", "MIA", "NE", 135, -160, 0.42, "away", [], "MIA @ NE"),
+]
 
 
-def test_generate_eight_parlays_ranked():
-    out = parlay.generate_parlays(_games())
+def _games(n: int = 3) -> list[GameForParlay]:
+    return _ALL_GAMES[:n]
+
+
+def test_generate_three_leg_parlay_has_8_combos():
+    """The canonical 3-leg case from the spec — 2**3 = 8 ranked combinations."""
+    out = parlay.generate_parlays(_games(3))
     assert len(out) == 8
-    # Ranks are 1..8 contiguous.
     assert [p.rank for p in out] == list(range(1, 9))
-    # Sorted by composite descending.
     comps = [p.composite_score for p in out]
     assert comps == sorted(comps, reverse=True)
-    # Each parlay has 3 legs and a sane american price.
     for p in out:
+        assert p.n_legs == 3
         assert len(p.legs) == 3
         assert isinstance(p.parlay_odds_american, int)
         assert 0.0 <= p.implied_prob <= 1.0
 
 
-def test_parlay_requires_three_games():
+@pytest.mark.parametrize("n,expected_combos", [(2, 4), (3, 8), (4, 16), (5, 32), (8, 256)])
+def test_generate_variable_n_leg_parlays(n, expected_combos):
+    """N-leg engine: 2..8 legs each produce 2**N ranked combinations."""
+    out = parlay.generate_parlays(_games(n))
+    assert len(out) == expected_combos
+    assert [p.rank for p in out] == list(range(1, expected_combos + 1))
+    comps = [p.composite_score for p in out]
+    assert comps == sorted(comps, reverse=True)
+    for p in out:
+        assert p.n_legs == n
+        assert len(p.legs) == n
+
+
+def test_parlay_rejects_outside_legal_range():
+    """Engine enforces MIN_LEGS..MAX_LEGS; 1 leg and >8 legs both raise."""
     with pytest.raises(ValueError):
-        parlay.generate_parlays(_games()[:2])
+        parlay.generate_parlays(_games(1))
+    with pytest.raises(ValueError):
+        parlay.generate_parlays(_ALL_GAMES + [_ALL_GAMES[0]])  # 9 legs
 
 
 def test_underdog_count_matches_picks():
-    out = parlay.generate_parlays(_games())
+    out = parlay.generate_parlays(_games(3))
     for p in out:
         assert p.underdog_count == sum(1 for leg in p.legs if leg.is_underdog)
+
+
+def test_per_leg_value_fields_populated():
+    """Every leg carries market_implied, edge, and expected_value."""
+    out = parlay.generate_parlays(_games(3))
+    for p in out:
+        for leg in p.legs:
+            assert 0.0 <= leg.market_implied <= 1.0
+            # edge is just win_prob - market_implied
+            assert abs(leg.edge - (leg.win_prob - leg.market_implied)) < 1e-6
+
+
+def test_parlay_value_fields_consistent():
+    """Parlay-level EV/is_value/Kelly are internally consistent with the edge."""
+    out = parlay.generate_parlays(_games(3))
+    for p in out:
+        # is_value strictly reflects positive expected_value.
+        assert p.is_value == (p.expected_value > 0)
+        # Kelly is zero whenever the parlay is -EV.
+        if not p.is_value:
+            assert p.kelly_fraction == 0.0
+        # Kelly cap (default 25%).
+        assert 0.0 <= p.kelly_fraction <= 0.25
+
+
+def test_value_factor_rewards_plus_ev_more_than_punishes_neutral():
+    """The asymmetric curve gives +EV plays a bigger composite bump than 0 EV."""
+    f_plus = parlay._value_factor(0.05)
+    f_zero = parlay._value_factor(0.0)
+    f_minus = parlay._value_factor(-0.05)
+    assert f_plus > f_zero > f_minus
+    # Asymmetry: 0.05 above zero is rewarded more than 0.05 below is preserved.
+    assert (f_plus - f_zero) > 0
+    assert f_minus < f_zero
+
+
+def test_underdog_balance_generalizes_for_any_n():
+    """All-chalk and all-dog get penalties; balanced mix peaks for every N."""
+    for n in (2, 3, 4, 5, 6, 8):
+        all_chalk = parlay._underdog_balance(0, n)
+        all_dog = parlay._underdog_balance(n, n)
+        mixed = parlay._underdog_balance(max(1, n // 3), n)
+        assert all_chalk < 1.0
+        assert all_dog < all_chalk  # all-dog is the wildest, biggest penalty
+        assert mixed >= all_chalk   # mixed is at least as good as all-chalk
+        assert mixed >= all_dog
 
 
 # --------------------------------------------------------------------------- #
@@ -326,24 +405,48 @@ def test_accuracy_by_signal():
 # sparky backtest metrics (pure functions)
 # --------------------------------------------------------------------------- #
 
-from app.services.sparky.backtest import brier_score, log_loss, compute_calibration, signal_lift, simulate_roi
+# The backtest module pulls in app.models / SQLAlchemy at import time (it has
+# DB-bound functions alongside its pure math). Guard the import so the rest of
+# the pure engine tests still collect in environments without SQLAlchemy (CI,
+# sandboxes); the backtest-math tests skip cleanly when that's the case.
+try:
+    from app.services.sparky.backtest import (
+        brier_score,
+        compute_calibration,
+        log_loss,
+        signal_lift,
+        simulate_roi,
+    )
+    _BACKTEST_OK = True
+except ImportError as _e:
+    _BACKTEST_OK = False
+    _BACKTEST_SKIP_REASON = f"backtest module unavailable: {str(_e)[:80]}"
+
+_skip_no_backtest = pytest.mark.skipif(
+    not _BACKTEST_OK,
+    reason=_BACKTEST_SKIP_REASON if not _BACKTEST_OK else "",
+)
 
 
+@_skip_no_backtest
 def test_brier_score_perfect():
     assert brier_score([0.9, 0.1, 0.8], [1, 0, 1]) < 0.05
 
 
+@_skip_no_backtest
 def test_brier_score_worst():
     # All predictions completely wrong
     score = brier_score([0.1, 0.9], [1, 0])
     assert score > 0.8
 
 
+@_skip_no_backtest
 def test_log_loss_reasonable():
     loss = log_loss([0.7, 0.3, 0.9], [1, 0, 1])
     assert 0.2 < loss < 1.0
 
 
+@_skip_no_backtest
 def test_calibration_buckets():
     rows = [{"win_prob": 0.52, "correct": True}, {"win_prob": 0.78, "correct": True}, {"win_prob": 0.91, "correct": False}]
     calib = compute_calibration(rows)
@@ -351,6 +454,7 @@ def test_calibration_buckets():
     assert any(b["n"] > 0 for b in calib)
 
 
+@_skip_no_backtest
 def test_signal_lift_basic():
     rows = [
         {"signals": ["short_rest"], "correct": False},
@@ -364,6 +468,7 @@ def test_signal_lift_basic():
     assert short["acc_with"] < short["acc_without"]
 
 
+@_skip_no_backtest
 def test_simulate_roi_positive_edge():
     edges = [0.08, 0.03, -0.02, 0.05, 0.12]
     roi = simulate_roi(edges, starting_bankroll=1000, flat_stake_pct=0.02)

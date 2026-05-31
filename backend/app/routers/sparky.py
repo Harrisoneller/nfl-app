@@ -6,12 +6,12 @@ endpoints (refresh / backfill) recompute or seed data; they're grouped under
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
+from ..deps import get_db, require_admin
 from ..schemas.sparky import (
     AccuracyOut,
     AdminStatusOut,
@@ -85,44 +85,115 @@ def signal_glossary():
 
 
 @router.get("/admin/status", response_model=AdminStatusOut)
-def admin_status(db: Session = Depends(get_db)):
+def admin_status(db: Session = Depends(get_db), _: object = Depends(require_admin)):
     """Pipeline health: snapshot counts, last pull, prediction/result counts."""
     return sparky_service.admin_status(db)
 
 
 @router.post("/admin/refresh", response_model=SlateOut)
-async def admin_refresh(date: str | None = None, db: Session = Depends(get_db)):
+async def admin_refresh(
+    date: str | None = None,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
+):
     """Force-rebuild the slate from the current odds snapshots."""
     return await sparky_service.build_slate(db, slate_date=_parse_date(date))
 
 
 @router.post("/admin/build_real", response_model=SlateOut)
-async def admin_build_real(db: Session = Depends(get_db)):
-    """
-    Clear any synthetic demo Sparky data and build fresh predictions
-    from the real current/upcoming schedule + live odds + model.
-    This is the best way to view the actual Week 1 slate in Sparky.
-    """
-    # Remove demo data so it doesn't pollute the most-recent slate
-    from ..models.sparky import SparkyGamePrediction, SparkyParlayRanking
+async def admin_build_real(
+    force_refresh: bool = True,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
+):
+    """Clear all synthetic demo data and build a real Sparky slate.
 
+    Step by step:
+      1. Wipe every demo row (snapshots + predictions + parlays + results) so
+         the synthetic events can't pollute the rebuild — *this is the bit that
+         was missing*: without removing demo OddsSnapshots, build_slate would
+         just recreate predictions for the same demo events because they still
+         pass the upcoming-game time filter.
+      2. If we don't already have fresh real snapshots (<2h old), force-pull
+         The Odds API (costs ~1 credit). This is what makes the button usable
+         in the offseason — the scheduled odds job's offseason guard would
+         otherwise leave odds_snapshots empty.
+      3. Rebuild the slate from whatever real snapshots we now have.
+
+    The response is the standard SlateOut with an `odds_refresh` envelope so
+    the admin UI can surface "Odds API returned N events" or any error.
+    """
+    from ..models.odds_snapshot import OddsSnapshot
+    from ..models.sparky import (
+        SparkyGamePrediction,
+        SparkyHistoricalResult,
+        SparkyParlayRanking,
+        SparkyParlayResult,
+    )
+    from ..services import odds_service
+
+    # 1) Wipe ALL synthetic rows (snapshots are the critical addition vs. before).
     db.query(SparkyGamePrediction).filter(
         SparkyGamePrediction.event_id.like("demo-%")
     ).delete(synchronize_session=False)
-
-    db.query(SparkyParlayRanking).filter(
-        SparkyParlayRanking.slate_id.like("demo-%") | 
-        SparkyParlayRanking.leg1_event_id.like("demo-%")
+    db.query(SparkyHistoricalResult).filter(
+        SparkyHistoricalResult.event_id.like("demo-%")
     ).delete(synchronize_session=False)
-
+    db.query(SparkyParlayRanking).filter(
+        SparkyParlayRanking.slate_id.like("demo-%")
+        | SparkyParlayRanking.leg1_event_id.like("demo-%")
+    ).delete(synchronize_session=False)
+    db.query(SparkyParlayResult).filter(
+        SparkyParlayResult.slate_id.like("demo-%")
+    ).delete(synchronize_session=False)
+    db.query(OddsSnapshot).filter(
+        OddsSnapshot.event_id.like("demo-%")
+    ).delete(synchronize_session=False)
     db.commit()
 
-    # Build real predictions for whatever is currently in snapshots/lines
-    return await sparky_service.build_slate(db)
+    # 2) Force-pull real odds unless caller opts out, or we already have fresh ones.
+    refresh_status: dict | None = None
+    if force_refresh:
+        fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+        has_fresh_real = (
+            db.query(OddsSnapshot.id)
+            .filter(
+                ~OddsSnapshot.event_id.like("demo-%"),
+                OddsSnapshot.captured_at >= fresh_cutoff,
+            )
+            .first()
+            is not None
+        )
+        if has_fresh_real:
+            refresh_status = {
+                "status": "skipped_fresh",
+                "message": "Real snapshots <2h old already present",
+            }
+        else:
+            try:
+                refresh = await odds_service.refresh_odds(db, force=True)
+                refresh_status = {
+                    "status": refresh.get("status"),
+                    "message": refresh.get("message"),
+                    "upstream_events": refresh.get("upstream_events"),
+                    "lines_in_db": refresh.get("lines_in_db"),
+                }
+            except Exception as e:  # noqa: BLE001 — never let this fail the build
+                refresh_status = {"status": "error", "message": str(e)[:200]}
+
+    # 3) Build the slate from whatever real snapshots we now have.
+    slate = await sparky_service.build_slate(db)
+    if refresh_status is not None:
+        slate["odds_refresh"] = refresh_status
+    return slate
 
 
 @router.post("/admin/backfill")
-async def admin_backfill(days: int = 30, db: Session = Depends(get_db)):
+async def admin_backfill(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
+):
     """Seed deterministic synthetic history + a live-looking current slate.
 
     Use this to populate the dashboard, movement charts, and accuracy views in
@@ -136,7 +207,11 @@ async def admin_backfill(days: int = 30, db: Session = Depends(get_db)):
 
 
 @router.post("/admin/settle")
-def admin_settle(days: int = 14, db: Session = Depends(get_db)):
+def admin_settle(
+    days: int = 14,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
+):
     """Run outcome settlement for recent slates whose games have final scores.
 
     This is the production mechanism that feeds the Historical Accuracy view
@@ -161,6 +236,7 @@ def admin_backtest(
     mode: str = "replay",
     hours_cutoff: float | None = None,
     db: Session = Depends(get_db),
+    _: object = Depends(require_admin),
 ):
     """
     Run a historical Sparky backtest.

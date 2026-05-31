@@ -69,7 +69,7 @@ class SparkyGamePrediction(Base, TimestampMixin):
 
 
 class SparkyParlayRanking(Base, TimestampMixin):
-    """A single ranked 3-leg parlay combination."""
+    """A single ranked N-leg parlay combination (N in [2, 8])."""
 
     __tablename__ = "sparky_parlay_rankings"
     __table_args__ = (
@@ -78,26 +78,35 @@ class SparkyParlayRanking(Base, TimestampMixin):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slate_id: Mapped[str] = mapped_column(String(200), nullable=False)  # "evtA|evtB|evtC" sorted
+    slate_id: Mapped[str] = mapped_column(String(200), nullable=False)  # sorted event ids joined by '|'
     slate_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # Three legs: event id + the side picked (team id) for each.
+    # ``legs`` (JSONB) is the source of truth and holds every leg's full
+    # detail (event_id, side, team_id, price, win_prob, confidence, edge, EV).
+    # The leg1/leg2/leg3 columns are legacy convenience columns populated only
+    # for the first three legs — kept so existing reads keep working and for
+    # quick SQL filtering. leg3_* are nullable now (N can be 2).
     leg1_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
     leg2_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    leg3_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    leg3_event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     leg1_pick: Mapped[str | None] = mapped_column(String(8), nullable=True)
     leg2_pick: Mapped[str | None] = mapped_column(String(8), nullable=True)
     leg3_pick: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
+    n_legs: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+
     parlay_odds_american: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parlay_odds_decimal: Mapped[float | None] = mapped_column(Float, nullable=True)
-    implied_prob: Mapped[float | None] = mapped_column(Float, nullable=True)      # from parlay odds
+    implied_prob: Mapped[float | None] = mapped_column(Float, nullable=True)       # from parlay odds (vig in)
     combined_win_prob: Mapped[float | None] = mapped_column(Float, nullable=True)  # model product
     underdog_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     signal_alignment: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     composite_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Value transparency (added 0010): EV per 1 unit staked + capped Kelly stake.
+    expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kelly_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
     legs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # full per-leg detail
 

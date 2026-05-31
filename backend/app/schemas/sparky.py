@@ -26,6 +26,9 @@ class SlateOut(BaseModel):
     games: list[dict] = Field(default_factory=list)
     recommended_parlays: list[dict] = Field(default_factory=list)
     real_data_available: bool = False  # True when upcoming odds snapshots exist but no Sparky predictions yet built
+    # Populated only by /admin/build_real so the UI can surface the upstream
+    # Odds API result ("ok" / "rate_limited" / "skipped_fresh" / "error" + counts).
+    odds_refresh: dict | None = None
 
 
 class GameDetailOut(BaseModel):
@@ -37,8 +40,10 @@ class GameDetailOut(BaseModel):
 
 
 class ParlayRequest(BaseModel):
-    event_ids: list[str] = Field(..., min_length=3, max_length=3,
-                                 description="Exactly three event ids to combine")
+    # The engine accepts 2..8 legs (matches parlay.MIN_LEGS / parlay.MAX_LEGS).
+    # The service additionally rejects duplicate event_ids.
+    event_ids: list[str] = Field(..., min_length=2, max_length=8,
+                                 description="Between 2 and 8 unique event ids to combine into a parlay")
     persist: bool = False
 
 

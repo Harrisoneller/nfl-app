@@ -4,7 +4,14 @@ import { SparkyGame } from "@/lib/api";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ConfidenceRing } from "./ConfidenceRing";
 import { SignalPills } from "./SignalPill";
-import { americanOdds, classificationLabel, kickoff, pct } from "./format";
+import { HelpTip, TERMS } from "./HelpTip";
+import {
+  americanOdds,
+  classificationDescription,
+  classificationLabel,
+  kickoff,
+  pct,
+} from "./format";
 
 /**
  * The marquee prediction card (SOW 2 "Prediction Card Elements"): teams + odds,
@@ -33,9 +40,16 @@ export function PredictionCard({
           <div className="flex items-center gap-2 text-[11px] text-muted">
             <span
               className={`sparky-chip sparky-chip--${game.classification ?? "lean"}`}
+              title={classificationDescription(game.classification)}
             >
               {classificationLabel(game.classification)}
             </span>
+            {game.classification && (
+              <HelpTip
+                label={`${classificationLabel(game.classification)} — Pick Tier`}
+                body={classificationDescription(game.classification) || TERMS.classification.body}
+              />
+            )}
             <span>{kickoff(game.commence_time)}</span>
           </div>
 
@@ -58,7 +72,10 @@ export function PredictionCard({
 
         <div className="flex flex-col items-center shrink-0">
           <ConfidenceRing score={game.confidence_score} />
-          <div className="text-[10px] text-muted mt-1">confidence</div>
+          <div className="text-[10px] text-muted mt-1 flex items-center">
+            confidence
+            <HelpTip label={TERMS.confidence.label} body={TERMS.confidence.body} />
+          </div>
         </div>
       </div>
 
@@ -67,10 +84,22 @@ export function PredictionCard({
         <div className="text-emerald-300 font-semibold">
           {winner ?? "—"} <span className="text-muted font-normal">to win</span>{" "}
           <span className="tabular-nums">{pct(game.win_prob)}</span>
+          <HelpTip label={TERMS.win_prob.label} body={TERMS.win_prob.body} />
         </div>
-        <div className="text-[11px] text-muted tabular-nums">
-          {game.model_prob != null && <>model {pct(game.model_prob)} · </>}
-          {game.market_prob != null && <>mkt {pct(game.market_prob)}</>}
+        <div className="text-[11px] text-muted tabular-nums flex items-center gap-1">
+          {game.model_prob != null && (
+            <>
+              model {pct(game.model_prob)}
+              <HelpTip label={TERMS.model_prob.label} body={TERMS.model_prob.body} />
+              ·
+            </>
+          )}
+          {game.market_prob != null && (
+            <>
+              mkt {pct(game.market_prob)}
+              <HelpTip label={TERMS.market_prob.label} body={TERMS.market_prob.body} />
+            </>
+          )}
         </div>
       </div>
 

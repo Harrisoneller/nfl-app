@@ -6,7 +6,16 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { ConfidenceRing } from "@/components/sparky/ConfidenceRing";
 import { SignalPill } from "@/components/sparky/SignalPill";
 import { MovementChart } from "@/components/sparky/MovementChart";
-import { americanOdds, classificationLabel, kickoff, pct, pctPoints } from "@/components/sparky/format";
+import { HelpTip, TERMS } from "@/components/sparky/HelpTip";
+import { SparkyGlossary } from "@/components/sparky/SparkyGlossary";
+import {
+  americanOdds,
+  classificationDescription,
+  classificationLabel,
+  kickoff,
+  pct,
+  pctPoints,
+} from "@/components/sparky/format";
 
 export default function SparkyGameDetailPage({
   params,
@@ -57,6 +66,9 @@ export default function SparkyGameDetailPage({
           </div>
 
           <BooksTable detail={data} />
+
+          {/* Persistent glossary — same as the dashboard */}
+          <SparkyGlossary />
         </>
       )}
     </div>
@@ -78,9 +90,18 @@ function Header({ detail }: { detail: SparkyGameDetail }) {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2 text-[11px] text-muted">
-            <span className={`sparky-chip sparky-chip--${p.classification ?? "lean"}`}>
+            <span
+              className={`sparky-chip sparky-chip--${p.classification ?? "lean"}`}
+              title={classificationDescription(p.classification)}
+            >
               {classificationLabel(p.classification)}
             </span>
+            {p.classification && (
+              <HelpTip
+                label={`${classificationLabel(p.classification)} — Pick Tier`}
+                body={classificationDescription(p.classification) || TERMS.classification.body}
+              />
+            )}
             <span>{kickoff(p.commence_time)}</span>
           </div>
           <div className="mt-2 flex items-center gap-3">
@@ -91,15 +112,30 @@ function Header({ detail }: { detail: SparkyGameDetail }) {
         </div>
         <div className="flex flex-col items-center">
           <ConfidenceRing score={p.confidence_score} size={76} />
-          <div className="text-[10px] text-muted mt-1">confidence</div>
+          <div className="text-[10px] text-muted mt-1 inline-flex items-center">
+            confidence
+            <HelpTip label={TERMS.confidence.label} body={TERMS.confidence.body} />
+          </div>
         </div>
       </div>
 
       <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Mini label="Pick" value={p.predicted_winner ?? "—"} accent />
-        <Mini label="Win prob" value={pct(p.win_prob)} />
-        <Mini label="Model" value={p.model_prob != null ? pct(p.model_prob) : "—"} />
-        <Mini label="Market" value={p.market_prob != null ? pct(p.market_prob) : "—"} />
+        <Mini
+          label="Win prob"
+          value={pct(p.win_prob)}
+          tip={TERMS.win_prob}
+        />
+        <Mini
+          label="Model"
+          value={p.model_prob != null ? pct(p.model_prob) : "—"}
+          tip={TERMS.model_prob}
+        />
+        <Mini
+          label="Market"
+          value={p.market_prob != null ? pct(p.market_prob) : "—"}
+          tip={TERMS.market_prob}
+        />
       </div>
 
       {p.explanation && <p className="mt-3 text-sm text-slate-200/85 leading-relaxed">{p.explanation}</p>}
@@ -119,11 +155,24 @@ function TeamSide({ id, ml, picked }: { id: string | null; ml: number | null; pi
   );
 }
 
-function Mini({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function Mini({
+  label,
+  value,
+  accent,
+  tip,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+  tip?: { label: string; body: string };
+}) {
   return (
     <div className="sparky-stat">
       <div className={`text-lg font-bold tabular-nums ${accent ? "text-emerald-300" : "text-white"}`}>{value}</div>
-      <div className="sparky-stat__label">{label}</div>
+      <div className="sparky-stat__label inline-flex items-center">
+        {label}
+        {tip && <HelpTip label={tip.label} body={tip.body} />}
+      </div>
     </div>
   );
 }

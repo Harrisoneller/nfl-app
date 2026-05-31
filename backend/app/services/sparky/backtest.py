@@ -62,14 +62,12 @@ from app.logging_config import get_logger
 from app.models.game import Game
 from app.models.odds_snapshot import OddsSnapshot
 from app.models.sparky import (
-    SparkyGamePrediction,
     SparkyHistoricalResult,
-    SparkyParlayResult,
 )
-from app.services.sparky import confidence, odds_math, parlay
+from app.services.sparky import confidence, parlay
 from app.services.sparky.confidence import GameScore
-from app.services.sparky.parlay import GameForParlay, RankedParlay
-from app.services.sparky.signals import MovementPoint, SignalInput, detect_signals
+from app.services.sparky.parlay import GameForParlay
+from app.services.sparky.signals import SignalInput, detect_signals
 
 log = get_logger(__name__)
 
@@ -593,9 +591,7 @@ def run_backtest(db: Session, config: BacktestConfig) -> BacktestResult:
 
     roi = simulate_roi(edges, config.starting_bankroll, config.flat_stake_pct, config.kelly_fraction)
 
-    n_slates_with_parlay_data = sum(
-        1 for _ in [1]  # placeholder — we can improve this later
-    )  # For now we just report total processed slates
+    # Placeholder removed: we already report `slates_processed` via parlay_m below.
 
     parlay_m = {
         "n_parlays": len(all_parlay_results),

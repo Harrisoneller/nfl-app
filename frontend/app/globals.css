@@ -662,3 +662,261 @@ a { color: inherit; }
   border-color: rgba(34, 211, 238, 0.7) !important;
   box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.4);
 }
+
+/* ------------------------------------------------------------------ */
+/* Layman-friendliness: HelpTip, "How Sparky works" intro, Glossary    */
+/* ------------------------------------------------------------------ */
+
+/* HelpTip — small "?" with a popover bubble */
+.sparky-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 0.3rem;
+  line-height: 1;
+}
+.sparky-help--block { display: inline-block; }
+.sparky-help__btn {
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  line-height: 14px;
+  border-radius: 9999px;
+  background: rgba(45, 212, 191, 0.18);
+  color: #5eead4;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  font-weight: 700;
+  cursor: help;
+  padding: 0;
+  text-align: center;
+  transition: background 120ms ease, color 120ms ease;
+  font-variant-numeric: normal;
+}
+.sparky-help__btn:hover,
+.sparky-help.is-open .sparky-help__btn {
+  background: #34d399;
+  color: #052e2b;
+}
+.sparky-help__bubble {
+  display: none;
+  position: absolute;
+  z-index: 50;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  background: #0b1018;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  pointer-events: none;
+  white-space: normal;
+  text-align: left;
+}
+.sparky-help.is-open .sparky-help__bubble { display: block; }
+.sparky-help__title {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #ecfeff;
+  margin-bottom: 0.2rem;
+}
+.sparky-help__body {
+  display: block;
+  font-size: 0.7rem;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+/* Flip the bubble below when there isn't room above (best-effort heuristic) */
+.sparky-help--below .sparky-help__bubble {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+
+/* "How Sparky works" intro panel */
+.sparky-intro {
+  border-radius: 18px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(34, 211, 238, 0.05));
+  padding: 1.25rem 1.4rem;
+  backdrop-filter: blur(10px);
+}
+.sparky-intro__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.sparky-intro__title {
+  font-size: 1.2rem;
+  font-weight: 800;
+  color: #ecfeff;
+  margin-top: 0.1rem;
+}
+.sparky-intro__dismiss {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #9fb3c8;
+  padding: 0.3rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sparky-intro__dismiss:hover { color: #ecfeff; border-color: rgba(45, 212, 191, 0.4); }
+.sparky-intro__lead {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+  margin-top: 0.75rem;
+  max-width: 60ch;
+}
+.sparky-intro__steps {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0 0 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.7rem;
+}
+@media (min-width: 768px) {
+  .sparky-intro__steps {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (min-width: 1100px) {
+  .sparky-intro__steps {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+.sparky-intro__step {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
+  background: rgba(11, 16, 24, 0.5);
+  border: 1px solid rgba(45, 212, 191, 0.2);
+}
+.sparky-intro__num {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #34d399, #22d3ee);
+  color: #052e2b;
+  font-size: 0.75rem;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+.sparky-intro__step-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #ecfeff;
+  margin-bottom: 0.2rem;
+}
+.sparky-intro__step-body {
+  font-size: 0.72rem;
+  color: #9fb3c8;
+  line-height: 1.4;
+}
+.sparky-intro__foot {
+  font-size: 0.72rem;
+  color: #8aa0b6;
+  margin-top: 0.9rem;
+}
+
+/* Glossary panel */
+.sparky-glossary {
+  border-radius: 14px;
+  border: 1px solid var(--spark-glass-border);
+  background: var(--spark-glass);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+.sparky-glossary__toggle {
+  width: 100%;
+  text-align: left;
+  padding: 0.85rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: transparent;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ecfeff;
+  cursor: pointer;
+}
+.sparky-glossary__toggle:hover { background: rgba(45, 212, 191, 0.06); }
+.sparky-glossary__chev {
+  color: #5eead4;
+  font-size: 0.85rem;
+  width: 1rem;
+  display: inline-block;
+}
+.sparky-glossary__hint {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: #8aa0b6;
+}
+.sparky-glossary__body {
+  padding: 0 1rem 1rem 1rem;
+  border-top: 1px solid var(--spark-glass-border);
+}
+.sparky-glossary__section { margin-top: 0.9rem; }
+.sparky-glossary__section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #5eead4;
+  margin-bottom: 0.4rem;
+}
+.sparky-glossary__entry {
+  padding: 0.45rem 0;
+  border-top: 1px dashed rgba(148, 163, 184, 0.12);
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0.8rem;
+}
+.sparky-glossary__entry:first-child { border-top: none; }
+.sparky-glossary__entry dt {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #ecfeff;
+}
+.sparky-glossary__entry dd {
+  font-size: 0.75rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .sparky-glossary__entry {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+}
+.sparky-glossary__foot {
+  margin-top: 1rem;
+  font-size: 0.7rem;
+  color: #8aa0b6;
+  font-style: italic;
+}
+
+/* Plain-English caption that sits under a jargon label inside a metric tile */
+.sparky-metric-caption {
+  font-size: 0.62rem;
+  color: #7c8aa0;
+  margin-top: 0.1rem;
+  line-height: 1.2;
+}

@@ -94,9 +94,17 @@ def test_backfill_then_full_pipeline(db):
 
 
 @skip_no_db
-def test_parlay_requires_three_events(db):
+def test_parlay_rejects_out_of_range_and_missing_events(db):
+    """1-leg or 9-leg requests fail size validation; missing events fail lookup."""
+    # Out of range (under): 1 leg
     with pytest.raises(ValueError):
-        sparky_service.rank_parlay(db, ["a", "b"])
+        sparky_service.rank_parlay(db, ["a"])
+    # Out of range (over): 9 legs
+    with pytest.raises(ValueError):
+        sparky_service.rank_parlay(db, [f"e{i}" for i in range(9)])
+    # In-range but every event is missing -> lookup-side ValueError
+    with pytest.raises(ValueError):
+        sparky_service.rank_parlay(db, ["nope-a", "nope-b"])
 
 
 def _cleanup(db):
@@ -117,6 +125,222 @@ def _cleanup(db):
     db.query(SparkyParlayRanking).delete(synchronize_session=False)
     db.query(SparkyHistoricalResult).delete(synchronize_session=False)
     db.query(SparkyParlayResult).delete(synchronize_session=False)
+    db.commit()
+
+
+@skip_no_db
+def test_rank_parlay_variable_n_2_through_5(db):
+    """rank_parlay accepts 2..8 legs; persistence + payload reflect n_legs + EV."""
+    from datetime import date, datetime, timedelta, timezone
+
+    from app.models.sparky import SparkyGamePrediction, SparkyParlayRanking
+
+    today = date.today()
+
+    # Build 5 minimal SparkyGamePrediction rows the engine can rank.
+    teams = [("KC", "DEN"), ("BUF", "NYJ"), ("DAL", "PHI"), ("SF", "SEA"), ("BAL", "PIT")]
+    event_ids = [f"varn-{i}" for i in range(len(teams))]
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.event_id.in_(event_ids)
+    ).delete(synchronize_session=False)
+    db.commit()
+    for (home, away), eid in zip(teams, event_ids):
+        db.add(SparkyGamePrediction(
+            slate_date=today, event_id=eid,
+            home_team_id=home, away_team_id=away,
+            predicted_winner=home, win_prob=0.62,
+            confidence_score=66.0, classification="lean",
+            signals=[], explanation="t",
+            market={
+                "home_ml": -180, "away_ml": 155,
+                "favorite": "home", "home_win_prob_ensemble": 0.62,
+            },
+        ))
+    db.commit()
+
+    for n, expected_combos in [(2, 4), (3, 8), (4, 16), (5, 32)]:
+        result = sparky_service.rank_parlay(
+            db, event_ids[:n], slate_date=today, persist=True,
+        )
+        assert len(result["parlays"]) == expected_combos
+        for p in result["parlays"]:
+            assert p["n_legs"] == n
+            assert "expected_value" in p
+            assert "is_value" in p
+            assert "kelly_fraction" in p
+
+        # Persisted rows match the engine output.
+        persisted = (
+            db.query(SparkyParlayRanking)
+            .filter(SparkyParlayRanking.slate_id == "|".join(sorted(event_ids[:n])))
+            .all()
+        )
+        assert len(persisted) == expected_combos
+        for r in persisted:
+            assert r.n_legs == n
+            if n == 2:
+                assert r.leg3_event_id is None
+            else:
+                assert r.leg3_event_id is not None
+
+    # rank_parlay rejects out-of-range and duplicates.
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        sparky_service.rank_parlay(db, event_ids[:1])
+    with _pt.raises(ValueError):
+        sparky_service.rank_parlay(db, [event_ids[0], event_ids[0]])
+
+    # Cleanup
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.event_id.in_(event_ids)
+    ).delete(synchronize_session=False)
+    db.query(SparkyParlayRanking).filter(
+        SparkyParlayRanking.slate_id.like("varn-%")
+        | SparkyParlayRanking.leg1_event_id.like("varn-%")
+    ).delete(synchronize_session=False)
+    db.commit()
+    # `today` and timedelta/datetime/timezone imports above silence any
+    # accidental unused-import lints in tooling that scans this file.
+    _ = (today, datetime, timedelta, timezone)
+
+
+@skip_no_db
+def test_current_event_rows_constrains_to_one_nfl_week(db):
+    """If the Odds API returned Week 1 + Week 2 (+ Week 3), Sparky's slate must
+    show only Week 1. Anchor = earliest upcoming kickoff; cap = +6d 12h.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.odds_snapshot import OddsSnapshot
+
+    # Clean any prior week-window fixture rows so the test is idempotent.
+    db.query(OddsSnapshot).filter(OddsSnapshot.event_id.like("wk-test-%")).delete(
+        synchronize_session=False
+    )
+    db.commit()
+
+    now = datetime.now(timezone.utc)
+    # Week 1: Thursday +3d  /  Sunday +6d  -- both should be in the window
+    # Week 2: Thursday +10d  /  Sunday +13d -- both should be OUTSIDE the window
+    # Week 3: Sunday +20d                    -- outside
+    fixtures = [
+        ("wk-test-w1-thu", now + timedelta(days=3)),
+        ("wk-test-w1-sun", now + timedelta(days=6)),
+        ("wk-test-w2-thu", now + timedelta(days=10)),
+        ("wk-test-w2-sun", now + timedelta(days=13)),
+        ("wk-test-w3-sun", now + timedelta(days=20)),
+    ]
+    for event_id, commence in fixtures:
+        db.add(OddsSnapshot(
+            event_id=event_id, captured_at=now, snapshot_label="T1",
+            commence_time=commence,
+            home_team="Test Home", away_team="Test Away",
+            home_team_id="KC", away_team_id="DEN",
+            book="TestBook", home_ml=-150, away_ml=130,
+            home_implied=0.6, away_implied=0.4, favorite="home",
+            raw={"test": True},
+        ))
+    db.commit()
+
+    rows = sparky_service._current_event_rows(db)
+    keys = {k for k in rows.keys() if k.startswith("wk-test-")}
+    assert keys == {"wk-test-w1-thu", "wk-test-w1-sun"}, (
+        f"Expected only Week 1 events, got: {keys}"
+    )
+
+    # Cleanup
+    db.query(OddsSnapshot).filter(OddsSnapshot.event_id.like("wk-test-%")).delete(
+        synchronize_session=False
+    )
+    db.commit()
+
+
+@skip_no_db
+def test_build_slate_is_idempotent_wipes_stale_predictions(db):
+    """A second build must REPLACE the persisted slate, not add to it.
+
+    Without the wipe-on-rebuild, predictions from an earlier build that
+    included more games (older code, wider week window) would linger on the
+    same slate_date — exactly the bug that left multi-week games on the
+    dashboard even after the week-window filter shipped.
+    """
+    from datetime import date, datetime, timedelta, timezone
+
+    from app.models.odds_snapshot import OddsSnapshot
+    from app.models.sparky import SparkyGamePrediction, SparkyParlayRanking
+
+    today = date.today()
+
+    # Clean any prior fixture rows so the test is idempotent itself.
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.event_id.like("idem-test-%")
+    ).delete(synchronize_session=False)
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.slate_date == today
+    ).delete(synchronize_session=False)
+    db.query(SparkyParlayRanking).filter(
+        SparkyParlayRanking.slate_date == today
+    ).delete(synchronize_session=False)
+    db.query(OddsSnapshot).filter(OddsSnapshot.event_id.like("idem-test-%")).delete(
+        synchronize_session=False
+    )
+    db.commit()
+
+    # 1) Insert a "stale" prediction directly (simulating an earlier build that
+    #    included games no longer in the week window).
+    db.add(SparkyGamePrediction(
+        slate_date=today,
+        event_id="idem-test-stale",
+        home_team_id="DAL",
+        away_team_id="PHI",
+        predicted_winner="PHI",
+        win_prob=0.6,
+        confidence_score=60.0,
+        classification="lean",
+        signals=[],
+        explanation="stale",
+        market={},
+    ))
+
+    # 2) Seed a single upcoming odds snapshot so build_slate has exactly one
+    #    real event to write.
+    now = datetime.now(timezone.utc)
+    db.add(OddsSnapshot(
+        event_id="idem-test-current",
+        captured_at=now,
+        snapshot_label="T1",
+        commence_time=now + timedelta(days=3),
+        home_team="Kansas City Chiefs", away_team="Denver Broncos",
+        home_team_id="KC", away_team_id="DEN",
+        book="TestBook", home_ml=-180, away_ml=155,
+        home_implied=0.64, away_implied=0.36, favorite="home",
+        raw={"test": True},
+    ))
+    db.commit()
+
+    # 3) Rebuild.
+    asyncio.run(sparky_service.build_slate(db))
+
+    # 4) Stale row gone; only the freshly-built one remains.
+    survivors = (
+        db.query(SparkyGamePrediction)
+        .filter(SparkyGamePrediction.slate_date == today)
+        .all()
+    )
+    event_ids = {p.event_id for p in survivors}
+    assert "idem-test-stale" not in event_ids, "Stale prediction was not wiped on rebuild"
+    assert "idem-test-current" in event_ids, "New prediction was not written"
+
+    # Cleanup
+    db.query(SparkyGamePrediction).filter(
+        SparkyGamePrediction.slate_date == today
+    ).delete(synchronize_session=False)
+    db.query(SparkyParlayRanking).filter(
+        SparkyParlayRanking.slate_date == today
+    ).delete(synchronize_session=False)
+    db.query(OddsSnapshot).filter(OddsSnapshot.event_id.like("idem-test-%")).delete(
+        synchronize_session=False
+    )
     db.commit()
 
 

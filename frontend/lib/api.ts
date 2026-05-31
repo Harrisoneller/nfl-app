@@ -639,11 +639,17 @@ export type SparkyParlayLeg = {
   win_prob: number;
   confidence: number;
   is_underdog: boolean;
+  // Per-leg value transparency (added with variable-N parlays).
+  market_implied?: number;     // vig-included implied prob at this price
+  edge?: number;               // win_prob - market_implied
+  expected_value?: number;     // EV per 1 unit staked at this price
+  is_value?: boolean;          // expected_value > 0
 };
 
 export type SparkyParlay = {
   rank: number;
   legs: SparkyParlayLeg[];
+  n_legs?: number;             // 2..8 (back-compat: pre-0010 rows imply 3)
   parlay_odds_american: number;
   parlay_odds_decimal: number;
   implied_prob: number;
@@ -653,6 +659,9 @@ export type SparkyParlay = {
   signal_alignment: number;
   composite_score: number;
   edge?: number;
+  expected_value?: number;     // EV per 1 unit staked on the full parlay
+  is_value?: boolean;
+  kelly_fraction?: number;     // capped Kelly stake fraction (0 when -EV)
   explanation: string;
 };
 
@@ -661,6 +670,18 @@ export type SparkySlate = {
   count: number;
   games: SparkyGame[];
   recommended_parlays: SparkyParlay[];
+  // Set by the backend's get_slate when there are upcoming odds snapshots but
+  // no Sparky predictions are built yet — UI uses it to surface the "Build
+  // real Week 1 slate" CTA on empty states.
+  real_data_available?: boolean;
+  // Set only by /admin/build_real so the admin UI can surface the upstream
+  // Odds API result alongside the rebuilt slate.
+  odds_refresh?: {
+    status?: string;
+    message?: string | null;
+    upstream_events?: number;
+    lines_in_db?: number;
+  } | null;
 };
 
 export type SparkyGameDetail = {
