@@ -32,6 +32,18 @@ ACTIVE_TTL = 60 * 60 * 24  # 24h
 RECOMPUTE_BUDGET_SECONDS = 2.5
 PREWARM_CONCURRENCY = 8
 
+# Strong refs to background compute tasks so they aren't GC'd mid-flight.
+# Pattern: `asyncio.shield` keeps a task alive when the caller is cancelled, but
+# without a hard reference somewhere, Python may garbage-collect a "fire and
+# forget" task before it finishes. The done-callback drains the set.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _track_background(task: asyncio.Task) -> asyncio.Task:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
 
 async def head_to_head(
     db: Session, team_a: str, team_b: str, season: int | None = None,
@@ -68,13 +80,26 @@ async def head_to_head(
         l1_ttl_seconds=L1_TTL,
     )
     fallback = _latest_cached_h2h(a, b, season)
+    # Run the compute as an independent task and SHIELD it from caller
+    # cancellation. If the router's outer request budget trips while a cold
+    # compute is still running (e.g. first-ever pair on a fresh container that
+    # has to download nfl_data_py parquets), we don't want the compute torn
+    # down — let it finish so the L2 cache is populated for the next click.
+    # Without this, a too-tight outer budget = forever-cold endpoint.
+    compute_task = _track_background(
+        asyncio.create_task(artifact_cache.get_or_compute(**cache_args))
+    )
     if fallback is None:
-        return await artifact_cache.get_or_compute(**cache_args)
+        try:
+            return await asyncio.shield(compute_task)
+        except asyncio.CancelledError:
+            # Outer budget tripped before any cache existed — let the router
+            # serve its summary fallback. Background compute keeps running and
+            # will populate L2 within a few seconds for the next visitor.
+            log.warning("h2h_cold_compute_shielded_for_background", key=key)
+            raise
     try:
-        return await asyncio.wait_for(
-            artifact_cache.get_or_compute(**cache_args),
-            timeout=RECOMPUTE_BUDGET_SECONDS,
-        )
+        return await asyncio.wait_for(asyncio.shield(compute_task), timeout=RECOMPUTE_BUDGET_SECONDS)
     except asyncio.TimeoutError:
         log.warning("h2h_recompute_timed_out_serving_stale", key=key, stale_key=fallback["key"])
         return _with_stale_cache_meta(

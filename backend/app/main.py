@@ -5,6 +5,7 @@ shutdown of httpx clients), Sentry init, rate limiting, and CORS.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -73,6 +74,11 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     else:
         log.info("scheduler_disabled", reason="app_role=web")
+        # No worker = no scheduled prewarm. Kick off a deferred, best-effort
+        # H2H warmup so the first visitor on a fresh container doesn't trigger
+        # a 10–25s cold compute on the request path. Done in the background so
+        # Railway healthchecks pass instantly.
+        asyncio.create_task(_web_role_h2h_warmup())
     try:
         yield
     finally:
@@ -82,6 +88,32 @@ async def lifespan(app: FastAPI):
         from .cache import close_cache
 
         close_cache()
+
+
+async def _web_role_h2h_warmup() -> None:
+    """One-shot H2H prewarm for web-role deployments (no separate worker).
+
+    Defers a few seconds so app boot + healthcheck land first, then warms the
+    shared adapters (`nfl_data_py` schedules/PBP, betting history, league
+    aggregates) by running `prewarm_h2h`. After this finishes, every H2H
+    request — even one for a pair we didn't explicitly prewarm — is fast
+    because the heavy upstream fetches are cached at L1/L2.
+
+    Best-effort: swallows all errors so a flaky data source can't crash boot.
+    """
+    try:
+        await asyncio.sleep(8)
+        from .db import SessionLocal
+        from .services.h2h_service import prewarm_h2h
+
+        db = SessionLocal()
+        try:
+            warmed = await prewarm_h2h(db)
+            log.info("web_role_h2h_prewarm_done", pairs=warmed)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning("web_role_h2h_prewarm_failed", error=str(e)[:200])
 
 
 async def _close_global_clients() -> None:
