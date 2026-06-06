@@ -36,6 +36,7 @@ from .routers import (
     players,
     predictions,
     scores,
+    sparky,
     stats,
     teams,
     widgets,
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(widgets.router, prefix="/widgets", tags=["widgets"])
     app.include_router(predictions.router, prefix="/predictions", tags=["predictions"])
     app.include_router(betting.router, prefix="/betting", tags=["betting"])
+    app.include_router(sparky.router, prefix="/sparky", tags=["sparky"])
     app.include_router(h2h.router, prefix="/h2h", tags=["h2h"])
     app.include_router(admin.router, prefix="/admin", tags=["admin"])
 

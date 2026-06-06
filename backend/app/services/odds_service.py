@@ -244,6 +244,18 @@ async def refresh_odds(db: Session, *, force: bool = False) -> OddsRefreshResult
                     n += 1
     db.commit()
     lines_in_db = db.query(OddsLine).count()
+
+    # Sparky: append the same events to the append-only odds_snapshots history so
+    # line-movement signals have data to work with. Reuses the events we already
+    # fetched (zero extra Odds API spend) and never blocks the odds pull on error.
+    if events:
+        try:
+            from . import sparky_service  # lazy import avoids a module-load cycle
+
+            sparky_service.capture_snapshot_from_events(db, events)
+        except Exception as e:  # noqa: BLE001
+            log.warning("sparky_snapshot_capture_failed", error=str(e)[:160])
+
     # Record the pull time (any outcome) so the min-interval guard holds across
     # restarts and we don't re-hit a rate-limited/erroring API every cron tick.
     _set_last_refresh(db, status, lines_in_db)
