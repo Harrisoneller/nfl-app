@@ -44,8 +44,8 @@ export default function OddsPage() {
             Best lines across major sportsbooks. Click a game to see every book.
           </p>
           {status?.last_updated && (
-            <p className="text-xs text-muted/80 mt-1" title={new Date(status.last_updated).toLocaleString()}>
-              Lines as of {formatAsOf(status.last_updated)} · refreshed twice daily
+            <p className="text-xs text-muted/80 mt-1" title={freshnessTooltip(status)}>
+              {freshnessLabel(status)}
             </p>
           )}
         </div>
@@ -181,6 +181,70 @@ function formatAsOf(iso: string): string {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.round(hrs / 24);
   return `${days}d ago`;
+}
+
+// Format the cron's next-fire timestamp as a relative "in 3h" hint.
+function formatInFuture(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "soon";
+  const mins = Math.round((then - Date.now()) / 60000);
+  if (mins <= 0) return "imminently";
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `in ${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `in ${days}d`;
+}
+
+// Context-aware freshness copy. The cron fires every 12h, but in offseason the
+// budget guard correctly *skips* the pull (no point spending API credits when no
+// game kicks off within ~10 days). When that happens we say so explicitly
+// instead of misleadingly claiming "refreshed twice daily" while showing 9d-old
+// lines.
+type OddsStatus = {
+  configured: boolean;
+  lines_in_db: number;
+  ready: boolean;
+  last_updated: string | null;
+  last_attempt?: { at: string | null; status: string | null; lines_in_db: number | null } | null;
+  next_refresh_at?: string | null;
+  refresh_hours_utc?: string | null;
+  lookahead_days?: number | null;
+};
+
+function freshnessLabel(status: OddsStatus): string {
+  if (!status.last_updated) return "No lines yet.";
+  const asOf = `Lines as of ${formatAsOf(status.last_updated)}`;
+  const attemptStatus = status.last_attempt?.status;
+  const nextHint = status.next_refresh_at
+    ? ` · next check ${formatInFuture(status.next_refresh_at)}`
+    : "";
+
+  if (attemptStatus === "skipped_offseason") {
+    const days = status.lookahead_days ?? 10;
+    return `${asOf} · offseason — pulls pause until a game is within ~${days} days${nextHint}`;
+  }
+  if (attemptStatus === "error") {
+    return `${asOf} · last refresh failed${nextHint}`;
+  }
+  if (attemptStatus === "disabled") {
+    return `${asOf} · refresh disabled (no ODDS_API_KEY set)`;
+  }
+  // ok / skipped_fresh / unknown — normal twice-daily cadence.
+  return `${asOf} · refreshed twice daily${nextHint}`;
+}
+
+function freshnessTooltip(status: OddsStatus): string {
+  const parts: string[] = [];
+  if (status.last_updated) parts.push(`Lines written: ${new Date(status.last_updated).toLocaleString()}`);
+  if (status.last_attempt?.at) {
+    parts.push(
+      `Last cron attempt: ${new Date(status.last_attempt.at).toLocaleString()} (${status.last_attempt.status ?? "unknown"})`,
+    );
+  }
+  if (status.next_refresh_at) parts.push(`Next: ${new Date(status.next_refresh_at).toLocaleString()}`);
+  if (status.refresh_hours_utc) parts.push(`Cron hours (UTC): ${status.refresh_hours_utc}`);
+  return parts.join("\n");
 }
 
 // ============================================================================

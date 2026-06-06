@@ -868,7 +868,24 @@ export const api = {
 
   // odds
   oddsStatus: (policy?: FetchPolicy) =>
-    req<{ configured: boolean; lines_in_db: number; ready: boolean; last_updated: string | null }>(
+    req<{
+      configured: boolean;
+      lines_in_db: number;
+      ready: boolean;
+      last_updated: string | null;
+      // Cron attempt metadata — present once the worker has fired at least once.
+      // `status` is one of "ok" | "skipped_fresh" | "skipped_offseason" | "error"
+      // | "disabled". In offseason the cron fires every 12h but skips, so
+      // `last_attempt.at` advances while `last_updated` does not.
+      last_attempt?: {
+        at: string | null;
+        status: string | null;
+        lines_in_db: number | null;
+      } | null;
+      next_refresh_at?: string | null;
+      refresh_hours_utc?: string | null;
+      lookahead_days?: number | null;
+    }>(
       "/odds/status",
       undefined,
       policy,

@@ -67,18 +67,72 @@ def get_event_odds(db: Session, event_id: str) -> list[OddsLine]:
 
 
 def odds_status(db: Session) -> dict[str, Any]:
-    """Lightweight health for the odds page / admin tooling."""
-    configured = bool(get_settings().odds_api_key.strip())
+    """Lightweight health for the odds page / admin tooling.
+
+    Surfaces *both* "when were lines last written" (max(created_at)) and
+    "when did the cron last attempt a pull, with what outcome" (artifact_cache
+    `odds_meta:last_refresh`). These can drift apart: in the offseason the cron
+    fires every 12h but skips, so `last_attempt` advances while `last_updated`
+    stays pinned to the most recent real write. The UI uses `last_attempt.status`
+    to explain *why* lines look stale instead of misleadingly claiming a
+    twice-daily refresh that's actually being skipped by design.
+    """
+    settings = get_settings()
+    configured = bool(settings.odds_api_key.strip())
     lines_in_db = db.query(OddsLine).count()
     # All rows are rewritten together on each successful pull, so the newest
     # created_at is "when the lines on screen were fetched".
     last_updated = db.query(func.max(OddsLine.created_at)).scalar()
+
+    # Last cron attempt (any outcome — ok / skipped_fresh / skipped_offseason / error).
+    last_attempt: dict[str, Any] | None = None
+    rec = artifact_cache.get(db, _META_KIND, _META_KEY)
+    if rec:
+        last_attempt = {
+            "at": rec.get("at"),
+            "status": rec.get("status"),
+            "lines_in_db": rec.get("lines_in_db"),
+        }
+
     return {
         "configured": configured,
         "lines_in_db": lines_in_db,
         "ready": lines_in_db > 0,
         "last_updated": last_updated.isoformat() if last_updated else None,
+        "last_attempt": last_attempt,
+        "next_refresh_at": _next_cron_fire(settings.odds_refresh_hours_utc),
+        "refresh_hours_utc": settings.odds_refresh_hours_utc,
+        "lookahead_days": settings.odds_lookahead_days,
     }
+
+
+def _next_cron_fire(hours_csv: str) -> str | None:
+    """Next UTC datetime the odds cron will fire, given a 'H,H,...' hour list.
+
+    Pure stdlib — no APScheduler introspection needed. Returns ISO-8601 or None
+    if the hour list is unparseable.
+    """
+    hours: list[int] = []
+    for part in (hours_csv or "").split(","):
+        p = part.strip()
+        if p.isdigit():
+            h = int(p)
+            if 0 <= h <= 23:
+                hours.append(h)
+    if not hours:
+        return None
+    hours.sort()
+    now = _now()
+    # Cron is `minute=0` on each listed hour — find the next one ≥ now.
+    for h in hours:
+        candidate = now.replace(hour=h, minute=0, second=0, microsecond=0)
+        if candidate > now:
+            return candidate.isoformat()
+    # All hours today have passed; first hour tomorrow.
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=hours[0], minute=0, second=0, microsecond=0,
+    )
+    return tomorrow.isoformat()
 
 
 def _get_last_refresh(db: Session) -> datetime | None:
