@@ -36,9 +36,9 @@ function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePredi
 
 // /fantasy and /ai hidden from quick links until ready — routes still work via direct URL
 const QUICK_LINKS = [
-  { href: "/teams", label: "Teams", icon: "🏟" },
-  { href: "/odds", label: "Odds", icon: "📊" },
-  { href: "/h2h/PHI/SF", label: "H2H", icon: "⚔️" },
+  { href: "/teams", label: "Teams", Icon: TeamsIcon },
+  { href: "/odds", label: "Odds", Icon: OddsIcon },
+  { href: "/h2h/PHI/SF", label: "H2H", Icon: H2HIcon },
 ] as const;
 
 export default async function HomePage() {
@@ -383,10 +383,10 @@ function QuickExploreBar() {
   return (
     <nav className="flex flex-wrap items-center gap-2" aria-label="Quick explore">
       <span className="text-[11px] text-muted mr-1 hidden sm:inline">Jump to</span>
-      {QUICK_LINKS.map((l) => (
-        <Link key={l.href} href={l.href} className="home-quick-link">
-          <span aria-hidden>{l.icon}</span>
-          {l.label}
+      {QUICK_LINKS.map(({ href, label, Icon }) => (
+        <Link key={href} href={href} className="home-quick-link">
+          <Icon />
+          {label}
         </Link>
       ))}
     </nav>
@@ -502,6 +502,47 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase tracking-wide text-muted">{label}</div>
       <div className="font-bold tabular-nums">{value}</div>
     </div>
+  );
+}
+
+/* ---------- Quick-link icons (match the nav tab bar) ---------- */
+const ICON_PROPS = {
+  width: 15,
+  height: 15,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function TeamsIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M12 3l7 3v5c0 4.4-3 7.7-7 9-4-1.3-7-4.6-7-9V6l7-3Z" />
+      <path d="M9 11l2 2 4-4" />
+    </svg>
+  );
+}
+function OddsIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M4 19V5" />
+      <path d="M4 19h16" />
+      <path d="M8 16v-4" />
+      <path d="M13 16V8" />
+      <path d="M18 16v-6" />
+    </svg>
+  );
+}
+function H2HIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <path d="M3 8h13l-3-3" />
+      <path d="M21 16H8l3 3" />
+    </svg>
   );
 }
 

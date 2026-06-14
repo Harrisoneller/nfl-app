@@ -1,12 +1,14 @@
+"use client";
 import Image from "next/image";
 import Link from "next/link";
+import { useEffect, useRef } from "react";
 
-const HUD_STATS = [
-  { label: "Win prob", value: "67%" },
-  { label: "EPA/play", value: "+0.14" },
-  { label: "Elo", value: "1684" },
-  { label: "Spread", value: "-3.5" },
-] as const;
+function prefersReducedMotion() {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  );
+}
 
 export function WelcomeHero({
   hasLiveGames,
@@ -15,35 +17,67 @@ export function WelcomeHero({
   hasLiveGames: boolean;
   weekLabel: string | null;
 }) {
+  const mediaRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const cueRef = useRef<HTMLDivElement>(null);
+
+  // Scroll-driven parallax: photo drifts slower than the page, content fades
+  // and lifts as you scroll past, the cue fades out. rAF-throttled, passive.
+  useEffect(() => {
+    if (prefersReducedMotion()) return;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const y = window.scrollY;
+        if (mediaRef.current) {
+          mediaRef.current.style.transform = `translate3d(0, ${y * 0.35}px, 0)`;
+        }
+        if (contentRef.current) {
+          contentRef.current.style.opacity = String(Math.max(0, 1 - y / 520));
+          contentRef.current.style.transform = `translate3d(0, ${y * 0.18}px, 0)`;
+        }
+        if (cueRef.current) {
+          cueRef.current.style.opacity = String(Math.max(0, 1 - y / 220));
+        }
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
   return (
     <section className="welcome-hero">
-      <Image
-        src="/hero-stadium.jpg"
-        alt=""
-        fill
-        priority
-        sizes="(max-width: 1280px) 100vw, 1280px"
-        className="welcome-hero__photo"
-      />
+      <div className="welcome-hero__media" ref={mediaRef}>
+        <Image
+          src="/TC5_5287-scaled.jpg"
+          alt=""
+          fill
+          priority
+          sizes="100vw"
+          className="welcome-hero__photo"
+        />
+      </div>
 
       <div className="welcome-hero__shade" aria-hidden />
       <div className="welcome-hero__grid" aria-hidden />
 
-      <div className="welcome-hero__hud" aria-hidden>
-        {HUD_STATS.map((s) => (
-          <div key={s.label} className="welcome-hero__hud-stat">
-            <span className="welcome-hero__hud-label">{s.label}</span>
-            <span className="welcome-hero__hud-value">{s.value}</span>
-          </div>
-        ))}
-      </div>
+      <div className="welcome-hero__content" ref={contentRef}>
+        <div className="welcome-hero__logo">
+          <Image
+            src="/brand/statletics-neon.png"
+            alt="Statletics Sports"
+            width={1014}
+            height={403}
+            priority
+            className="welcome-hero__logo-img"
+          />
+        </div>
 
-      <div className="welcome-hero__content">
-        {weekLabel ? (
-          <p className="welcome-hero__eyebrow">{weekLabel} · Statletics NFL</p>
-        ) : (
-          <p className="welcome-hero__eyebrow">Statletics NFL</p>
-        )}
+        {weekLabel && <p className="welcome-hero__eyebrow">{weekLabel}</p>}
 
         <h1 className="welcome-hero__title">
           Every angle of the NFL.
@@ -79,6 +113,11 @@ export function WelcomeHero({
             Offseason mode — predictions refresh when Week 1 schedules are live.
           </p>
         )}
+      </div>
+
+      <div className="welcome-hero__cue" ref={cueRef} aria-hidden>
+        <span className="welcome-hero__cue-mouse" />
+        <span>Scroll</span>
       </div>
     </section>
   );
