@@ -20,12 +20,190 @@
   --text: #0b0d10;
 }
 
+/* ==========================================================================
+   Liquid glass — shared translucent surface system (dark-first, iOS-inspired)
+   Tokens adapt per theme; classes layer blur + saturation + a specular rim so
+   any surface can opt into the "liquid glass" look. Safe fallbacks below for
+   browsers without backdrop-filter.
+   ========================================================================== */
+:root {
+  --glass-bg: rgba(18, 23, 30, 0.55);
+  --glass-bg-strong: rgba(14, 18, 24, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --glass-highlight: rgba(255, 255, 255, 0.14);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.40);
+  --glass-shadow-sm: 0 4px 18px rgba(0, 0, 0, 0.28);
+  --glass-blur: 20px;
+}
+:root[data-theme="light"] {
+  --glass-bg: rgba(255, 255, 255, 0.62);
+  --glass-bg-strong: rgba(255, 255, 255, 0.80);
+  --glass-border: rgba(15, 23, 42, 0.10);
+  --glass-highlight: rgba(255, 255, 255, 0.85);
+  --glass-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
+  --glass-shadow-sm: 0 4px 16px rgba(15, 23, 42, 0.08);
+}
+
+.glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+}
+.glass-strong {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 4px)) saturate(200%);
+  backdrop-filter: blur(calc(var(--glass-blur) + 4px)) saturate(200%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Pills + buttons that share the glass language */
+.glass-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 9999px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in oklab, var(--glass-bg) 70%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  backdrop-filter: blur(12px) saturate(160%);
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.glass-pill:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--team-primary) 55%, var(--glass-border));
+}
+
+/* Fallback: no backdrop-filter support → opaque-ish surfaces so text stays legible */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass, .glass-pill { background: var(--panel); }
+  .glass-strong { background: var(--panel); }
+}
+
+/* Respect users who reduce transparency */
+@media (prefers-reduced-transparency: reduce) {
+  .glass, .glass-strong, .glass-pill {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--panel);
+  }
+}
+
+/* === Glass nav (sticky desktop header) === */
+.glass-nav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  backdrop-filter: blur(22px) saturate(190%);
+  border-bottom: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+/* Desktop nav links — morphing pill highlight */
+.nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.85rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  color: var(--muted);
+  transition: color 160ms ease, background 160ms ease;
+}
+.nav-link:hover { color: var(--text); }
+.nav-link[data-active="true"] {
+  color: var(--text);
+  background: color-mix(in oklab, var(--team-primary) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--team-primary) 45%, transparent);
+}
+
+/* === iOS-style floating glass bottom tab bar (mobile) === */
+.glass-tabbar {
+  position: fixed;
+  left: max(0.75rem, env(safe-area-inset-left));
+  right: max(0.75rem, env(safe-area-inset-right));
+  bottom: calc(0.6rem + env(safe-area-inset-bottom));
+  z-index: 50;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-around;
+  gap: 0.15rem;
+  padding: 0.4rem;
+  border-radius: 26px;
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(26px) saturate(200%);
+  backdrop-filter: blur(26px) saturate(200%);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 var(--glass-highlight);
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .glass-tabbar { background: var(--panel); }
+}
+.tab-item {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  padding: 0.45rem 0.2rem 0.4rem;
+  border-radius: 18px;
+  color: var(--muted);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+.tab-item svg { width: 22px; height: 22px; }
+.tab-item:active { transform: scale(0.93); }
+.tab-item[data-active="true"] {
+  color: var(--text);
+  background: color-mix(in oklab, var(--team-primary) 26%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--team-primary) 40%, transparent);
+}
+.tab-item[data-active="true"] svg {
+  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--team-primary) 60%, transparent));
+}
+
 html, body {
   background: var(--bg);
   color: var(--text);
   min-height: 100%;
   -webkit-font-smoothing: antialiased;
 }
+
+/* === Ambient field: slow-drifting aurora behind the whole app === */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 42% at 12% 8%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(40% 44% at 88% 0%, rgba(31, 111, 235, 0.16), transparent 60%),
+    radial-gradient(46% 50% at 78% 88%, rgba(16, 185, 129, 0.12), transparent 60%),
+    radial-gradient(40% 46% at 8% 92%, rgba(124, 58, 237, 0.10), transparent 60%);
+  animation: ambient-drift 26s ease-in-out infinite alternate;
+  will-change: transform, opacity;
+}
+:root[data-theme="light"] body::before {
+  opacity: 0.5;
+}
+@keyframes ambient-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(-1.5%, 1.5%, 0) scale(1.06); }
+  100% { transform: translate3d(1.5%, -1%, 0) scale(1.03); }
+}
+
+/* Allow full-bleed (100vw) children without a horizontal scrollbar.
+   `clip` (not `hidden`) so position: sticky on the nav keeps working. */
+body { overflow-x: clip; }
 
 a { color: inherit; }
 
@@ -34,19 +212,59 @@ a { color: inherit; }
   box-shadow: 0 2px 30px rgba(0,0,0,0.2);
 }
 .panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+  position: relative;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--glass-highlight) 40%, transparent) 0%, transparent 36%),
+    var(--glass-bg);
+  -webkit-backdrop-filter: blur(14px) saturate(165%);
+  backdrop-filter: blur(14px) saturate(165%);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow-sm), inset 0 1px 0 var(--glass-highlight);
+  transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .panel { background: var(--panel); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .panel {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--panel);
+  }
 }
 .panel-interactive:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
-  border-color: var(--team-primary);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.22), inset 0 1px 0 var(--glass-highlight);
+  border-color: color-mix(in oklab, var(--team-primary) 55%, var(--glass-border));
 }
 .divider { border-color: var(--border); }
 
-/* === Nav brand: Statletics NFL === */
+/* === Nav logo (neon wordmark in the upper-left) === */
+.nav-logo {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.nav-logo-img {
+  height: 1.85rem;
+  width: auto;
+  display: block;
+  transition: filter 160ms ease, transform 160ms ease;
+}
+.nav-logo:hover .nav-logo-img {
+  transform: translateY(-0.5px);
+  filter: drop-shadow(0 0 9px rgba(248, 113, 113, 0.55));
+}
+/* White neon would vanish on the light glass nav — give it a dark plate */
+:root[data-theme="light"] .nav-logo {
+  background: rgba(10, 14, 20, 0.92);
+  border-radius: 9px;
+  padding: 0.2rem 0.55rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* === Nav brand: Statletics NFL (legacy text wordmark) === */
 .nav-brand {
   display: inline-flex;
   align-items: baseline;
@@ -138,22 +356,27 @@ a { color: inherit; }
   height: 1rem;
   border-radius: 2px;
   background: linear-gradient(180deg, var(--team-primary), var(--team-secondary));
+  box-shadow: 0 0 10px color-mix(in oklab, var(--team-primary) 70%, transparent);
 }
 .home-quick-link {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.4rem 0.85rem;
+  padding: 0.45rem 0.95rem;
   font-size: 0.8125rem;
   border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: color-mix(in oklab, var(--panel) 80%, transparent);
-  transition: border-color 150ms ease, transform 150ms ease, background 150ms ease;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 .home-quick-link:hover {
-  border-color: color-mix(in oklab, var(--team-primary) 55%, var(--border));
-  background: var(--panel);
+  border-color: color-mix(in oklab, var(--team-primary) 60%, var(--glass-border));
   transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2), inset 0 1px 0 var(--glass-highlight),
+    0 0 0 1px color-mix(in oklab, var(--team-primary) 22%, transparent);
 }
 .live-pill {
   display: inline-flex;
@@ -186,18 +409,74 @@ a { color: inherit; }
 .welcome-hero {
   position: relative;
   overflow: hidden;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  min-height: clamp(22rem, 52vh, 32rem);
+  /* Full-bleed: break out of the constrained <main> to span the viewport */
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  /* Pull up under the sticky nav (h-14 = 3.5rem) and cancel main's pt-6 (1.5rem)
+     so the photo fills the very top of the screen and blurs through the glass nav */
+  margin-top: calc(-3.5rem - 1.5rem);
+  min-height: 100vh;
+  min-height: 100svh;
+  border: none;
+  border-radius: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+/* Parallax media layer (wraps the Image so ken-burns + parallax don't fight).
+   Oversized vertically so the parallax drift never exposes an edge. */
+.welcome-hero__media {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12%;
+  height: 124%;
+  z-index: 0;
+  will-change: transform;
+}
+
+/* Slow diagonal light sweep across the hero (one pass, then rests) */
+.welcome-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.10) 48%, rgba(255, 255, 255, 0.02) 54%, transparent 60%);
+  transform: translateX(-120%);
+  animation: hero-sheen 9s ease-in-out 1.2s infinite;
+}
+
 .welcome-hero__photo {
   object-fit: cover;
   object-position: center 42%;
-  transform: scale(1.02);
+  transform: scale(1.04);
+  animation: hero-kenburns 28s ease-in-out infinite alternate;
+}
+@keyframes hero-kenburns {
+  0%   { transform: scale(1.04) translate3d(0, 0, 0); }
+  100% { transform: scale(1.12) translate3d(-1.5%, -1.5%, 0); }
+}
+@keyframes hero-sheen {
+  0%   { transform: translateX(-120%); }
+  18%  { transform: translateX(120%); }
+  100% { transform: translateX(120%); }
+}
+
+/* Staggered entrance for hero content (CSS-only, fires on load) */
+.welcome-hero__content > * {
+  animation: hero-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.welcome-hero__content > *:nth-child(1) { animation-delay: 0.05s; }
+.welcome-hero__content > *:nth-child(2) { animation-delay: 0.14s; }
+.welcome-hero__content > *:nth-child(3) { animation-delay: 0.23s; }
+.welcome-hero__content > *:nth-child(4) { animation-delay: 0.32s; }
+.welcome-hero__content > *:nth-child(5) { animation-delay: 0.41s; }
+.welcome-hero__content > *:nth-child(6) { animation-delay: 0.50s; }
+@keyframes hero-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .welcome-hero__shade {
@@ -205,14 +484,14 @@ a { color: inherit; }
   inset: 0;
   z-index: 1;
   background:
-    linear-gradient(180deg, rgba(8, 12, 18, 0.82) 0%, rgba(8, 12, 18, 0.45) 42%, rgba(8, 12, 18, 0.88) 100%),
-    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(15, 118, 110, 0.2), transparent 55%);
+    linear-gradient(180deg, rgba(8, 12, 18, 0.72) 0%, rgba(8, 12, 18, 0.28) 36%, rgba(8, 12, 18, 0.55) 74%, var(--bg) 100%),
+    radial-gradient(ellipse 80% 55% at 50% 104%, rgba(190, 30, 45, 0.18), transparent 55%);
   pointer-events: none;
 }
 :root[data-theme="light"] .welcome-hero__shade {
   background:
-    linear-gradient(180deg, rgba(245, 246, 248, 0.88) 0%, rgba(245, 246, 248, 0.55) 45%, rgba(245, 246, 248, 0.92) 100%),
-    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(14, 116, 144, 0.12), transparent 55%);
+    linear-gradient(180deg, rgba(245, 246, 248, 0.80) 0%, rgba(245, 246, 248, 0.40) 40%, rgba(245, 246, 248, 0.70) 76%, var(--bg) 100%),
+    radial-gradient(ellipse 80% 55% at 50% 104%, rgba(190, 30, 45, 0.10), transparent 55%);
 }
 
 /* Subtle field analytics grid */
@@ -220,16 +499,66 @@ a { color: inherit; }
   position: absolute;
   inset: 0;
   z-index: 1;
-  opacity: 0.22;
+  opacity: 0.18;
   background-image:
-    linear-gradient(rgba(56, 189, 248, 0.35) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.35) 1px, transparent 1px);
+    linear-gradient(rgba(248, 113, 113, 0.35) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(248, 113, 113, 0.35) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: linear-gradient(180deg, transparent 35%, black 70%, transparent 100%);
   pointer-events: none;
 }
 :root[data-theme="light"] .welcome-hero__grid {
   opacity: 0.12;
+}
+
+/* Animated scroll cue (desktop) */
+.welcome-hero__cue {
+  position: absolute;
+  z-index: 3;
+  bottom: 4.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  color: #e2e8f0;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+@media (min-width: 640px) {
+  .welcome-hero__cue { display: flex; }
+}
+:root[data-theme="light"] .welcome-hero__cue { color: #475569; text-shadow: none; }
+.welcome-hero__cue-mouse {
+  width: 22px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1.5px solid currentColor;
+  position: relative;
+  opacity: 0.85;
+}
+.welcome-hero__cue-mouse::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  width: 3px;
+  height: 6px;
+  border-radius: 2px;
+  background: currentColor;
+  transform: translateX(-50%);
+  animation: cue-scroll 1.7s ease-in-out infinite;
+}
+@keyframes cue-scroll {
+  0%   { opacity: 0; transform: translate(-50%, 0); }
+  35%  { opacity: 1; }
+  70%  { opacity: 0; transform: translate(-50%, 10px); }
+  100% { opacity: 0; transform: translate(-50%, 10px); }
 }
 
 .welcome-hero__hud {
@@ -260,12 +589,19 @@ a { color: inherit; }
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
-  padding: 0.4rem 0.65rem;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(8, 12, 18, 0.72);
-  backdrop-filter: blur(8px);
+  padding: 0.45rem 0.7rem;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(8, 12, 18, 0.6);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.14);
   min-width: 4.5rem;
+  transition: transform 200ms ease, border-color 200ms ease;
+}
+.welcome-hero__hud-stat:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.5);
 }
 :root[data-theme="light"] .welcome-hero__hud-stat {
   background: rgba(255, 255, 255, 0.82);
@@ -302,16 +638,30 @@ a { color: inherit; }
   .welcome-hero__content { padding: 3rem 2rem 6rem; }
 }
 
+.welcome-hero__logo {
+  line-height: 0;
+  margin-bottom: 0.6rem;
+}
+.welcome-hero__logo-img {
+  width: clamp(240px, 46vw, 500px);
+  height: auto;
+  filter:
+    drop-shadow(0 0 22px rgba(248, 113, 113, 0.30))
+    drop-shadow(0 3px 12px rgba(0, 0, 0, 0.55));
+}
+
 .welcome-hero__eyebrow {
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #7dd3fc;
+  color: #fca5a5;
+  text-shadow: 0 0 12px rgba(239, 68, 68, 0.45);
   margin-bottom: 0.75rem;
 }
 :root[data-theme="light"] .welcome-hero__eyebrow {
-  color: #0369a1;
+  color: #dc2626;
+  text-shadow: none;
 }
 
 .welcome-hero__title {
@@ -328,10 +678,16 @@ a { color: inherit; }
 }
 .welcome-hero__title-accent {
   display: block;
-  background: linear-gradient(90deg, #38bdf8, #4ade80);
+  background: linear-gradient(95deg, #ffffff 0%, #fb7185 38%, #ef4444 58%, #ffffff 100%);
+  background-size: 300% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  animation: accent-flow 8s ease-in-out infinite;
+}
+@keyframes accent-flow {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
 }
 
 .welcome-hero__subtitle {
@@ -389,11 +745,13 @@ a { color: inherit; }
 }
 .welcome-hero__btn:hover { transform: translateY(-1px); }
 .welcome-hero__btn--primary {
-  background: var(--team-primary);
+  background: linear-gradient(95deg, #ef4444 0%, #f43f5e 100%);
   color: #fff;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
-.welcome-hero__btn--primary:hover { opacity: 0.92; }
+.welcome-hero__btn--primary:hover {
+  box-shadow: 0 10px 30px rgba(239, 68, 68, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
 .welcome-hero__btn--ghost {
   border: 1px solid rgba(255, 255, 255, 0.35);
   color: #f8fafc;
@@ -401,7 +759,7 @@ a { color: inherit; }
   backdrop-filter: blur(8px);
 }
 .welcome-hero__btn--ghost:hover {
-  border-color: #7dd3fc;
+  border-color: #f87171;
   background: rgba(8, 12, 18, 0.6);
 }
 :root[data-theme="light"] .welcome-hero__btn--ghost {
@@ -425,12 +783,15 @@ a { color: inherit; }
 
 /* === Pulse stat strip === */
 .pulse-card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(14px) saturate(165%);
+  backdrop-filter: blur(14px) saturate(165%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
   padding: 14px 16px;
   position: relative;
   overflow: hidden;
+  box-shadow: var(--glass-shadow-sm), inset 0 1px 0 var(--glass-highlight);
   transition: transform 150ms ease, border-color 150ms ease;
 }
 .pulse-card:hover {
@@ -919,4 +1280,25 @@ a { color: inherit; }
   color: #7c8aa0;
   margin-top: 0.1rem;
   line-height: 1.2;
+}
+
+/* ==========================================================================
+   Motion safety — honor users who prefer reduced motion. Decorative loops are
+   silenced; entrance reveals collapse to their final state so nothing is hidden.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  .welcome-hero::after,
+  .welcome-hero__photo,
+  .welcome-hero__title-accent,
+  .welcome-hero__cue-mouse::before,
+  .hero-glow::before,
+  .live-pill::before {
+    animation: none !important;
+  }
+  .welcome-hero__content > * {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
 }

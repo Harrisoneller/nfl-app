@@ -1,5 +1,5 @@
 import "./globals.css";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Nav } from "@/components/Nav";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ToastProvider } from "@/components/Toast";
@@ -29,6 +29,11 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport: Viewport = {
+  themeColor: "#0b0d10",
+  viewportFit: "cover",
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
@@ -38,11 +43,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <PersonaProvider>
               <AuthProvider>
                 <Nav />
-                <main className="max-w-7xl mx-auto px-4 py-6">{children}</main>
+                <main className="max-w-7xl mx-auto px-4 pt-6 pb-28 md:pb-6">{children}</main>
               </AuthProvider>
             </PersonaProvider>
           </ExperimentProvider>
-          <footer className="max-w-7xl mx-auto px-4 py-8 text-xs text-muted">
+          <footer className="max-w-7xl mx-auto px-4 pt-8 pb-28 md:pb-8 text-xs text-muted">
             Statletics NFL · data via ESPN, Sleeper, nfl-data-py, The Odds API, Open-Meteo
           </footer>
           <CommandPalette />

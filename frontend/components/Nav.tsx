@@ -1,24 +1,38 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
+import Image from "next/image";
+import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthProvider";
 import { ThemeToggle } from "./ThemeProvider";
-import { PersonaToggle } from "./persona/PersonaToggle";
 
 // NOTE: /players, /compare, and /performance are intentionally hidden from the
 // nav while they're being stabilized. The pages still exist if you navigate
 // directly to the URL — re-add the entries here to restore discovery.
-const links = [
-  { href: "/", label: "Home" },
-  { href: "/teams", label: "Teams" },
-  { href: "/h2h/PHI/SF", label: "H2H" },
-  { href: "/odds", label: "Odds" },
-  { href: "/sparky", label: "Sparky" },
+type NavLink = {
+  href: string;
+  label: string;
+  // route prefix used to mark the entry active (Home matches "/" exactly)
+  seg: string;
+  icon: ReactNode;
+};
+
+const links: NavLink[] = [
+  { href: "/", label: "Home", seg: "/", icon: <HomeIcon /> },
+  { href: "/teams", label: "Teams", seg: "/teams", icon: <TeamsIcon /> },
+  { href: "/h2h/PHI/SF", label: "H2H", seg: "/h2h", icon: <H2HIcon /> },
+  { href: "/odds", label: "Odds", seg: "/odds", icon: <OddsIcon /> },
+  { href: "/sparky", label: "Sparky", seg: "/sparky", icon: <SparkyIcon /> },
   // /fantasy and /ai hidden until ready — routes still work via direct URL
 ];
 
+function isActive(pathname: string, seg: string) {
+  return seg === "/" ? pathname === "/" : pathname.startsWith(seg);
+}
+
 export function Nav() {
   const { user, loading } = useAuth();
+  const pathname = usePathname() || "/";
   const [isMac, setIsMac] = useState(true);
   useEffect(() => {
     setIsMac(/Mac|iPhone|iPad/.test(navigator.userAgent));
@@ -32,63 +46,149 @@ export function Nav() {
   };
 
   return (
-    <header className="border-b divider sticky top-0 z-30 backdrop-blur bg-bg/70">
-      <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
-        <Link href="/" className="nav-brand group shrink-0" aria-label="Statletics NFL home">
-          <span className="nav-brand__primary">Statletics</span>
-          <span className="nav-brand__accent">NFL</span>
-        </Link>
-        <nav className="hidden md:flex items-center gap-5 text-sm">
-          {links.map((l) => (
-            <Link key={l.href} href={l.href} className="hover:text-team-primary transition-colors">
-              {l.label}
-            </Link>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2">
-          <PersonaToggle />
-          {!loading &&
-            (user ? (
+    <>
+      {/* ===== Top bar (glass) ===== */}
+      <header className="glass-nav">
+        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
+          <Link href="/" className="nav-logo group shrink-0" aria-label="Statletics Sports home">
+            <Image
+              src="/brand/statletics-neon.png"
+              alt="Statletics Sports"
+              width={1014}
+              height={403}
+              priority
+              className="nav-logo-img"
+            />
+          </Link>
+
+          {/* Desktop primary nav — morphing pill highlights */}
+          <nav className="hidden md:flex items-center gap-1">
+            {links.map((l) => (
               <Link
-                href="/account"
-                className="hidden sm:inline-flex items-center gap-1.5 text-xs text-muted hover:text-team-primary border divider rounded px-2 py-1"
+                key={l.href}
+                href={l.href}
+                className="nav-link"
+                data-active={isActive(pathname, l.seg)}
               >
-                <span
-                  className="w-5 h-5 rounded-full bg-team-primary/25 text-[10px] font-bold flex items-center justify-center text-team-primary"
-                  aria-hidden
-                >
-                  {(user.display_name || user.email)[0]?.toUpperCase()}
-                </span>
-                <span className="max-w-[100px] truncate">
-                  {user.display_name || user.email.split("@")[0]}
-                </span>
-              </Link>
-            ) : (
-              <Link
-                href="/login"
-                className="hidden sm:inline text-xs text-muted hover:text-team-primary border divider rounded px-2 py-1"
-              >
-                Sign in
+                {l.label}
               </Link>
             ))}
-          <button
-            onClick={openPalette}
-            className="hidden sm:flex items-center gap-2 text-xs text-muted bg-bg border divider rounded px-2 py-1 hover:text-text"
-            aria-label="Search (Cmd+K)"
-          >
-            <span>Search</span>
-            <kbd className="text-[10px] bg-panel border divider rounded px-1">{cmd}K</kbd>
-          </button>
-          <ThemeToggle />
+          </nav>
+
+          <div className="flex items-center gap-2">
+            {!loading &&
+              (user ? (
+                <Link
+                  href="/account"
+                  className="glass-pill hidden sm:inline-flex text-xs text-muted hover:text-text px-2 py-1"
+                >
+                  <span
+                    className="w-5 h-5 rounded-full bg-team-primary/25 text-[10px] font-bold flex items-center justify-center text-team-primary"
+                    aria-hidden
+                  >
+                    {(user.display_name || user.email)[0]?.toUpperCase()}
+                  </span>
+                  <span className="max-w-[100px] truncate">
+                    {user.display_name || user.email.split("@")[0]}
+                  </span>
+                </Link>
+              ) : (
+                <Link
+                  href="/login"
+                  className="glass-pill hidden sm:inline-flex text-xs text-muted hover:text-text px-3 py-1"
+                >
+                  Sign in
+                </Link>
+              ))}
+            <button
+              onClick={openPalette}
+              className="glass-pill hidden sm:flex text-xs text-muted hover:text-text px-2.5 py-1"
+              aria-label="Search (Cmd+K)"
+            >
+              <span>Search</span>
+              <kbd className="text-[10px] bg-panel/60 border divider rounded px-1">{cmd}K</kbd>
+            </button>
+            <button
+              onClick={openPalette}
+              className="glass-pill sm:hidden w-8 h-8 justify-center text-muted"
+              aria-label="Search"
+            >
+              <SearchIcon />
+            </button>
+            <ThemeToggle />
+          </div>
         </div>
-      </div>
-      <nav className="md:hidden flex items-center gap-4 text-xs px-4 py-2 overflow-x-auto border-t divider">
+      </header>
+
+      {/* ===== Mobile bottom tab bar (iOS-style floating glass) ===== */}
+      <nav className="glass-tabbar md:hidden" aria-label="Primary">
         {links.map((l) => (
-          <Link key={l.href} href={l.href} className="whitespace-nowrap hover:text-team-primary">
-            {l.label}
+          <Link
+            key={l.href}
+            href={l.href}
+            className="tab-item"
+            data-active={isActive(pathname, l.seg)}
+            aria-current={isActive(pathname, l.seg) ? "page" : undefined}
+          >
+            {l.icon}
+            <span>{l.label}</span>
           </Link>
         ))}
       </nav>
-    </header>
+    </>
+  );
+}
+
+/* ---------- Inline icons (dependency-free, currentColor) ---------- */
+function HomeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.5V21h14V9.5" />
+      <path d="M9.5 21v-6h5v6" />
+    </svg>
+  );
+}
+function TeamsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 3l7 3v5c0 4.4-3 7.7-7 9-4-1.3-7-4.6-7-9V6l7-3Z" />
+      <path d="M9 11l2 2 4-4" />
+    </svg>
+  );
+}
+function H2HIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 8h13l-3-3" />
+      <path d="M21 16H8l3 3" />
+    </svg>
+  );
+}
+function OddsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4 19V5" />
+      <path d="M4 19h16" />
+      <path d="M8 16v-4" />
+      <path d="M13 16V8" />
+      <path d="M18 16v-6" />
+    </svg>
+  );
+}
+function SparkyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
+      <path d="M19 15.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2Z" />
+    </svg>
+  );
+}
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.2-3.2" />
+    </svg>
   );
 }
