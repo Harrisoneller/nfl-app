@@ -23,6 +23,7 @@ const links: NavLink[] = [
   { href: "/h2h/PHI/SF", label: "H2H", seg: "/h2h", icon: <H2HIcon /> },
   { href: "/odds", label: "Odds", seg: "/odds", icon: <OddsIcon /> },
   { href: "/sparky", label: "Sparky", seg: "/sparky", icon: <SparkyIcon /> },
+  { href: "/bets", label: "My Bets", seg: "/bets", icon: <BetsIcon /> },
   // /fantasy and /ai hidden until ready — routes still work via direct URL
 ];
 
@@ -181,6 +182,15 @@ function SparkyIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
       <path d="M19 15.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2Z" />
+    </svg>
+  );
+}
+function BetsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M7 15h4" />
     </svg>
   );
 }

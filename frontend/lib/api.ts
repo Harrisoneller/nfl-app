@@ -761,6 +761,107 @@ export type SparkyAdminStatus = {
 
 export type SparkyGlossaryEntry = { key: string; label: string; definition: string };
 
+// ---- Bet tracker + CLV profile ------------------------------------------- #
+
+export type BetMarket = "spread" | "total" | "moneyline";
+
+export type BetLegInput = {
+  market: BetMarket;
+  selection: string;            // team_id, or "over"/"under" for totals
+  selection_label?: string;
+  line?: number | null;
+  odds_american: number;
+  event_id?: string | null;
+  game_id?: string | null;
+  home_team_id?: string | null;
+  away_team_id?: string | null;
+  commence_time?: string | null;
+};
+
+export type BetInput = {
+  bet_type: "straight" | "parlay";
+  stake_units: number;
+  stake_dollars?: number | null;
+  source?: "manual" | "odds" | "sparky";
+  note?: string;
+  placed_at?: string | null;
+  legs: BetLegInput[];
+};
+
+export type BetLeg = {
+  id: number;
+  market: BetMarket;
+  selection: string;
+  selection_label: string;
+  line: number | null;
+  odds_american: number;
+  odds_decimal: number;
+  event_id: string | null;
+  home_team_id: string | null;
+  away_team_id: string | null;
+  commence_time: string | null;
+  closing_line: number | null;
+  closing_odds_american: number | null;
+  clv_pct: number | null;
+  clv_line: number | null;
+  beat_close: boolean | null;
+  leg_result: string;
+};
+
+export type Bet = {
+  id: string;
+  bet_type: "straight" | "parlay";
+  status: "pending" | "won" | "lost" | "push" | "void";
+  source: string;
+  note: string;
+  stake_units: number;
+  stake_dollars: number | null;
+  odds_american: number;
+  odds_decimal: number;
+  placed_at: string;
+  settled_at: string | null;
+  payout_units: number | null;
+  result_units: number | null;
+  result_dollars: number | null;
+  clv_pct: number | null;
+  beat_close: boolean | null;
+  legs: BetLeg[];
+};
+
+export type MarketRecord = { won: number; lost: number; push: number };
+
+export type BetProfile = {
+  total_bets: number;
+  pending: number;
+  settled: number;
+  won: number;
+  lost: number;
+  push: number;
+  win_rate: number | null;
+  staked_units: number;
+  profit_units: number;
+  roi_pct: number | null;
+  open_risk_units: number;
+  staked_dollars: number | null;
+  profit_dollars: number | null;
+  roi_dollars_pct: number | null;
+  avg_clv_pct: number | null;
+  beat_close_pct: number | null;
+  legs_with_clv: number;
+  record_by_market: Record<string, MarketRecord>;
+  record_by_type: Record<string, MarketRecord>;
+  current_streak: number;
+};
+
+async function reqVoid(path: string, init?: RequestInit): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
+    cache: "no-store",
+    headers: buildHeaders(init?.headers),
+    ...init,
+  });
+  if (!res.ok) throw new Error(await parseApiError(res));
+}
+
 export const api = {
   // auth
   authRegister: (email: string, password: string, display_name?: string) =>
@@ -1057,6 +1158,19 @@ export const api = {
     if (hoursCutoff != null) params.set("hours_cutoff", String(hoursCutoff));
     return req<any>(`/sparky/admin/backtest?${params.toString()}`, { method: "POST" });
   },
+
+  // bet tracker + CLV profile
+  createBet: (bet: BetInput) =>
+    req<Bet>("/bets", { method: "POST", body: JSON.stringify(bet) }),
+  listBets: (status?: string) =>
+    req<Bet[]>(`/bets${status ? `?status_filter=${encodeURIComponent(status)}` : ""}`),
+  settleBets: () =>
+    req<{ settled_bets: number; graded_legs: number; pending_scanned: number }>(
+      "/bets/settle",
+      { method: "POST" },
+    ),
+  betProfile: () => req<BetProfile>("/bets/profile"),
+  deleteBet: (id: string) => reqVoid(`/bets/${id}`, { method: "DELETE" }),
 };
 
 export const NFL_BASE = BASE;

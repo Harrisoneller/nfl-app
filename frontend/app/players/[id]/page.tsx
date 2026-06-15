@@ -13,6 +13,7 @@ import { GameLogBar } from "@/components/charts/GameLogBar";
 import { MultiRadar, RadarSeries } from "@/components/charts/MultiRadar";
 import { MultiTrendLine, TrendSeries } from "@/components/charts/MultiTrendLine";
 import { ComparisonPicker, Pickable } from "@/components/ComparisonPicker";
+import { teamColor } from "@/lib/team-colors";
 import { LiveFeed } from "@/components/LiveFeed";
 import {
   PlayerSeasonProjectionCard,
@@ -112,6 +113,7 @@ export default function PlayerPage({ params }: { params: { id: string } }) {
   }, [tab, season, trendMetric, coloredOverlays]);
 
   if (!player) return <p className="text-sm text-muted">Loading…</p>;
+  const accent = teamColor(player.team_id);
   const pos = (player.position || "").toUpperCase();
   const metricKeys = Object.keys(profile?.metrics || {});
   const positionMetrics = profileLoading ? [] : metricKeys.filter((k) => PLAYER_METRIC_LABELS[k]);
@@ -144,10 +146,10 @@ export default function PlayerPage({ params }: { params: { id: string } }) {
         >
           <p className="text-xs text-muted">Add up to 3 players to overlay.</p>
         </Card>
-        <RadarSection profile={profile} positionMetrics={positionMetrics} pos={pos} overlays={coloredOverlays} overlayProfiles={overlayProfiles} />
+        <RadarSection profile={profile} positionMetrics={positionMetrics} pos={pos} overlays={coloredOverlays} overlayProfiles={overlayProfiles} accent={accent} />
         <PercentileSection profile={profile} positionMetrics={positionMetrics} />
-        <TrendSection playerName={player.full_name} metric={trendMetric} setMetric={setTrendMetric} availableMetrics={positionMetrics} trend={trend} overlays={coloredOverlays} overlayTrends={overlayTrends} />
-        <GameLogSection playerName={player.full_name} gamelog={gamelog || []} metric={gamelogMetric} setMetric={setGamelogMetric} />
+        <TrendSection playerName={player.full_name} metric={trendMetric} setMetric={setTrendMetric} availableMetrics={positionMetrics} trend={trend} overlays={coloredOverlays} overlayTrends={overlayTrends} accent={accent} />
+        <GameLogSection playerName={player.full_name} gamelog={gamelog || []} metric={gamelogMetric} setMetric={setGamelogMetric} accent={accent} />
       </TabPanel>
 
       <TabPanel active={tab} value="predictions">
@@ -284,8 +286,9 @@ function OverviewTab({
 // =============================================================================
 
 function RadarSection({
-  profile, positionMetrics, pos, overlays, overlayProfiles,
+  profile, positionMetrics, pos, overlays, overlayProfiles, accent,
 }: {
+  accent: string;
   profile: PlayerProfile | undefined;
   positionMetrics: string[];
   pos: string;
@@ -330,12 +333,12 @@ function RadarSection({
     });
     return (
       <Card title={`Player profile — ${profile.season}`}>
-        <RadarProfile data={data} />
+        <RadarProfile data={data} color={accent} />
       </Card>
     );
   }
   const series: RadarSeries[] = [
-    { name: "self", color: "var(--team-primary)", values: valuesFor(profile) },
+    { name: "self", color: accent, values: valuesFor(profile) },
     ...overlays.map((o, i) => ({
       name: o.label,
       color: o.color,
@@ -390,15 +393,15 @@ function PercentileSection({
 }
 
 function TrendSection({
-  playerName, metric, setMetric, availableMetrics, trend, overlays, overlayTrends,
+  playerName, metric, setMetric, availableMetrics, trend, overlays, overlayTrends, accent,
 }: {
   playerName: string; metric: string; setMetric: (m: string) => void;
   availableMetrics: string[]; trend: any;
-  overlays: Pickable[]; overlayTrends: any[] | undefined;
+  overlays: Pickable[]; overlayTrends: any[] | undefined; accent: string;
 }) {
   const myPoints = useMemo(() => (trend?.points || []).filter((p: any) => p.value != null), [trend]);
   const series: TrendSeries[] = useMemo(() => {
-    const out: TrendSeries[] = [{ name: playerName, color: "#22d3ee", points: myPoints }];
+    const out: TrendSeries[] = [{ name: playerName, color: accent, points: myPoints }];
     if (overlayTrends) {
       overlays.forEach((o, i) => {
         const t = overlayTrends[i];
@@ -421,7 +424,7 @@ function TrendSection({
       {myPoints.length === 0 ? (
         <p className="text-sm text-muted">Computing across seasons…</p>
       ) : overlays.length === 0 ? (
-        <TrendLine data={myPoints} yLabel={playerMetricLabel(metric)} />
+        <TrendLine data={myPoints} yLabel={playerMetricLabel(metric)} color={accent} />
       ) : (
         <MultiTrendLine series={series} yLabel={playerMetricLabel(metric)} />
       )}
@@ -430,8 +433,8 @@ function TrendSection({
 }
 
 function GameLogSection({
-  playerName, gamelog, metric, setMetric,
-}: { playerName: string; gamelog: any[]; metric: string; setMetric: (m: string) => void }) {
+  playerName, gamelog, metric, setMetric, accent,
+}: { playerName: string; gamelog: any[]; metric: string; setMetric: (m: string) => void; accent: string }) {
   if (gamelog.length === 0) {
     return <Card title="Game log"><p className="text-sm text-muted">No weekly data for this season yet.</p></Card>;
   }
@@ -447,7 +450,7 @@ function GameLogSection({
         </select>
       }
     >
-      <GameLogBar data={gamelog} yKey={metric} yLabel={playerMetricLabel(metric) || metric} />
+      <GameLogBar data={gamelog} yKey={metric} yLabel={playerMetricLabel(metric) || metric} color={accent} />
       <div className="overflow-x-auto mt-3">
         <table className="w-full text-xs">
           <thead className="text-left text-muted">

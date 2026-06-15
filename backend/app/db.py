@@ -15,6 +15,27 @@ from .config import get_settings
 
 settings = get_settings()
 
+
+def _engine_connect_args() -> dict:
+    """Postgres-only server-side statement timeout, web role only.
+
+    On the request-serving `web` role we cap how long any single query may
+    run so a pathological query (or a lock wait) can't pin a pooled
+    connection indefinitely and starve the pool. The `worker` role is exempt
+    because the derive/materialize pipeline legitimately runs long write
+    queries that must not be cancelled. sqlite (tests) gets nothing.
+    """
+    timeout_ms = settings.db_statement_timeout_ms
+    if (
+        timeout_ms > 0
+        and settings.app_role == "web"
+        and settings.database_url.startswith("postgresql")
+    ):
+        # libpq options string; applies to every connection in the pool.
+        return {"options": f"-c statement_timeout={int(timeout_ms)}"}
+    return {}
+
+
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
@@ -22,6 +43,7 @@ engine = create_engine(
     max_overflow=settings.db_max_overflow,
     pool_timeout=settings.db_pool_timeout,
     pool_recycle=1800,  # recycle idle connections after 30 min
+    connect_args=_engine_connect_args(),
     future=True,
 )
 

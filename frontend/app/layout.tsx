@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import { Nav } from "@/components/Nav";
+import { Footer } from "@/components/Footer";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ToastProvider } from "@/components/Toast";
 import { AuthProvider } from "@/context/AuthProvider";
@@ -47,9 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </AuthProvider>
             </PersonaProvider>
           </ExperimentProvider>
-          <footer className="max-w-7xl mx-auto px-4 pt-8 pb-28 md:pb-8 text-xs text-muted">
-            Statletics NFL · data via ESPN, Sleeper, nfl-data-py, The Odds API, Open-Meteo
-          </footer>
+          <Footer />
           <CommandPalette />
         </ToastProvider>
       </body>

@@ -12,12 +12,14 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..deps import get_db
+from ..rate_limits import limiter
 from ..services.cost_service import ledger
 
 router = APIRouter()
 
 
 @router.get("/health")
+@limiter.exempt
 def health() -> dict:
     """Legacy combined health — keep returning 200 if process is alive."""
     s = get_settings()
@@ -37,12 +39,14 @@ def health() -> dict:
 
 
 @router.get("/live")
+@limiter.exempt
 def live() -> dict:
     """Liveness probe — answers if the event loop is alive."""
     return {"ok": True}
 
 
 @router.get("/ready")
+@limiter.exempt
 def ready(db: Session = Depends(get_db)) -> dict:
     """Readiness probe — checks downstreams. Returns 503 on failure."""
     s = get_settings()

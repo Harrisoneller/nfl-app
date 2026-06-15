@@ -485,8 +485,6 @@ function UpcomingPredictionRow({
         awayProb={g.prediction.away_win_prob}
         homeTeam={g.home_team_id}
         homeProb={g.prediction.home_win_prob}
-        homeColor={isHome ? primary : "#475569"}
-        awayColor={!isHome ? primary : "#475569"}
       />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-xs">
         <Mini label="Win prob" value={`${(myProb * 100).toFixed(0)}%`} />

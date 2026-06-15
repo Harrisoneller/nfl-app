@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     db_max_overflow: int = 10
     db_pool_timeout: int = 30
+    # Server-side Postgres statement timeout (ms). Guards against a runaway
+    # query pinning a pooled connection and cascading into pool exhaustion
+    # under load. Applied ONLY on the request-serving `web` role — the
+    # `worker` role runs long derive/materialize queries that must not be
+    # killed mid-flight. 0 disables. Postgres-only (ignored on sqlite).
+    db_statement_timeout_ms: int = 15000
 
     # Auth
     multi_user_mode: bool = False

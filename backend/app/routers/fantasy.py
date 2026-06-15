@@ -4,7 +4,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..deps import get_current_user, get_db
+from ..deps import get_current_user_optional, get_db
 from ..models.player import Player
 from ..models.user import User
 from ..rate_limits import limiter
@@ -65,7 +65,7 @@ async def fantasy_advise(
     roster: list[str] = Body(..., embed=True),
     question: str = Body(default="Give me start/sit recommendations and 2 waiver-wire targets.", embed=True),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_optional),
 ):
     """One-shot AI advisor — passes the user's roster + question into the chat tool loop."""
     msg = (
