@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..deps import get_current_user, get_db
+from ..deps import get_current_user_optional, get_db
 from ..logging_config import get_logger
 from ..models.user import User
 from ..rate_limits import limiter
@@ -23,7 +23,7 @@ async def chat(
     request: Request,
     body: ChatRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_optional),
 ):
     try:
         result = await ai_service.chat(
@@ -44,7 +44,7 @@ async def build_widget(
     request: Request,
     body: WidgetBuildRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_optional),
 ):
     try:
         spec = await ai_service.build_widget_only(body.prompt)

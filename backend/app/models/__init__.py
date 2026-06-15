@@ -3,6 +3,7 @@
 Importing this module registers every model with `Base.metadata` for Alembic
 autogenerate.
 """
+from .bet import Bet, BetLeg  # noqa: F401
 from .chat import ChatMessage, ChatSession  # noqa: F401
 from .data_sync_run import DataSyncRun  # noqa: F401
 from .elo import TeamEloRating  # noqa: F401

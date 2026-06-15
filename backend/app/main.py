@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from .config import get_settings
 from .jobs.scheduler import start_scheduler, stop_scheduler
@@ -27,6 +28,7 @@ from .routers import (
     ai,
     auth,
     betting,
+    bets,
     fantasy,
     h2h,
     health,
@@ -141,13 +143,19 @@ def create_app() -> FastAPI:
     )
 
     # Middleware order (Starlette executes the LAST-added middleware first):
-    #   request → CORS → RequestID → CacheControl → AccessLog → GZip → handler
+    #   request → CORS → RequestID → SlowAPI → CacheControl → AccessLog → GZip → handler
     # Gzip last so it sees the final body; AccessLog wraps the handler call;
     # CacheControl runs before the response leaves; CORS handles preflights.
+    # SlowAPI sits inside RequestID (so a 429 still gets a request id + is
+    # logged) and inside CORS (so the 429 response carries CORS headers and the
+    # browser can read it). It enforces `default_limits` on EVERY route; the
+    # liveness/readiness probes opt out via `@limiter.exempt` so platform
+    # healthchecks are never throttled.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(EndpointSLOMiddleware)
     app.add_middleware(CacheControlMiddleware)
+    app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(RequestIDMiddleware)
     cors_kwargs: dict = {
         "allow_origins": settings.cors_origin_list,
@@ -189,6 +197,7 @@ def create_app() -> FastAPI:
     app.include_router(widgets.router, prefix="/widgets", tags=["widgets"])
     app.include_router(predictions.router, prefix="/predictions", tags=["predictions"])
     app.include_router(betting.router, prefix="/betting", tags=["betting"])
+    app.include_router(bets.router, prefix="/bets", tags=["bets"])
     app.include_router(sparky.router, prefix="/sparky", tags=["sparky"])
     app.include_router(h2h.router, prefix="/h2h", tags=["h2h"])
     app.include_router(admin.router, prefix="/admin", tags=["admin"])

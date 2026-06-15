@@ -2,9 +2,10 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { api, OddsLine } from "@/lib/api";
+import { api, OddsLine, type BetLegInput, type BetMarket } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { TeamLogo } from "@/components/TeamLogo";
+import { TrackBetButton } from "@/components/betting/TrackBetButton";
 
 /**
  * Layman-friendly odds page.
@@ -285,6 +286,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={`${formatSpreadNum(spread.away.point)}`}
                 secondary={formatAmerican(spread.away.price)}
                 book={spread.book}
+                trackLeg={legFor(game, "spread", game.awayId, spread.away.point, spread.away.price, game.awayId)}
               />
               <SideBox
                 teamId={game.homeId}
@@ -292,6 +294,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={`${formatSpreadNum(spread.home.point)}`}
                 secondary={formatAmerican(spread.home.price)}
                 book={spread.book}
+                trackLeg={legFor(game, "spread", game.homeId, spread.home.point, spread.home.price, game.homeId)}
               />
             </div>
           ) : <NoLine />}
@@ -306,6 +309,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={`${total.point != null ? "O " + total.point : "—"}`}
                 secondary={formatAmerican(total.overPrice)}
                 book={total.book}
+                trackLeg={legFor(game, "total", "over", total.point, total.overPrice, "over")}
               />
               <SideBox
                 teamId={null}
@@ -313,6 +317,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={`${total.point != null ? "U " + total.point : "—"}`}
                 secondary={formatAmerican(total.underPrice)}
                 book={total.book}
+                trackLeg={legFor(game, "total", "under", total.point, total.underPrice, "under")}
               />
             </div>
           ) : <NoLine />}
@@ -327,6 +332,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={formatAmerican(ml.away)}
                 secondary={impliedProb(ml.away)}
                 book={ml.book}
+                trackLeg={legFor(game, "moneyline", game.awayId, null, ml.away, game.awayId)}
               />
               <SideBox
                 teamId={game.homeId}
@@ -334,6 +340,7 @@ function GameCard({ game }: { game: GroupedGame }) {
                 primary={formatAmerican(ml.home)}
                 secondary={impliedProb(ml.home)}
                 book={ml.book}
+                trackLeg={legFor(game, "moneyline", game.homeId, null, ml.home, game.homeId)}
               />
             </div>
           ) : <NoLine />}
@@ -375,14 +382,21 @@ function Row({ label, hint, children }: { label: string; hint: string; children:
 }
 
 function SideBox({
-  teamId, teamName, primary, secondary, book,
+  teamId, teamName, primary, secondary, book, trackLeg,
 }: {
   teamId: string | null;
   teamName: string;
   primary: string;
   secondary?: string;
   book?: string;
+  trackLeg?: BetLegInput | null;
 }) {
+  const canTrack =
+    !!trackLeg &&
+    typeof trackLeg.odds_american === "number" &&
+    trackLeg.odds_american !== 0 &&
+    (trackLeg.market === "moneyline" || (trackLeg.line !== null && trackLeg.line !== undefined));
+
   return (
     <div className="bg-bg/70 border divider rounded-lg px-3 py-2 flex items-center gap-2.5">
       {teamId ? (
@@ -397,7 +411,10 @@ function SideBox({
         <div className="font-semibold tabular-nums leading-tight">{primary}</div>
         {secondary && <div className="text-[10px] text-muted tabular-nums">{secondary}</div>}
       </div>
-      {book && <div className="text-[9px] text-muted whitespace-nowrap">{book}</div>}
+      <div className="flex flex-col items-end gap-1 shrink-0">
+        {book && <div className="text-[9px] text-muted whitespace-nowrap">{book}</div>}
+        {canTrack && <TrackBetButton leg={trackLeg!} source="odds" compact />}
+      </div>
     </div>
   );
 }
@@ -586,6 +603,36 @@ function prettyKickoff(iso: string | null): string {
   } catch {
     return iso;
   }
+}
+
+// Build a prefilled bet leg from a priced side for one-tap tracking.
+function legFor(
+  game: GroupedGame,
+  market: BetMarket,
+  selection: string | null,
+  line: number | null | undefined,
+  price: number | null | undefined,
+  _labelSel: string | null,
+): BetLegInput | null {
+  if (!selection || price == null) return null;
+  if ((market === "spread" || market === "total") && line == null) return null;
+  const label =
+    market === "moneyline"
+      ? `${selection} ML`
+      : market === "spread"
+        ? `${selection} ${line! > 0 ? "+" : ""}${line}`
+        : `${selection === "over" ? "Over" : "Under"} ${line}`;
+  return {
+    market,
+    selection,
+    selection_label: label,
+    line: line ?? null,
+    odds_american: price,
+    event_id: game.eventId,
+    home_team_id: game.homeId,
+    away_team_id: game.awayId,
+    commence_time: game.kickoff,
+  };
 }
 
 function marketLabel(m: string): string {

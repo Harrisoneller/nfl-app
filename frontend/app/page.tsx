@@ -142,11 +142,10 @@ async function HomeDeferredSections({
   weekLabel: string | null;
   week: number | null;
 }) {
-  const [news, standings, trendingAdds, widgets] = await Promise.all([
+  const [news, standings, trendingAdds] = await Promise.all([
     safe(api.news(8, undefined, { revalidate: 60 }), []),
     safe(api.projectedStandings(undefined, { revalidate: 900 }), { season: 0, divisions: [] }),
     safe(api.fantasyTrending("add", 6, { revalidate: 300 }), { kind: "add", items: [] }),
-    safe(api.listWidgets({ revalidate: 300 }), []),
   ]);
 
   return (
@@ -313,42 +312,47 @@ async function HomeDeferredSections({
           </Card>
         </PersonaGate>
 
-        <Card title="Ask the AI">
-          <p className="text-sm text-muted mb-3">Specific questions, real data, instant answer.</p>
-          <ul className="text-sm space-y-2">
+        <Card title="New here? Start here">
+          <ul className="space-y-2.5 text-sm">
             {[
-              "Compare PHI and SF rushing efficiency",
-              "Best red-zone defenses this year",
-              "Build a widget of QB EPA leaders",
-            ].map((q) => (
-              <li
-                key={q}
-                className="text-muted border-l-2 border-team-primary/40 pl-3 py-0.5 italic"
-              >
-                &ldquo;{q}&rdquo;
+              { href: "/teams", title: "Browse all 32 teams", desc: "Rosters, stats, schedules, and recent form" },
+              { href: "/odds", title: "See the odds board", desc: "Live lines from major books, in plain English" },
+              { href: "/bets", title: "Track your bets", desc: "Log wagers and see if you beat the closing line" },
+              { href: "/h2h/PHI/SF", title: "Compare two teams", desc: "Head-to-head matchup breakdowns" },
+            ].map((l) => (
+              <li key={l.href}>
+                <Link href={l.href} className="group flex items-start gap-2">
+                  <span className="text-team-primary mt-0.5">→</span>
+                  <span>
+                    <span className="font-medium group-hover:text-team-primary transition-colors">
+                      {l.title}
+                    </span>
+                    <span className="block text-[11px] text-muted">{l.desc}</span>
+                  </span>
+                </Link>
               </li>
             ))}
           </ul>
         </Card>
 
-        <PersonaGate allowed={["analyst"]}>
-          <Card title="Your widgets">
-            {widgets.length === 0 ? (
-              <p className="text-sm text-muted">
-                Use the AI page to create a widget. Saved widgets appear here.
-              </p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {widgets.slice(0, 6).map((w) => (
-                  <li key={w.id}>
-                    <Link href={`/widget/${w.id}`} className="hover:underline">{w.title}</Link>
-                    <span className="text-muted text-xs"> · {w.kind}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </PersonaGate>
+        <Card title="What the numbers mean">
+          <dl className="space-y-2.5 text-sm">
+            {[
+              { term: "Win probability", def: "Each team's modeled chance to win — e.g. 65% vs 35%." },
+              { term: "Elo rating", def: "A power-ranking score; higher is stronger, ~1500 is average." },
+              { term: "Spread", def: "The favorite's expected margin. “PHI -3.5” = win by 4+ to cover." },
+              { term: "Total (O/U)", def: "Combined points the market expects both teams to score." },
+            ].map((t) => (
+              <div key={t.term}>
+                <dt className="font-medium">{t.term}</dt>
+                <dd className="text-[11px] text-muted">{t.def}</dd>
+              </div>
+            ))}
+          </dl>
+          <Link href="/odds" className="inline-block mt-3 text-xs text-team-primary hover:underline">
+            See this week&rsquo;s odds &rarr;
+          </Link>
+        </Card>
       </div>
 
       <div className="text-[10px] text-muted">

@@ -61,6 +61,33 @@ def get_current_user(
     return user
 
 
+def get_current_user_optional(
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+) -> User:
+    """Resolve the caller if a valid bearer token is present, else fall back to
+    the seeded ``system@local`` user.
+
+    Used by routes that should stay public even when ``MULTI_USER_MODE`` is on
+    (AI chat, widget builder, fantasy advice). Logged-in users get their own
+    identity (and their own AI sessions); anonymous visitors transparently
+    share the system account instead of hitting a 401.
+    """
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+        payload = decode_token(token)
+        if payload and "sub" in payload:
+            try:
+                user_id = uuid.UUID(str(payload["sub"]))
+            except ValueError:
+                user_id = None
+            if user_id is not None:
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and user.is_active:
+                    return user
+    return _get_or_create_system_user(db)
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
     """Gate a route to admin-only.
 
