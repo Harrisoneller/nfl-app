@@ -201,6 +201,14 @@ class NflDataPyAdapter:
     async def schedules_df(self, season: int):
         return await _run_sync_safe(nfl.import_schedules, [season], fn_name="schedules")
 
+    async def ids_df(self):
+        """Cross-provider id crosswalk (gsis_id ↔ sleeper_id ↔ espn_id …).
+
+        Used to backfill Player.gsis_id after Sleeper syncs — Sleeper's own
+        gsis_id field is null for many players and whitespace-padded for
+        others, so the crosswalk is the reliable source."""
+        return await _run_sync_safe(nfl.import_ids, fn_name="ids")
+
     async def pbp_df(self, season: int):
         """Play-by-play, projected to PBP_COLUMNS to keep memory bounded.
 

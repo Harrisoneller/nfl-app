@@ -5,20 +5,26 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-MARKETS = {"spread", "total", "moneyline"}
+MARKETS = {"spread", "total", "moneyline", "player_prop"}
+
+# Anytime-TD props have no line — every other prop market requires one.
+_LINELESS_PROP_MARKETS = {"player_anytime_td"}
 
 
 class BetLegCreate(BaseModel):
     market: str
-    selection: str                       # team_id, or "over"/"under" for totals
+    selection: str                       # team_id, or "over"/"under" for totals/props
     selection_label: str = ""            # display, e.g. "PHI -3.5"
-    line: float | None = None            # required for spread/total
+    line: float | None = None            # required for spread/total/most props
     odds_american: int
     event_id: str | None = None
     game_id: str | None = None
     home_team_id: str | None = None
     away_team_id: str | None = None
     commence_time: datetime | None = None
+    # player_prop legs only
+    player_name: str | None = None
+    prop_market: str | None = None       # Odds API key, e.g. "player_rush_yds"
 
     @model_validator(mode="after")
     def _check(self) -> "BetLegCreate":
@@ -30,6 +36,19 @@ class BetLegCreate(BaseModel):
             raise ValueError(f"{m} bets require a line")
         if m == "total" and self.selection.lower() not in ("over", "under"):
             raise ValueError("total selection must be 'over' or 'under'")
+        if m == "player_prop":
+            if not (self.player_name or "").strip():
+                raise ValueError("player_prop bets require player_name")
+            if not (self.prop_market or "").strip():
+                raise ValueError("player_prop bets require prop_market")
+            sel = self.selection.lower().strip()
+            if sel == "yes":  # anytime-TD "yes" normalizes to over
+                sel = "over"
+            if sel not in ("over", "under"):
+                raise ValueError("player_prop selection must be 'over' or 'under'")
+            self.selection = sel
+            if self.line is None and self.prop_market not in _LINELESS_PROP_MARKETS:
+                raise ValueError(f"{self.prop_market} bets require a line")
         if self.odds_american in (0,):
             raise ValueError("odds_american cannot be 0")
         return self
@@ -64,6 +83,8 @@ class BetLegOut(BaseModel):
     selection: str
     selection_label: str
     line: float | None
+    player_name: str | None = None
+    prop_market: str | None = None
     odds_american: int
     odds_decimal: float
     event_id: str | None

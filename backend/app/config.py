@@ -169,6 +169,19 @@ class Settings(BaseSettings):
     odds_min_refresh_hours: float = 6.0    # floor: skip an auto-pull if we pulled more recently than this
     odds_lookahead_days: int = 10          # offseason guard: skip auto-pull if no game kicks off within this window
 
+    # Player-prop odds (per-event endpoint; billed per event × market-group).
+    # Budget: with defaults (16 events × 1 grouped call, ≤1 pull/day near games)
+    # this stays well inside a paid tier and is skipped entirely off-season
+    # because there are no events inside the lookahead window.
+    player_props_enabled: bool = True
+    player_props_markets: str = (
+        "player_pass_yds,player_pass_tds,player_rush_yds,player_rush_attempts,"
+        "player_receptions,player_reception_yds,player_anytime_td"
+    )
+    player_props_max_events: int = 16       # cap per refresh run (one week's slate)
+    player_props_min_refresh_hours: float = 12.0
+    player_props_lookahead_days: int = 7    # only pull props for games this close
+
     # CORS — browser Origin must match allow_origins and/or cors_origin_regex (see main.py).
     # Production: set CORS_ORIGINS to your Vercel URL(s), comma-separated, no trailing slash.
     cors_origins: str = "http://localhost:3000"

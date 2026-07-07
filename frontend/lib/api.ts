@@ -479,16 +479,50 @@ export type TeamRemainingSchedule = {
   projected_total_wins: number;
 };
 
+export type StatDistribution = {
+  predicted: number;
+  low: number;
+  high: number;
+  mean: number;
+  sd: number;
+  interval_80: [number, number];
+  env_multiplier: number;
+  anytime_prob?: number;
+  // Present when the mean was blended toward a consensus sportsbook line.
+  market_anchor?: { line: number; books: number; weight: number; raw_mean: number };
+};
+
+export type PlayerRole = {
+  depth_chart_order: number | null;
+  multiplier: number;
+};
+
 export type PlayerGamePrediction = {
   week: number | null;
   gameday: string;
-  home: string;
-  away: string;
   opponent: string;
   is_home: boolean;
-  opponent_def_z: number;
   matchup_grade: "A" | "B" | "C" | "D" | "F";
-  predicted: Record<string, { predicted: number; low: number; high: number; n_games_baseline: number }>;
+  defense_factor: number;
+  game_env: {
+    team_implied_pts: number;
+    opp_implied_pts: number;
+    game_script: string;
+    predicted_total: number;
+  };
+  weather: { summary: string | null; is_indoor: boolean; available: boolean };
+  injury_status: string | null;
+  injury_multiplier: number;
+  predicted: Record<string, StatDistribution>;
+  fantasy: Record<string, { mean: number; sd: number }>;
+};
+
+export type ProjectionEvidence = {
+  prior_seasons: number[];
+  prior_games: number;
+  games_observed: number;
+  rookie_prior: boolean;
+  age: number | null;
 };
 
 export type PlayerGamePredictions = {
@@ -497,9 +531,29 @@ export type PlayerGamePredictions = {
   position: string;
   team: string;
   season: number;
-  baseline_window: number;
+  model_version?: string;
+  evidence?: ProjectionEvidence;
+  role?: PlayerRole;
   games: PlayerGamePrediction[];
   error?: string;
+};
+
+export type SeasonStatProjection = {
+  ytd: number;
+  per_game_pace: number;
+  projected_remaining: number;
+  projected_final: number;
+  low_final: number;
+  high_final: number;
+  sd_final?: number;
+  quantiles?: Record<string, number>;
+};
+
+export type FantasyProjection = {
+  mean: number;
+  sd: number;
+  quantiles: Record<string, number>;
+  per_game: number;
 };
 
 export type PlayerSeasonProjection = {
@@ -510,15 +564,315 @@ export type PlayerSeasonProjection = {
   season: number;
   games_played: number;
   games_remaining: number;
-  baseline_source_season: number;
-  stats: Record<string, {
-    ytd: number;
-    per_game_pace: number;
-    projected_remaining: number;
-    projected_final: number;
-    low_final: number;
-    high_final: number;
-  }>;
+  model_version?: string;
+  evidence?: ProjectionEvidence;
+  role?: PlayerRole;
+  stats: Record<string, SeasonStatProjection>;
+  fantasy?: Record<string, FantasyProjection>;
+  error?: string;
+};
+
+export type LeaderboardPlayer = {
+  rank: number;
+  player_id: string | null;
+  gsis_id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  status: string | null;
+  injury_status: string | null;
+  role?: PlayerRole;
+  rookie?: boolean;
+  games_remaining: number;
+  next_game: { week: number | null; opponent: string; is_home: boolean; game_script: string } | null;
+  stats: Record<string, { mean: number; p10: number; p90: number }>;
+  fantasy_ppr: { mean: number; p10: number; p90: number; per_game: number };
+  fantasy_half_ppr: { mean: number; p10: number; p90: number; per_game: number };
+  fantasy_standard: { mean: number; p10: number; p90: number; per_game: number };
+};
+
+export type PositionCoverage = {
+  teams: number;
+  total_teams: number;
+  missing: string[];
+};
+
+export type ProjectionLeaderboard = {
+  season: number;
+  scoring: string;
+  sort?: string;
+  position: string | null;
+  model_version: string;
+  count: number;
+  coverage?: Record<string, PositionCoverage>;
+  players: LeaderboardPlayer[];
+};
+
+export type PlayerProp = {
+  event_id: string;
+  player_id?: string | null;
+  market: string;
+  market_label: string;
+  player_name: string;
+  line: number | null;
+  market_over_prob: number | null;
+  books: number;
+  commence_time: string | null;
+  model_over_prob?: number;
+  model_mean?: number;
+  model_sd?: number;
+  edge?: number;
+  side?: "over" | "under";
+  week?: number | null;
+  opponent?: string;
+};
+
+export type PlayerProps = {
+  player_id: string;
+  name?: string;
+  count: number;
+  props: PlayerProp[];
+  model_version?: string;
+  error?: string;
+};
+
+export type PropEdges = {
+  count: number;
+  min_edge: number;
+  min_books: number;
+  model_version: string;
+  edges: PlayerProp[];
+  note: string;
+};
+
+// ---- Weekly board / Prop Finder / Fantasy insights / Compare ---------------- #
+
+export type WeeklyFantasyBand = { mean: number; sd: number; p10: number; p90: number };
+
+export type WeeklyBoardPlayer = {
+  player_id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  injury_status: string | null;
+  role?: PlayerRole;
+  rookie?: boolean;
+  bye: boolean;
+  tier: string;
+  pos_rank: number;
+  week?: number | null;
+  opponent?: string;
+  is_home?: boolean;
+  gameday?: string;
+  matchup_grade?: string;
+  defense_factor?: number;
+  game_env?: {
+    team_implied_pts: number;
+    opp_implied_pts: number;
+    game_script: string;
+    predicted_total: number;
+  };
+  weather?: { summary: string | null; is_indoor: boolean; available: boolean };
+  injury_multiplier?: number;
+  predicted?: Record<string, { predicted: number; low: number; high: number; mean: number; sd: number; anytime_prob?: number }>;
+  fantasy?: Record<string, WeeklyFantasyBand>;
+};
+
+export type WeeklyBoard = {
+  season: number;
+  week: number | null;
+  scoring: string;
+  position: string | null;
+  model_version: string;
+  tier_note?: string;
+  count: number;
+  players: WeeklyBoardPlayer[];
+};
+
+export type PropBoardBook = {
+  book: string;
+  line: number | null;
+  over_price: number | null;
+  under_price: number | null;
+  over_implied: number | null;
+  under_implied: number | null;
+  model_over_prob: number | null;
+  edge_over: number | null;
+  edge_under: number | null;
+};
+
+export type PropBoardBest = {
+  book: string;
+  line: number | null;
+  price: number;
+  edge: number;
+  model_prob: number | null;
+};
+
+export type PropBoardRow = {
+  event_id: string;
+  market: string;
+  market_label: string;
+  player_name: string;
+  player_id: string | null;
+  position: string | null;
+  team: string | null;
+  commence_time: string | null;
+  home_team_id: string | null;
+  away_team_id: string | null;
+  consensus_line: number | null;
+  market_over_prob: number | null;
+  books_count: number;
+  model_mean: number | null;
+  model_sd: number | null;
+  model_over_prob: number | null;
+  best_over: PropBoardBest | null;
+  best_under: PropBoardBest | null;
+  best_edge: number | null;
+  books: PropBoardBook[];
+};
+
+export type PropBoard = {
+  count: number;
+  total: number;
+  markets: string[];
+  market_labels: Record<string, string>;
+  games: { event_id: string; home_team_id: string | null; away_team_id: string | null; commence_time: string | null }[];
+  model_version: string;
+  note: string;
+  props: PropBoardRow[];
+};
+
+export type RosPlayer = {
+  player_id: string | null;
+  name: string;
+  position: string;
+  team: string | null;
+  injury_status: string | null;
+  rookie?: boolean;
+  role?: PlayerRole;
+  pos_rank: number;
+  overall_rank: number;
+  tier: number;
+  games_remaining: number;
+  per_game: number;
+  ros_points: number;
+  ros_sd: number;
+  replacement_per_game: number;
+  vorp_per_game: number;
+  vorp_ros: number;
+  next_game: LeaderboardPlayer["next_game"];
+};
+
+export type RosBoard = {
+  season: number;
+  scoring: string;
+  league_size: number;
+  replacement_levels: Record<string, number>;
+  model_version: string;
+  note: string;
+  count: number;
+  players: RosPlayer[];
+};
+
+export type WaiverTarget = RosPlayer & {
+  trend_count: number;
+  schedule_ease_next3: number | null;
+  waiver_score: number;
+  reasons: string[];
+};
+
+export type WaiverBoard = {
+  season: number;
+  scoring: string;
+  model_version?: string;
+  note: string;
+  count: number;
+  targets: WaiverTarget[];
+};
+
+export type TradeSide = {
+  players: (RosPlayer & { note?: string })[];
+  missing: string[];
+  vorp_ros: number;
+  sd: number;
+};
+
+export type TradeResult = {
+  season: number;
+  scoring: string;
+  league_size: number;
+  model_version?: string;
+  side_a: TradeSide;
+  side_b: TradeSide;
+  difference_vorp: number;
+  uncertainty_sd: number;
+  verdict: "side_a" | "side_b" | "toss-up";
+  detail: string;
+  note: string;
+};
+
+export type UsageWeek = {
+  week: number;
+  opponent?: string;
+  target_share?: number;
+  carry_share?: number;
+} & Partial<Record<string, number>>;
+
+export type UsageProfile = {
+  season: number;
+  games: number;
+  weekly: UsageWeek[];
+  shares: { target_share?: number; carry_share?: number };
+  consistency: {
+    ppg_ppr?: number;
+    sd?: number;
+    cv?: number | null;
+    floor_p25?: number;
+    ceiling_p75?: number;
+    best?: number;
+    worst?: number;
+  };
+};
+
+export type ComparePlayerEntry = {
+  player_id: string;
+  name?: string;
+  position?: string;
+  team?: string | null;
+  injury_status?: string | null;
+  error?: string;
+  season_projection?: {
+    season: number;
+    games_remaining: number;
+    stats: Record<string, SeasonStatProjection>;
+    fantasy: Record<string, FantasyProjection>;
+    role?: PlayerRole;
+    error?: string;
+  };
+  next_game?: PlayerGamePredictions["games"][number] | null;
+  usage?: UsageProfile;
+};
+
+export type PlayerComparison = {
+  season: number | null;
+  usage_season: number;
+  model_version: string;
+  players: ComparePlayerEntry[];
+};
+
+export type OverProbResult = {
+  player_id: string;
+  stat: string;
+  line?: number;
+  week?: number | null;
+  opponent?: string;
+  mean?: number;
+  sd?: number;
+  over_prob?: number;
+  under_prob?: number;
+  prob?: number; // anytime TD
+  expected_tds?: number;
   error?: string;
 };
 
@@ -763,11 +1117,11 @@ export type SparkyGlossaryEntry = { key: string; label: string; definition: stri
 
 // ---- Bet tracker + CLV profile ------------------------------------------- #
 
-export type BetMarket = "spread" | "total" | "moneyline";
+export type BetMarket = "spread" | "total" | "moneyline" | "player_prop";
 
 export type BetLegInput = {
   market: BetMarket;
-  selection: string;            // team_id, or "over"/"under" for totals
+  selection: string;            // team_id, or "over"/"under" for totals/props
   selection_label?: string;
   line?: number | null;
   odds_american: number;
@@ -776,6 +1130,9 @@ export type BetLegInput = {
   home_team_id?: string | null;
   away_team_id?: string | null;
   commence_time?: string | null;
+  // player_prop legs only
+  player_name?: string | null;
+  prop_market?: string | null;
 };
 
 export type BetInput = {
@@ -1060,6 +1417,73 @@ export const api = {
   playerSeasonProjection: (playerId: string, season?: number) =>
     req<PlayerSeasonProjection>(
       `/predictions/players/${playerId}/season${season ? `?season=${season}` : ""}`,
+    ),
+  projectionLeaderboard: (q: { season?: number; position?: string; scoring?: string; sort?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q.season) p.set("season", String(q.season));
+    if (q.position) p.set("position", q.position);
+    if (q.scoring) p.set("scoring", q.scoring);
+    if (q.sort) p.set("sort", q.sort);
+    if (q.limit) p.set("limit", String(q.limit));
+    return req<ProjectionLeaderboard>(`/players/projections/leaderboard?${p.toString()}`);
+  },
+  playerProps: (playerId: string) =>
+    req<PlayerProps>(`/players/${playerId}/props`),
+  propEdges: (q?: { min_edge?: number; min_books?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q?.min_edge != null) p.set("min_edge", String(q.min_edge));
+    if (q?.min_books != null) p.set("min_books", String(q.min_books));
+    if (q?.limit != null) p.set("limit", String(q.limit));
+    return req<PropEdges>(`/players/props/edges?${p.toString()}`);
+  },
+  weeklyBoard: (q: { season?: number; week?: number; position?: string; scoring?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q.season) p.set("season", String(q.season));
+    if (q.week != null) p.set("week", String(q.week));
+    if (q.position) p.set("position", q.position);
+    if (q.scoring) p.set("scoring", q.scoring);
+    if (q.limit) p.set("limit", String(q.limit));
+    return req<WeeklyBoard>(`/players/projections/weekly?${p.toString()}`);
+  },
+  propBoard: (q?: { market?: string; event_id?: string; position?: string; q?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q?.market) p.set("market", q.market);
+    if (q?.event_id) p.set("event_id", q.event_id);
+    if (q?.position) p.set("position", q.position);
+    if (q?.q) p.set("q", q.q);
+    if (q?.limit) p.set("limit", String(q.limit));
+    return req<PropBoard>(`/players/props/board?${p.toString()}`);
+  },
+  comparePlayerProjections: (ids: string[], season?: number) =>
+    req<PlayerComparison>(
+      `/players/compare/projections?ids=${encodeURIComponent(ids.join(","))}${season ? `&season=${season}` : ""}`,
+    ),
+  playerUsage: (playerId: string, season?: number) =>
+    req<UsageProfile>(`/players/${playerId}/usage${season ? `?season=${season}` : ""}`),
+  fantasyRos: (q?: { season?: number; scoring?: string; league_size?: number; position?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q?.season) p.set("season", String(q.season));
+    if (q?.scoring) p.set("scoring", q.scoring);
+    if (q?.league_size) p.set("league_size", String(q.league_size));
+    if (q?.position) p.set("position", q.position);
+    if (q?.limit) p.set("limit", String(q.limit));
+    return req<RosBoard>(`/fantasy/ros?${p.toString()}`);
+  },
+  fantasyWaivers: (q?: { season?: number; scoring?: string; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q?.season) p.set("season", String(q.season));
+    if (q?.scoring) p.set("scoring", q.scoring);
+    if (q?.limit) p.set("limit", String(q.limit));
+    return req<WaiverBoard>(`/fantasy/waivers?${p.toString()}`);
+  },
+  fantasyTrade: (side_a: string[], side_b: string[], scoring = "ppr", league_size = 12) =>
+    req<TradeResult>("/fantasy/trade", {
+      method: "POST",
+      body: JSON.stringify({ side_a, side_b, scoring, league_size }),
+    }),
+  playerOverProb: (playerId: string, stat: string, line: number, season?: number) =>
+    req<OverProbResult>(
+      `/players/${playerId}/over-prob?stat=${encodeURIComponent(stat)}&line=${line}${season ? `&season=${season}` : ""}`,
     ),
   awards: (season?: number, policy?: FetchPolicy) =>
     req<AwardsResponse>(

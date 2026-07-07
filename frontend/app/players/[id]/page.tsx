@@ -19,6 +19,7 @@ import {
   PlayerSeasonProjectionCard,
   PlayerGamePredictionsCard,
 } from "@/components/predictions/PlayerProjections";
+import { PlayerPropsCard } from "@/components/players/PlayerPropsCard";
 import { SkeletonRadar, SkeletonTable } from "@/components/Skeleton";
 import { DataSourceBadge } from "@/components/DataSourceBadge";
 import { BetaPill } from "@/components/BetaBanner";
@@ -155,6 +156,7 @@ export default function PlayerPage({ params }: { params: { id: string } }) {
       <TabPanel active={tab} value="predictions">
         <PlayerSeasonProjectionCard playerId={params.id} />
         <PlayerGamePredictionsCard playerId={params.id} />
+        <PlayerPropsCard playerId={params.id} position={pos} />
       </TabPanel>
 
       <TabPanel active={tab} value="news">

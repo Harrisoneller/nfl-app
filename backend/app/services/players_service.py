@@ -1,7 +1,6 @@
 """Player CRUD + Sleeper sync."""
 from __future__ import annotations
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..adapters.data.sleeper import SleeperAdapter
@@ -71,7 +70,13 @@ async def sync_from_sleeper(db: Session, active_only: bool = True) -> int:
         if p is None:
             p = Player(id=pid)
             db.add(p)
-        p.gsis_id = raw.get("gsis_id")
+        # Sleeper's gsis_id is unreliable: null for many players and padded
+        # with a leading space when present (" 00-0034796"). Normalize here so
+        # downstream joins against nflverse GSIS ids actually match; never
+        # overwrite a previously backfilled id with a null.
+        clean_gsis = normalize_gsis_id(raw.get("gsis_id"))
+        if clean_gsis:
+            p.gsis_id = clean_gsis
         p.espn_id = _safe_int(raw.get("espn_id"))
         p.full_name = (raw.get("full_name") or
                        f"{raw.get('first_name','')} {raw.get('last_name','')}".strip())
@@ -95,6 +100,64 @@ async def sync_from_sleeper(db: Session, active_only: bool = True) -> int:
         n += 1
     db.commit()
     log.info("players_synced", count=n)
+
+    # Best-effort: repair missing gsis ids from the nflverse crosswalk so the
+    # projection layer (which joins on GSIS) sees every rostered player.
+    try:
+        filled = await backfill_gsis_ids(db)
+        if filled:
+            log.info("players_gsis_backfilled", count=filled)
+    except Exception as e:  # noqa: BLE001
+        log.warning("players_gsis_backfill_failed", error=str(e)[:200])
+    return n
+
+
+def normalize_gsis_id(v) -> str | None:
+    """'  00-0034796 ' → '00-0034796'; ''/None/non-str → None."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    return v or None
+
+
+async def backfill_gsis_ids(db: Session) -> int:
+    """Fill missing/blank Player.gsis_id from the nflverse id crosswalk.
+
+    Player.id IS the Sleeper id, and nflverse's ids frame carries a
+    sleeper_id ↔ gsis_id mapping — an exact join, no name matching needed.
+    Also repairs previously stored whitespace-padded ids in place.
+    """
+    from .player_predictions_service import _nfl  # shared adapter instance
+
+    ids = await _nfl.ids_df()
+    if ids is None or len(ids) == 0:
+        return 0
+    cols = {c.lower(): c for c in ids.columns}
+    scol, gcol = cols.get("sleeper_id"), cols.get("gsis_id")
+    if not scol or not gcol:
+        return 0
+    sub = ids[[scol, gcol]].dropna()
+    by_sleeper: dict[str, str] = {}
+    for s, g in zip(sub[scol], sub[gcol]):
+        g = normalize_gsis_id(str(g))
+        if g is None:
+            continue
+        # sleeper_id arrives as float ("4046.0") in some releases — canonicalize.
+        s = str(s)
+        if s.endswith(".0"):
+            s = s[:-2]
+        by_sleeper[s] = g
+
+    n = 0
+    for p in db.query(Player).all():
+        clean = normalize_gsis_id(p.gsis_id)
+        mapped = by_sleeper.get(str(p.id))
+        target = clean or mapped
+        if target and p.gsis_id != target:
+            p.gsis_id = target
+            n += 1
+    if n:
+        db.commit()
     return n
 
 

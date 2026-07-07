@@ -8,9 +8,9 @@ from ..deps import get_current_user_optional, get_db
 from ..models.player import Player
 from ..models.user import User
 from ..rate_limits import limiter
-from ..schemas.ai import ChatRequest, ChatResponse
+from ..schemas.ai import ChatResponse
 from ..schemas.news import NewsItemOut
-from ..services import ai_service, fantasy_service, news_service
+from ..services import ai_service, fantasy_insights_service, fantasy_service, news_service
 from ..services.cost_service import BudgetExceeded
 
 router = APIRouter()
@@ -56,6 +56,52 @@ async def trending_players(
             "injury_status": ((p.metadata_json or {}).get("injury_status") if p else None),
         })
     return {"kind": kind, "items": out}
+
+
+@router.get("/ros")
+async def ros_values(
+    season: int | None = None,
+    scoring: str = "ppr",
+    league_size: int = 12,
+    position: str | None = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """Rest-of-season fantasy values: VORP over positional replacement,
+    scarcity tiers, and per-game pace — the draft/trade currency board."""
+    return await fantasy_insights_service.ros_value_board(
+        db, season=season, scoring=scoring, league_size=league_size,
+        position=position, limit=limit,
+    )
+
+
+@router.get("/waivers")
+async def waiver_wire(
+    season: int | None = None,
+    scoring: str = "ppr",
+    limit: int = 25,
+    db: Session = Depends(get_db),
+):
+    """Model-checked waiver targets: Sleeper trending adds scored against ROS
+    value and next-3-week schedule ease."""
+    return await fantasy_insights_service.waiver_targets(
+        db, season=season, scoring=scoring, limit=limit,
+    )
+
+
+@router.post("/trade")
+async def trade_analyzer(
+    side_a: list[str] = Body(..., embed=True),
+    side_b: list[str] = Body(..., embed=True),
+    scoring: str = Body(default="ppr", embed=True),
+    league_size: int = Body(default=12, embed=True),
+    season: int | None = Body(default=None, embed=True),
+    db: Session = Depends(get_db),
+):
+    """Grade a proposed trade by summed ROS VORP, uncertainty included."""
+    return await fantasy_insights_service.analyze_trade(
+        db, side_a, side_b, season=season, scoring=scoring, league_size=league_size,
+    )
 
 
 @router.post("/advise", response_model=ChatResponse)

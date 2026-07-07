@@ -6,9 +6,10 @@ import { usePathname } from "next/navigation";
 import { useAuth } from "@/context/AuthProvider";
 import { ThemeToggle } from "./ThemeProvider";
 
-// NOTE: /players, /compare, and /performance are intentionally hidden from the
-// nav while they're being stabilized. The pages still exist if you navigate
-// directly to the URL — re-add the entries here to restore discovery.
+// NOTE: /compare and /performance are intentionally hidden from the nav while
+// they're being stabilized. The pages still exist if you navigate directly to
+// the URL — re-add the entries here to restore discovery. /players is live
+// again (projection engine v2).
 type NavLink = {
   href: string;
   label: string;
@@ -20,11 +21,13 @@ type NavLink = {
 const links: NavLink[] = [
   { href: "/", label: "Home", seg: "/", icon: <HomeIcon /> },
   { href: "/teams", label: "Teams", seg: "/teams", icon: <TeamsIcon /> },
+  { href: "/players", label: "Players", seg: "/players", icon: <PlayersIcon /> },
   { href: "/h2h/PHI/SF", label: "H2H", seg: "/h2h", icon: <H2HIcon /> },
   { href: "/odds", label: "Odds", seg: "/odds", icon: <OddsIcon /> },
   { href: "/sparky", label: "Sparky", seg: "/sparky", icon: <SparkyIcon /> },
   { href: "/bets", label: "My Bets", seg: "/bets", icon: <BetsIcon /> },
-  // /fantasy and /ai hidden until ready — routes still work via direct URL
+  // /fantasy now redirects into the Players hub (/players?tab=fantasy).
+  // /ai hidden until ready — route still works via direct URL.
 ];
 
 function isActive(pathname: string, seg: string) {
@@ -155,6 +158,16 @@ function TeamsIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M12 3l7 3v5c0 4.4-3 7.7-7 9-4-1.3-7-4.6-7-9V6l7-3Z" />
       <path d="M9 11l2 2 4-4" />
+    </svg>
+  );
+}
+function PlayersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3.5 20c.6-3.2 2.9-5 5.5-5s4.9 1.8 5.5 5" />
+      <path d="M16 4.5a3.5 3.5 0 0 1 0 7" />
+      <path d="M17.5 15c1.9.5 3.2 2 3.5 5" />
     </svg>
   );
 }

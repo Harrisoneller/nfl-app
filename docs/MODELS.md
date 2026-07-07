@@ -179,45 +179,79 @@ team Predictions tab when the model disagrees with Elo by ≥0.5 points.
 
 ---
 
-## 5. Player Game Predictions
+## 5. Player Game Projections (v2 — `player-proj-v2`)
 
-**File:** `backend/app/services/player_predictions_service.py` → `player_game_predictions`
+**Files:** `backend/app/services/player_projection_engine.py` (pure math) +
+`backend/app/services/player_predictions_service.py` (orchestration) →
+`player_game_predictions`
 
-Predicts stat lines for a player's next ~8 games. Used on the player Predictions tab.
+Distribution-first stat projections for a player's next ~8 games, coupled to
+the game model. Every stat ships `mean + sd` (plus 50%/80% intervals and
+anytime-TD probability), so P(over any prop line) derives from the same
+distribution the UI displays.
 
-**Formula (per stat)**
+**Pipeline (per stat)**
 ```
-baseline = rolling_4_week_mean(player, stat)
-volatility = rolling_4_week_std(player, stat)
+# 1. Prior: up to 3 prior seasons, recency-weighted (1.0 / 0.55 / 0.30),
+#    games-weighted (injury seasons count less), aged by positional curve.
+#    Rookies fall back to position × draft-capital archetype priors.
+prior_mean, prior_game_sd, prior_n = build_prior(...)   # prior_n = pseudo-games
 
-matchup_adj = 1.0 + 0.10 × opponent_def_epa_z_score
-weather_mult = weather_multiplier(forecast, stat)
-injury_mult  = injury_multiplier(sleeper_status)
+# 2. In-season Bayesian update (dynamic week-to-week adjustment):
+post_mean = (prior_n × prior_mean + n_obs × obs_mean) / (prior_n + n_obs)
+talent_sd = post_game_sd / sqrt(prior_n + n_obs)        # shrinks as evidence accrues
 
-predicted = baseline × matchup_adj × weather_mult × injury_mult
-low  = max(0, predicted - 0.67 × volatility)   # ~25th percentile
-high = predicted + 0.67 × volatility            # ~75th percentile
+# 3. Game coupling — from predict_game outputs for THIS matchup:
+env = (team_implied_pts / 22) ^ elasticity              # TDs ~1.0, yards 0.55, volume 0.30
+    × (1 + script_tilt(expected_margin))                # favored → rush up/pass down, ±12%
+    × positional_defense_factor(opp, stat_family)       # pass / rush / recv_WR / recv_RB / recv_TE
+
+# 4. Compose v1 multipliers:
+mean = post_mean × env × weather_mult × injury_mult
+sd   = post_game_sd                                     # multipliers shift means only
 ```
+
+**Consensus-tightening layers** (keep projections near market unless the evidence disagrees):
+- **Role share** — Sleeper depth-chart order scales the whole distribution
+  (QB2 → ×0.05: winner-take-all; RB/WR/TE decay gently). Per-game history is
+  availability-biased (backups only log stats when they start), so without
+  this a career backup projects like a starter. Roster gate + role gate keep
+  retired/FA players and sub-0.30-role backups off the leaderboard; QB rooms
+  with missing depth data are ranked by projected passing volume.
+- **Positional regression (Marcel)** — every prior is shrunk toward the
+  positional starter mean by 3 pseudo-games (`POSITION_SHRINK_K`), heavy for
+  thin histories, light for 3-season vets.
+- **Market anchoring** — when ≥2 books post a prop line for the next game,
+  volume/yardage means blend toward the consensus line by 12%/book (cap 40%);
+  response carries `market_anchor {line, books, weight, raw_mean}`. Prop edges
+  are computed off the anchored distribution — residual disagreement only.
+- **Env clamp** — the combined game-environment multiplier is capped to
+  0.75–1.30 so compounding components never produce swings the market doesn't price.
 
 **Inputs**
-- Player's last 4 weeks of game logs (`nfl-data-py` weekly data)
-- Opponent's defensive EPA z-score (vs league)
-- Weather forecast for the game (Open-Meteo) — temp, wind, precipitation, indoor flag
-- Player's current injury status (Sleeper metadata)
+- Weekly game logs, up to 4 seasons (`nfl-data-py`), keyed by GSIS id
+- Game predictor outputs per remaining game: implied points, expected margin, game script
+- Opponent positional defense factors (yards allowed per game to QB/RB/WR/TE, shrunk 50% to league mean, clamped 0.80–1.25)
+- Weather forecast (Open-Meteo) + Sleeper injury status (same tables as v1)
 
-**Per-stat coverage by position**
-- **QB:** attempts, completions, passing_yards, passing_tds, interceptions, carries, rushing_yards, rushing_tds, fantasy_points_ppr
-- **RB:** carries, rushing_yards, rushing_tds, targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
-- **WR / TE:** targets, receptions, receiving_yards, receiving_tds, fantasy_points_ppr
+**Per-stat coverage by position** (fantasy points are *derived* from components for PPR / half-PPR / standard)
+- **QB:** attempts, completions, passing_yards, passing_tds, interceptions, carries, rushing_yards, rushing_tds
+- **RB:** carries, rushing_yards, rushing_tds, targets, receptions, receiving_yards, receiving_tds
+- **WR / TE:** targets, receptions, receiving_yards, receiving_tds
 
-**Matchup grade**
+**Matchup grade** (from the opponent's positional defense factor)
 ```
-opp_def_z ≥ 1.0 → A  (offense feasts vs weak defense)
-opp_def_z ≥ 0.5 → B
-opp_def_z ≥ -0.5 → C
-opp_def_z ≥ -1.0 → D
-opp_def_z < -1.0 → F  (elite defense)
+factor ≥ 1.10 → A  (defense leaks this stat family)
+factor ≥ 1.03 → B
+factor ≥ 0.97 → C
+factor ≥ 0.90 → D
+factor < 0.90 → F  (elite vs this family)
 ```
+
+**Evaluation:** `GET /predictions/backtest/players` — walk-forward on a completed
+season (posterior from prior seasons + weeks < W only): MAE, CRPS, and 50%/80%
+interval coverage per stat. Coverage ≈ nominal is the honesty check (the player
+analogue of the game model's PIT test).
 
 **Weather multipliers**
 | Condition | Passing | Receiving | Rushing | Fantasy |
@@ -239,30 +273,39 @@ opp_def_z < -1.0 → F  (elite defense)
 
 ---
 
-## 6. Player Season Projections
+## 6. Player Season Projections (v2)
 
 **File:** `backend/app/services/player_predictions_service.py` → `player_season_projection`
 
-YTD totals + projected remaining + final-season totals with confidence bands.
+YTD + remaining-schedule projection with a full season distribution
+(p10/p25/p50/p75/p90) per stat, plus fantasy-point distributions for PPR,
+half-PPR, and standard scoring.
 
 **Formula**
 ```
-ytd_total = sum of weekly stats so far in current season
-per_game_pace = rolling_4_week_mean(player, stat)
-games_remaining = 17 - games_played
+# Per-game means computed against each REMAINING opponent's game environment
+game_means = [post_mean × env(game) for game in remaining_schedule]
+projected_remaining = sum(game_means)
+projected_final = ytd + projected_remaining
 
-projected_remaining = per_game_pace × games_remaining
-projected_final = ytd_total + projected_remaining
-
-# Confidence band assumes weekly independence
-season_std = weekly_std × sqrt(games_remaining)
-low_final  = ytd + max(0, projected_remaining - 0.67 × season_std)
-high_final = ytd + projected_remaining + 0.67 × season_std
+# Two-component variance — mirrors the hierarchical season Monte Carlo (§2):
+#   talent error is correlated across the whole slate; week noise is not.
+season_sd = sqrt(G² × talent_sd² + G × game_sd²)
+quantiles = Normal(projected_final, season_sd) truncated at 0
 ```
 
-**Inputs**
-- Same as game predictions
-- Current season YTD weekly data (or fallback to last completed season in offseason)
+The correlated talent term is what keeps early-season bands honest: with few
+observed games `talent_sd` is large and the p10–p90 range is wide; it tightens
+automatically as the Bayesian posterior absorbs real games.
+
+**Related endpoints**
+- `GET /players/projections/leaderboard` — bulk season projections for the
+  fantasy-relevant pool (~90/position), ranked by projected fantasy points
+- `GET /players/{id}/over-prob?stat=&line=` — P(stat > line) next game, from
+  the same distribution
+- `GET /players/{id}/props` + `GET /players/props/edges` — sportsbook prop
+  consensus (median line, de-vigged) vs model P(over); edge = model − market
+  (see `player_props_service`, append-only `player_prop_snapshots`)
 
 ---
 

@@ -137,6 +137,16 @@ async def _refresh_odds(db: Session) -> dict:
         result = {**result, "sparky_slate_games": slate.get("count", 0)}
     except Exception as e:  # noqa: BLE001
         log.warning("sparky_slate_build_failed", error=str(e)[:160])
+    # Player props ride the same cron tick but keep their own (stricter) budget
+    # guards inside refresh_player_props. Best-effort: never fail the odds job.
+    try:
+        from ..services import player_props_service
+
+        props = await player_props_service.refresh_player_props(db)
+        result = {**result, "player_prop_rows": props.get("rows", 0),
+                  "player_prop_status": props.get("status")}
+    except Exception as e:  # noqa: BLE001
+        log.warning("player_props_refresh_failed", error=str(e)[:160])
     return result
 
 

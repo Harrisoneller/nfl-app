@@ -48,6 +48,8 @@ def create_bet(db: Session, user_id: uuid.UUID, payload: Any) -> Bet:
                 selection=lc.selection,
                 selection_label=lc.selection_label or _default_label(lc),
                 line=lc.line,
+                player_name=lc.player_name,
+                prop_market=lc.prop_market,
                 odds_american=lc.odds_american,
                 odds_decimal=dec,
                 home_team_id=lc.home_team_id,
@@ -98,6 +100,12 @@ def _default_label(lc: Any) -> str:
     if lc.market == "spread":
         sign = "+" if (lc.line or 0) > 0 else ""
         return f"{lc.selection} {sign}{lc.line}"
+    if lc.market == "player_prop":
+        mkt = (lc.prop_market or "prop").removeprefix("player_").replace("_", " ")
+        if lc.line is None:
+            return f"{lc.player_name} {mkt}"
+        side = "O" if lc.selection == "over" else "U"
+        return f"{lc.player_name} {mkt} {side} {lc.line}"
     # total
     return f"{lc.selection.capitalize()} {lc.line}"
 
@@ -195,6 +203,9 @@ def _median(values: list[float]) -> float | None:
 
 def _apply_clv(db: Session, leg: BetLeg) -> None:
     """Compute + store CLV for a leg against the consensus closing number."""
+    if leg.market == "player_prop":
+        _apply_prop_clv(db, leg)
+        return
     snaps = _closing_snapshot(db, leg)
     if not snaps:
         return
@@ -228,6 +239,103 @@ def _apply_clv(db: Session, leg: BetLeg) -> None:
         leg.beat_close = leg.clv_line > 0
 
 
+def _apply_prop_clv(db: Session, leg: BetLeg) -> None:
+    """CLV for a player-prop leg: consensus (median) line from the last
+    player_prop_snapshots capture before kickoff. Line-based, like totals."""
+    from ..models.player_prop_snapshot import PlayerPropSnapshot
+
+    if leg.line is None or not leg.player_name or not leg.prop_market:
+        return
+    q = (
+        db.query(PlayerPropSnapshot)
+        .filter(PlayerPropSnapshot.market == leg.prop_market)
+        .filter(PlayerPropSnapshot.player_name.ilike(leg.player_name))
+    )
+    if leg.event_id:
+        q = q.filter(PlayerPropSnapshot.event_id == leg.event_id)
+    if leg.commence_time is not None:
+        q = q.filter(PlayerPropSnapshot.captured_at <= leg.commence_time)
+    latest = q.order_by(PlayerPropSnapshot.captured_at.desc()).first()
+    if latest is None:
+        return
+    rows = (
+        db.query(PlayerPropSnapshot)
+        .filter(PlayerPropSnapshot.market == leg.prop_market)
+        .filter(PlayerPropSnapshot.player_name.ilike(leg.player_name))
+        .filter(PlayerPropSnapshot.event_id == latest.event_id)
+        .filter(PlayerPropSnapshot.captured_at == latest.captured_at)
+        .all()
+    )
+    close = _median([float(r.line) for r in rows if r.line is not None])
+    if close is None:
+        return
+    leg.closing_line = round(close, 1)
+    # Totals sign convention: for an Over, a line below the close is +CLV; for
+    # an Under, a line above the close is +CLV.
+    leg.clv_line = round(grading.clv_total(leg.selection, leg.line, close), 1)
+    leg.beat_close = leg.clv_line > 0
+
+
+# Odds API prop-market key → weekly-frame stat column(s). Anytime TD sums.
+_PROP_MARKET_STATS: dict[str, tuple[str, ...]] = {
+    "player_pass_yds": ("passing_yards",),
+    "player_pass_tds": ("passing_tds",),
+    "player_pass_attempts": ("attempts",),
+    "player_pass_completions": ("completions",),
+    "player_pass_interceptions": ("interceptions",),
+    "player_rush_yds": ("rushing_yards",),
+    "player_rush_attempts": ("carries",),
+    "player_receptions": ("receptions",),
+    "player_reception_yds": ("receiving_yards",),
+    "player_anytime_td": ("rushing_tds", "receiving_tds"),
+}
+
+
+def _prop_actual(leg: BetLeg, game: Game) -> float | None:
+    """The player's actual stat for the leg's game, from the cached weekly
+    frame. Returns None (leave pending) when the frame or the row isn't
+    available yet — nflverse weekly data lands a day-ish after games."""
+    from ..cache import cache
+
+    stats = _PROP_MARKET_STATS.get(leg.prop_market or "")
+    if not stats or not leg.player_name or game.week is None:
+        return None
+    df = cache.get(f"player_weekly_indexed:{game.season}")
+    if df is None or len(df) == 0:
+        return None
+    name_col = next(
+        (c for c in ("player_display_name", "player_name") if c in df.columns), None,
+    )
+    if name_col is None or "week" not in df.columns:
+        return None
+    sub = df[
+        (df["week"] == game.week)
+        & (df[name_col].str.lower() == leg.player_name.strip().lower())
+    ]
+    if not len(sub):
+        return None
+    total = 0.0
+    found = False
+    for stat in stats:
+        if stat in sub.columns:
+            import pandas as pd
+
+            v = pd.to_numeric(sub[stat], errors="coerce").iloc[0]
+            if pd.notna(v):
+                total += float(v)
+                found = True
+    return total if found else None
+
+
+def _grade_player_prop(leg: BetLeg, actual: float) -> str:
+    """Over/under vs the leg's line; anytime TD is 'over 0' (any TD wins)."""
+    line = leg.line if leg.line is not None else 0.0
+    if actual == line and leg.line is not None:
+        return PUSH
+    over = actual > line
+    return WON if (over == (leg.selection == "over")) else LOST
+
+
 def _grade_leg(db: Session, leg: BetLeg) -> str | None:
     """Grade a single leg if its game is final; returns the result or None."""
     game = _find_game(db, leg)
@@ -255,6 +363,11 @@ def _grade_leg(db: Session, leg: BetLeg) -> str | None:
         if leg.line is None:
             return None
         return grading.grade_total(leg.selection, leg.line, game.home_score, game.away_score)
+    if leg.market == "player_prop":
+        actual = _prop_actual(leg, game)
+        if actual is None:
+            return None  # weekly stats not landed yet — stays pending
+        return _grade_player_prop(leg, actual)
     return None
 
 

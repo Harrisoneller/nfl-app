@@ -1,12 +1,13 @@
 "use client";
 import useSWR from "swr";
-import { api, PlayerSeasonProjection, PlayerGamePredictions } from "@/lib/api";
+import { api, ProjectionEvidence } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { playerMetricLabel } from "@/lib/metrics";
 
 /**
- * PlayerProjections — game-by-game stat predictions + season outlook.
- * Designed for the Predictions tab on a player page.
+ * PlayerProjections — game-by-game stat distributions + season outlook.
+ * Backed by the v2 engine: Bayesian multi-year priors updated weekly, coupled
+ * to the game model (implied points, game script, positional defense).
  */
 
 const GRADE_COLORS: Record<string, string> = {
@@ -14,12 +15,33 @@ const GRADE_COLORS: Record<string, string> = {
 };
 
 const STAT_DISPLAY_ORDER: Record<string, string[]> = {
-  QB: ["passing_yards", "passing_tds", "interceptions", "completions", "attempts", "rushing_yards", "fantasy_points_ppr"],
-  RB: ["rushing_yards", "rushing_tds", "carries", "receptions", "receiving_yards", "fantasy_points_ppr"],
-  WR: ["receiving_yards", "receiving_tds", "receptions", "targets", "fantasy_points_ppr"],
-  TE: ["receiving_yards", "receiving_tds", "receptions", "targets", "fantasy_points_ppr"],
+  QB: ["passing_yards", "passing_tds", "interceptions", "completions", "attempts", "rushing_yards"],
+  RB: ["rushing_yards", "rushing_tds", "carries", "receptions", "receiving_yards"],
+  WR: ["receiving_yards", "receiving_tds", "receptions", "targets"],
+  TE: ["receiving_yards", "receiving_tds", "receptions", "targets"],
 };
 
+const SCORING_LABELS: Record<string, string> = {
+  ppr: "PPR", half_ppr: "Half-PPR", standard: "Standard",
+};
+
+function EvidenceNote({ evidence }: { evidence?: ProjectionEvidence }) {
+  if (!evidence) return null;
+  const parts: string[] = [];
+  if (evidence.games_observed > 0) {
+    parts.push(`${evidence.games_observed} games observed this season`);
+  }
+  if (evidence.prior_games > 0) {
+    parts.push(`prior from ${evidence.prior_games} games across ${evidence.prior_seasons.length} seasons`);
+  }
+  if (evidence.rookie_prior) parts.push("rookie archetype prior");
+  if (parts.length === 0) return null;
+  return (
+    <p className="text-[10px] text-muted mt-2">
+      Evidence: {parts.join(" · ")}. Projections shift toward observed play as games accrue.
+    </p>
+  );
+}
 
 export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
   const { data, isLoading } = useSWR(
@@ -31,7 +53,7 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
   if (isLoading || !data) {
     return (
       <Card title="Season projection">
-        <p className="text-sm text-muted">Computing pace + projections…</p>
+        <p className="text-sm text-muted">Building priors + running the schedule…</p>
       </Card>
     );
   }
@@ -42,9 +64,7 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
           <p>{data.error}.</p>
           <p className="text-xs">
             This usually means nflverse hasn't published weekly data for the
-            relevant season yet, or this player has no recent usage. Check
-            <code className="text-[10px] mx-1 px-1 bg-bg/60 rounded">GET /admin/data-availability</code>
-            to see what seasons are loaded.
+            relevant seasons yet, or this player has no NFL usage on record.
           </p>
         </div>
       </Card>
@@ -67,6 +87,7 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
       action={
         <span className="text-[11px] text-muted">
           {data.games_played} played · {data.games_remaining} remaining
+          {data.model_version ? ` · ${data.model_version}` : ""}
         </span>
       }
     >
@@ -78,7 +99,7 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
               <div className="text-xs text-muted">{playerMetricLabel(k)}</div>
               <div className="text-2xl font-bold tabular-nums">{fmt(s.projected_final)}</div>
               <div className="text-[10px] text-muted">
-                Range: {fmt(s.low_final)} – {fmt(s.high_final)}
+                p10–p90: {fmt(s.quantiles?.p10 ?? s.low_final)}–{fmt(s.quantiles?.p90 ?? s.high_final)}
               </div>
               <div className="text-[10px] text-muted">
                 Pace: {fmt(s.per_game_pace)} / game
@@ -97,7 +118,8 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
               <th className="pr-3">Per game</th>
               <th className="pr-3">Proj. remaining</th>
               <th className="pr-3">Proj. final</th>
-              <th className="pr-3">Range</th>
+              <th className="pr-3">p25–p75</th>
+              <th className="pr-3">p10–p90</th>
             </tr>
           </thead>
           <tbody>
@@ -111,12 +133,53 @@ export function PlayerSeasonProjectionCard({ playerId }: { playerId: string }) {
                   <td className="pr-3 tabular-nums">{fmt(s.projected_remaining)}</td>
                   <td className="pr-3 tabular-nums font-medium">{fmt(s.projected_final)}</td>
                   <td className="pr-3 tabular-nums text-muted">{fmt(s.low_final)}–{fmt(s.high_final)}</td>
+                  <td className="pr-3 tabular-nums text-muted">
+                    {fmt(s.quantiles?.p10 ?? s.low_final)}–{fmt(s.quantiles?.p90 ?? s.high_final)}
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      {/* Fantasy breakdown — supplemental, derived from the stat projections */}
+      {data.fantasy && (
+        <div className="mt-4">
+          <div className="text-xs text-muted font-medium mb-2">
+            Fantasy breakdown (derived from the stat projections above)
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {(["ppr", "half_ppr", "standard"] as const).map((fmtKey) => {
+              const f = data.fantasy?.[fmtKey];
+              if (!f) return null;
+              return (
+                <div key={fmtKey} className="panel p-3">
+                  <div className="text-xs text-muted">{SCORING_LABELS[fmtKey]} points</div>
+                  <div className="text-xl font-bold tabular-nums">{f.mean.toFixed(0)}</div>
+                  <div className="text-[10px] text-muted">
+                    p10–p90: {f.quantiles?.p10?.toFixed(0)}–{f.quantiles?.p90?.toFixed(0)}
+                    {" · "}{f.per_game.toFixed(1)}/gm
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {data.role && data.role.multiplier < 1 && (
+        <p className="text-[11px] text-amber-500 mt-3">
+          Depth chart: {data.position}{data.role.depth_chart_order ?? "?"} — projections
+          reflect a backup role (~{Math.round(data.role.multiplier * 100)}% of a
+          starter's opportunity). If the depth chart changes, projections update
+          on the next sync.
+        </p>
+      )}
+      <EvidenceNote evidence={data.evidence} />
+      <p className="text-[10px] text-muted mt-1">
+        Bands separate two uncertainties: how wrong our per-game rate might be
+        (correlated across the season) and week-to-week noise — the same
+        hierarchical structure as the team season simulation.
+      </p>
     </Card>
   );
 }
@@ -131,20 +194,19 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
 
   if (isLoading || !data) {
     return (
-      <Card title="Upcoming game predictions">
-        <p className="text-sm text-muted">Computing matchup adjustments…</p>
+      <Card title="Upcoming game projections">
+        <p className="text-sm text-muted">Coupling to game model…</p>
       </Card>
     );
   }
   if (data.error) {
     return (
-      <Card title="Upcoming game predictions">
+      <Card title="Upcoming game projections">
         <div className="text-sm text-muted space-y-2">
           <p>{data.error}.</p>
           <p className="text-xs">
-            Predictions require recent weekly stats. Common causes: this player
-            is a rookie with no NFL history, currently injured/out, or nflverse
-            hasn't loaded the current season yet.
+            Projections require some NFL history (rookies get archetype priors
+            once rosters + draft data sync) and an active team assignment.
           </p>
         </div>
       </Card>
@@ -152,7 +214,7 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
   }
   if (data.games.length === 0) {
     return (
-      <Card title="Upcoming game predictions">
+      <Card title="Upcoming game projections">
         <p className="text-sm text-muted">
           No upcoming games found on this team's remaining schedule.
         </p>
@@ -161,14 +223,14 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
   }
 
   const order = STAT_DISPLAY_ORDER[data.position] || Object.keys(data.games[0]?.predicted || {});
-  const cols = order.filter((k) => data.games[0]?.predicted?.[k]).slice(0, 6);
+  const cols = order.filter((k) => data.games[0]?.predicted?.[k]).slice(0, 5);
 
   return (
     <Card
-      title="Upcoming game predictions"
+      title="Upcoming game projections"
       action={
         <span className="text-[11px] text-muted">
-          {data.baseline_window}-game rolling baseline · matchup adjusted
+          game-model coupled{data.model_version ? ` · ${data.model_version}` : ""}
         </span>
       }
     >
@@ -179,9 +241,12 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
               <th className="py-1 pr-3">Wk</th>
               <th className="pr-3">vs/@</th>
               <th className="pr-3">Matchup</th>
+              <th className="pr-3">Implied pts</th>
+              <th className="pr-3">Script</th>
               {cols.map((k) => (
                 <th key={k} className="pr-3">{playerMetricLabel(k)}</th>
               ))}
+              <th className="pr-3">PPR</th>
             </tr>
           </thead>
           <tbody>
@@ -195,29 +260,55 @@ export function PlayerGamePredictionsCard({ playerId }: { playerId: string }) {
                 <td className="pr-3">
                   <span
                     className="inline-block rounded px-1.5 py-0.5 text-[10px] font-bold"
-                    style={{ color: GRADE_COLORS[g.matchup_grade], borderColor: GRADE_COLORS[g.matchup_grade], border: "1px solid" }}
+                    style={{
+                      color: GRADE_COLORS[g.matchup_grade],
+                      borderColor: GRADE_COLORS[g.matchup_grade],
+                      border: "1px solid",
+                    }}
+                    title={`Opponent positional defense factor: ${g.defense_factor}`}
                   >
                     {g.matchup_grade}
                   </span>
                 </td>
+                <td
+                  className="pr-3 tabular-nums"
+                  title={`Opponent implied: ${g.game_env?.opp_implied_pts} · total ${g.game_env?.predicted_total}`}
+                >
+                  {g.game_env?.team_implied_pts?.toFixed?.(0) ?? "—"}
+                </td>
+                <td className="pr-3 text-muted">{g.game_env?.game_script ?? "—"}</td>
                 {cols.map((k) => {
                   const p = g.predicted[k];
                   if (!p) return <td key={k} className="pr-3">—</td>;
+                  const anchorNote = p.market_anchor
+                    ? ` · anchored to market line ${p.market_anchor.line} (${p.market_anchor.books} books, raw ${p.market_anchor.raw_mean})`
+                    : "";
                   return (
-                    <td key={k} className="pr-3 tabular-nums" title={`Range: ${fmt(p.low)}–${fmt(p.high)}`}>
+                    <td
+                      key={k}
+                      className="pr-3 tabular-nums"
+                      title={`80% range: ${fmt(p.interval_80?.[0])}–${fmt(p.interval_80?.[1])}${p.anytime_prob != null ? ` · P(≥1) ${(p.anytime_prob * 100).toFixed(0)}%` : ""}${anchorNote}`}
+                    >
                       {fmt(p.predicted)}
+                      {p.market_anchor && <span className="text-[9px] ml-0.5" aria-label="market-anchored">⚓</span>}
                       <span className="text-[9px] text-muted ml-1">({fmt(p.low)}–{fmt(p.high)})</span>
                     </td>
                   );
                 })}
+                <td className="pr-3 tabular-nums font-medium">
+                  {g.fantasy?.ppr ? g.fantasy.ppr.mean.toFixed(1) : "—"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className="text-[10px] text-muted mt-2">
-        Matchup grade based on opponent defensive EPA percentile. A = soft defense, F = elite defense.
-        Range shows 25th–75th percentile based on the player's per-game volatility.
+      <EvidenceNote evidence={data.evidence} />
+      <p className="text-[10px] text-muted mt-1">
+        Implied points + game script come from the game predictor (Elo + scoring
+        tendencies); matchup grade from opponent positional defense (A = leaky,
+        F = elite). Parentheses show the 50% range; hover for the 80% range and
+        TD probabilities. Weather and injury status shift means when available.
       </p>
     </Card>
   );

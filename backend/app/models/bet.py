@@ -112,11 +112,16 @@ class BetLeg(Base, TimestampMixin):
     event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     game_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    market: Mapped[str] = mapped_column(String(16), nullable=False)  # spread | total | moneyline
-    # team_id for spread/moneyline; "over"/"under" for totals.
+    market: Mapped[str] = mapped_column(String(16), nullable=False)  # spread | total | moneyline | player_prop
+    # team_id for spread/moneyline; "over"/"under" for totals and player props.
     selection: Mapped[str] = mapped_column(String(16), nullable=False)
-    selection_label: Mapped[str] = mapped_column(String(64), nullable=False, default="")  # e.g. "PHI -3.5"
+    selection_label: Mapped[str] = mapped_column(String(128), nullable=False, default="")  # e.g. "PHI -3.5"
     line: Mapped[float | None] = mapped_column(Float, nullable=True)  # handicap / total; None for moneyline
+
+    # Player-prop legs only: who + which prop market ("player_rush_yds", ...).
+    # Grading matches the weekly stats frame; CLV matches player_prop_snapshots.
+    player_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prop_market: Mapped[str | None] = mapped_column(String(48), nullable=True)
 
     odds_american: Mapped[int] = mapped_column(Integer, nullable=False)
     odds_decimal: Mapped[float] = mapped_column(Float, nullable=False)

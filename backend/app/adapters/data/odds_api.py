@@ -82,6 +82,35 @@ class TheOddsApiAdapter:
             {"regions": regions, "markets": ",".join(markets), "oddsFormat": "american"},
         )
 
+    async def fetch_events(self) -> OddsFetchResult:
+        """Upcoming/live event ids (cheap — no market cost on The Odds API)."""
+        return await self._get(f"/sports/{self.SPORT}/events", {})
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
+    async def _get_object(self, path: str, params: dict) -> dict[str, Any] | None:
+        """Like _get but for endpoints that return one JSON object."""
+        if not self._enabled():
+            return None
+        params = {"apiKey": self.api_key, **params}
+        r = await self.client.get(f"{self.base}{path}", params=params)
+        if r.status_code in (401, 404, 422, 429):
+            log.warning("odds_api_event_fetch_failed", status=r.status_code, path=path)
+            return None
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, dict) else None
+
+    async def fetch_event_player_props(
+        self, event_id: str, markets: tuple[str, ...], regions: str = "us",
+    ) -> dict[str, Any] | None:
+        """Player-prop odds for ONE event. The Odds API only serves player props
+        via the per-event endpoint, and each call bills per unique market —
+        callers must budget (see player_props_service)."""
+        return await self._get_object(
+            f"/sports/{self.SPORT}/events/{event_id}/odds",
+            {"regions": regions, "markets": ",".join(markets), "oddsFormat": "american"},
+        )
+
     async def fetch_futures(self, market: str = "outrights") -> list[dict[str, Any]]:
         """Note: futures markets vary by season. Check endpoint availability."""
         result = await self._get(

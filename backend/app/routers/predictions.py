@@ -134,6 +134,21 @@ async def player_season_projection(
     return await player_predictions_service.player_season_projection(db, player_id, season)
 
 
+@router.get("/backtest/players")
+async def backtest_players(
+    season: int | None = None,
+    start_week: int = 5,
+    sample_per_pos: int = 25,
+    db: Session = Depends(get_db),
+):
+    """Walk-forward backtest of the player projection engine on a completed
+    season: MAE, CRPS, and 50%/80% interval coverage per stat. Coverage near
+    nominal = the distributions are honest (the player-layer PIT check)."""
+    return await player_predictions_service.backtest_player_projections(
+        db, season=season, start_week=start_week, sample_per_pos=sample_per_pos
+    )
+
+
 @router.get("/teams/{team_id}/elo-history")
 def elo_history(team_id: str, seasons: str | None = None, db: Session = Depends(get_db)):
     """Per-week Elo for one team across one or more seasons.
