@@ -1595,6 +1595,55 @@ export const api = {
     ),
   betProfile: () => req<BetProfile>("/bets/profile"),
   deleteBet: (id: string) => reqVoid(`/bets/${id}`, { method: "DELETE" }),
+
+  // admin projection overrides (admin-only routes; 403 for everyone else)
+  adminListOverrides: (q?: {
+    entity_type?: string;
+    entity_id?: string;
+    season?: number;
+    week?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (q?.entity_type) p.set("entity_type", q.entity_type);
+    if (q?.entity_id) p.set("entity_id", q.entity_id);
+    if (q?.season != null) p.set("season", String(q.season));
+    if (q?.week != null) p.set("week", String(q.week));
+    const qs = p.toString();
+    return req<{ overrides: AdminOverride[] }>(`/admin/overrides${qs ? `?${qs}` : ""}`);
+  },
+  adminUpsertOverride: (body: AdminOverrideInput) =>
+    req<AdminOverride>("/admin/overrides", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteOverride: (id: number) =>
+    req<{ deleted: number }>(`/admin/overrides/${id}`, { method: "DELETE" }),
+};
+
+export type AdminOverride = {
+  id: number;
+  entity_type: "game" | "player";
+  entity_id: string;
+  season: number | null;
+  week: number | null;
+  field: string;
+  value: number;
+  original_value: number | null;
+  note: string;
+  created_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminOverrideInput = {
+  entity_type: "game" | "player";
+  entity_id: string;
+  field: string;
+  value: number;
+  season?: number | null;
+  week?: number | null;
+  original_value?: number | null;
+  note?: string;
 };
 
 export const NFL_BASE = BASE;

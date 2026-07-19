@@ -30,6 +30,13 @@ const links: NavLink[] = [
   // /ai hidden until ready — route still works via direct URL.
 ];
 
+// Rendered only for admins (server-computed is_admin from /auth/me) — the
+// projection-override control room. The page and its API 403 non-admins
+// regardless, so hiding the link is cosmetic, not the security boundary.
+const adminLink: NavLink = {
+  href: "/admin", label: "Admin", seg: "/admin", icon: <AdminIcon />,
+};
+
 function isActive(pathname: string, seg: string) {
   return seg === "/" ? pathname === "/" : pathname.startsWith(seg);
 }
@@ -49,6 +56,8 @@ export function Nav() {
     );
   };
 
+  const navLinks = user?.is_admin ? [...links, adminLink] : links;
+
   return (
     <>
       {/* ===== Top bar (glass) ===== */}
@@ -67,7 +76,7 @@ export function Nav() {
 
           {/* Desktop primary nav — morphing pill highlights */}
           <nav className="hidden md:flex items-center gap-1">
-            {links.map((l) => (
+            {navLinks.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
@@ -126,7 +135,7 @@ export function Nav() {
 
       {/* ===== Mobile bottom tab bar (iOS-style floating glass) ===== */}
       <nav className="glass-tabbar md:hidden" aria-label="Primary">
-        {links.map((l) => (
+        {navLinks.map((l) => (
           <Link
             key={l.href}
             href={l.href}
@@ -204,6 +213,14 @@ function BetsIcon() {
       <rect x="3" y="5" width="18" height="14" rx="2" />
       <path d="M3 10h18" />
       <path d="M7 15h4" />
+    </svg>
+  );
+}
+function AdminIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M10.3 4.3a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }

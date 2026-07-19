@@ -332,6 +332,13 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             "away_elo": round(ar, 1),
             "prediction": pred,
         })
+    # Admin override layer — hand-set spread/total/win-prob supersede the
+    # model at read time (see services/overrides_service.py). Late import:
+    # overrides_service ← player_projection_engine only, no cycle, but keep
+    # this module importable standalone in scripts.
+    from . import overrides_service
+
+    overrides_service.apply_week_game_overrides(db, season, week, out)
     return {"season": season, "week": week, "games": out}
 
 

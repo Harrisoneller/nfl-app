@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -16,6 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from .config import get_settings
+from .deps import require_admin
 from .jobs.scheduler import start_scheduler, stop_scheduler
 from .logging_config import configure_logging, get_logger
 from .middleware.access_log import AccessLogMiddleware
@@ -25,6 +26,7 @@ from .middleware.request_id import RequestIDMiddleware
 from .rate_limits import limiter
 from .routers import (
     admin,
+    admin_overrides,
     ai,
     auth,
     betting,
@@ -200,7 +202,16 @@ def create_app() -> FastAPI:
     app.include_router(bets.router, prefix="/bets", tags=["bets"])
     app.include_router(sparky.router, prefix="/sparky", tags=["sparky"])
     app.include_router(h2h.router, prefix="/h2h", tags=["h2h"])
-    app.include_router(admin.router, prefix="/admin", tags=["admin"])
+    # /admin/* is gated: overrides carries require_admin on its own router,
+    # and the refresh/cache routes get the same guard here (they were public
+    # before — dev convenience, but no reason to leave them open).
+    app.include_router(
+        admin_overrides.router, prefix="/admin/overrides", tags=["admin"],
+    )
+    app.include_router(
+        admin.router, prefix="/admin", tags=["admin"],
+        dependencies=[Depends(require_admin)],
+    )
 
     return app
 

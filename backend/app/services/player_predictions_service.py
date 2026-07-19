@@ -36,7 +36,13 @@ from ..logging_config import get_logger
 from ..models.player import Player
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
-from . import analytics_service, elo_service, prediction_dist, predictions_service
+from . import (
+    analytics_service,
+    elo_service,
+    overrides_service,
+    prediction_dist,
+    predictions_service,
+)
 from . import player_projection_engine as engine
 
 log = get_logger(__name__)
@@ -548,7 +554,12 @@ async def player_game_predictions(
 ) -> dict[str, Any]:
     """Distribution-first stat projections for the player's next games."""
     season = season or current_or_upcoming_season()
-    cache_key = f"player_game_preds_v2:{player_id}:{season}"
+    # Cache key embeds the admin-override version so a new override is served
+    # immediately (stale entries orphan + TTL out).
+    cache_key = (
+        f"player_game_preds_v2:{player_id}:{season}"
+        f":{overrides_service.version(db)}"
+    )
     if (cached := cache.get(cache_key)) is not None:
         return cached
 
@@ -608,6 +619,11 @@ async def player_game_predictions(
     except Exception:  # noqa: BLE001
         forecasts = {}
 
+    # Admin overrides for this player's season, keyed (player_id, week) —
+    # applied per game below so hand-set stat means (and their fantasy
+    # ripple) supersede the model.
+    ov_by_week = overrides_service.player_overrides_by_week(db, season)
+
     games_out = []
     for gi, env in enumerate(envs):
         weather = forecasts.get(env["game_id"], {"available": False})
@@ -629,6 +645,10 @@ async def player_game_predictions(
             stat_means[stat] = float(predicted[stat]["mean"])
             stat_sds[stat] = float(predicted[stat]["sd"])
 
+        ov = ov_by_week.get((player_id, int(env["week"] or 0)), {})
+        if ov:
+            overrides_service.apply_player_game_overrides(ov, predicted, stat_means)
+
         fantasy = {
             fmt: {
                 "mean": round(engine.fantasy_points(stat_means, fmt), 2),
@@ -636,6 +656,8 @@ async def player_game_predictions(
             }
             for fmt in engine.SCORING_FORMATS
         }
+        if ov:
+            overrides_service.apply_fantasy_overrides(ov, fantasy)
 
         games_out.append({
             "week": env["week"],
@@ -927,12 +949,29 @@ async def projection_leaderboard(
     composite. Built in bulk and served from cache."""
     season = season or current_or_upcoming_season()
     scoring = scoring if scoring in engine.SCORING_FORMATS else "ppr"
-    cache_key = f"projection_leaderboard_v2:{season}"
+    cache_key = f"projection_leaderboard_v2:{season}:{overrides_service.version(db)}"
     board: dict[str, Any] | None = cache.get(cache_key)
     if board is None or not isinstance(board, dict):
         board = await _build_leaderboard_rows(db, season)
         cache.set(cache_key, board, CACHE_TTL)
     rows = board["rows"]
+
+    # Season-scoped admin overrides (week IS NULL): direct season fantasy-point
+    # totals, applied on row copies so the shared cached board stays pristine.
+    season_ovs = overrides_service.player_season_overrides(db, season)
+    if season_ovs:
+        patched: list[dict[str, Any]] = []
+        for r in rows:
+            ov = season_ovs.get(str(r.get("player_id")))
+            if ov:
+                r = {**r}
+                for fmt in engine.SCORING_FORMATS:
+                    v = ov.get(f"fantasy_points_{fmt}")
+                    fk = f"fantasy_{fmt}"
+                    if v is not None and isinstance(r.get(fk), dict):
+                        r[fk] = {**r[fk], "mean": round(max(0.0, float(v)), 2)}
+            patched.append(r)
+        rows = patched
 
     filtered = [r for r in rows if not position or r["position"] == position.upper()]
 
@@ -947,6 +986,15 @@ async def projection_leaderboard(
         def _sorter(r: dict[str, Any]) -> float:
             return float(r[fantasy_key]["mean"])
     filtered.sort(key=_sorter, reverse=True)
+
+    # Admin rank pins (field "rank", season-scoped) hold players at a hand-set
+    # slot in the fantasy-composite ordering of the current view.
+    if sort_key == "fantasy" and season_ovs:
+        pins = {
+            pid: ov["rank"] for pid, ov in season_ovs.items() if "rank" in ov
+        }
+        if pins:
+            filtered = overrides_service.apply_rank_pins(filtered, pins)
 
     out_rows = [
         {**r, "rank": i + 1}
@@ -1340,7 +1388,9 @@ async def weekly_projection_board(
     """
     season = season or current_or_upcoming_season()
     scoring = scoring if scoring in engine.SCORING_FORMATS else "ppr"
-    cache_key = f"weekly_board_v1:{season}:{week or 'next'}"
+    cache_key = (
+        f"weekly_board_v1:{season}:{week or 'next'}:{overrides_service.version(db)}"
+    )
     board: list[dict[str, Any]] | None = cache.get(cache_key)
     slate_week: int | None = cache.get(f"{cache_key}:week")
 
@@ -1360,6 +1410,10 @@ async def weekly_projection_board(
         else:
             slate_week = week
         anchors_by_name = _bulk_market_anchors(db)
+        slate_ovs = (
+            overrides_service.player_week_overrides(db, season, int(slate_week))
+            if slate_week is not None else {}
+        )
 
         # One forecast batch for the whole slate (unique games).
         slate_games: dict[str, dict[str, Any]] = {}
@@ -1418,6 +1472,12 @@ async def weekly_projection_board(
                 stat_means[stat] = float(predicted[stat]["mean"])
                 stat_sds[stat] = float(predicted[stat]["sd"])
 
+            # Admin override layer: hand-set stat means recenter distributions
+            # (and re-flow into fantasy); direct fantasy-point overrides win last.
+            ov = slate_ovs.get(player.id, {})
+            if ov:
+                overrides_service.apply_player_game_overrides(ov, predicted, stat_means)
+
             fantasy: dict[str, Any] = {}
             for fmt in engine.SCORING_FORMATS:
                 f_mean = engine.fantasy_points(stat_means, fmt)
@@ -1428,6 +1488,8 @@ async def weekly_projection_board(
                     "p10": round(engine.stat_quantile(f_mean, f_sd, 0.10), 1),
                     "p90": round(engine.stat_quantile(f_mean, f_sd, 0.90), 1),
                 }
+            if ov:
+                overrides_service.apply_fantasy_overrides(ov, fantasy)
 
             grade_stat = _GRADE_STAT_BY_POS.get(pos, "receiving_yards")
             rep_factor = _defense_factor(def_factors, env["opponent"], grade_stat, pos)
@@ -1469,12 +1531,24 @@ async def weekly_projection_board(
         f = (r.get("fantasy") or {}).get(scoring)
         return float(f["mean"]) if f else -1.0
 
+    # Admin rank pins (field "pos_rank", week-scoped): after the natural sort,
+    # pinned players are moved to their hand-set positional rank.
+    rank_pins: dict[str, float] = {}
+    if slate_week is not None:
+        for pid, ov in overrides_service.player_week_overrides(
+            db, season, int(slate_week)
+        ).items():
+            if "pos_rank" in ov:
+                rank_pins[pid] = ov["pos_rank"]
+
     by_pos: dict[str, list[dict[str, Any]]] = {}
     for r in board:
         by_pos.setdefault(r["position"], []).append(r)
     out_rows: list[dict[str, Any]] = []
     for pos, rs in by_pos.items():
         rs = sorted(rs, key=_mean, reverse=True)
+        if rank_pins:
+            rs = overrides_service.apply_rank_pins(rs, rank_pins)
         for i, r in enumerate(rs):
             r = dict(r)
             r["pos_rank"] = i + 1
@@ -1487,8 +1561,12 @@ async def weekly_projection_board(
             out_rows.append(r)
 
     if position:
+        # Positional view: order by pos_rank so admin rank pins hold (identical
+        # to the mean sort when no pins exist).
         out_rows = [r for r in out_rows if r["position"] == position.upper()]
-    out_rows.sort(key=_mean, reverse=True)
+        out_rows.sort(key=lambda r: r.get("pos_rank") or 10_000)
+    else:
+        out_rows.sort(key=_mean, reverse=True)
     out_rows = out_rows[: max(1, min(limit, 600))]
     return {
         "season": season,
