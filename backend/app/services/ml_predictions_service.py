@@ -203,7 +203,7 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
     df["short_week_away"] = (df["rest_days_away"] <= 6).astype(int)
     df["market_home_win_prob"] = df["market_home_win_prob"].fillna(
         df["market_spread_home"].map(
-            lambda x: prediction_dist.win_prob(-float(x), prediction_dist.NFL_MARGIN_SIGMA)
+            lambda x: prediction_dist.win_prob(-float(x), prediction_dist.margin_sigma())
             if pd.notna(x)
             else 0.5
         )

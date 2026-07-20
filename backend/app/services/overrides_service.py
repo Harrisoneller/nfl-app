@@ -24,7 +24,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..cache import cache
-from ..models.admin_override import ENTITY_TYPES, GAME_FIELDS, AdminOverride
+from ..models.admin_override import (
+    ENTITY_TYPES,
+    GAME_FIELDS,
+    PLAYER_INPUT_FIELDS,
+    TEAM_INPUT_FIELDS,
+    AdminOverride,
+)
 from . import player_projection_engine as engine
 
 _VERSION_KEY = "admin_overrides:version"
@@ -53,15 +59,20 @@ def version(db: Session) -> str:
     stubbed test session), the layer behaves as "no overrides" instead of
     taking the projection endpoints down with it.
     """
+    from . import param_registry
+
     v = cache.get(_VERSION_KEY)
-    if isinstance(v, str):
-        return v
-    try:
-        v = _compute_version(db)
-    except Exception:  # noqa: BLE001 — override layer must never break reads
-        return "ov0"
-    cache.set(_VERSION_KEY, v, _VERSION_TTL)
-    return v
+    if not isinstance(v, str):
+        try:
+            v = _compute_version(db)
+        except Exception:  # noqa: BLE001 — override layer must never break reads
+            v = "ov0"
+        else:
+            cache.set(_VERSION_KEY, v, _VERSION_TTL)
+    # Compound token: any model-param write also busts every downstream
+    # projection cache keyed on this version, so parameter tuning is live
+    # within seconds on all boards without a separate invalidation sweep.
+    return f"{v}+{param_registry.version(db)}"
 
 
 def _refresh_version(db: Session) -> None:
@@ -106,8 +117,19 @@ def upsert_override(
         raise ValueError(f"entity_type must be one of {ENTITY_TYPES}")
     if entity_type == "game" and field not in GAME_FIELDS:
         raise ValueError(f"game field must be one of {GAME_FIELDS}")
+    if entity_type == "team":
+        if field not in TEAM_INPUT_FIELDS:
+            raise ValueError(f"team field must be one of {TEAM_INPUT_FIELDS}")
+        if week is not None:
+            raise ValueError("team input overrides are season-scoped (week must be null)")
+    if entity_type == "player" and field in PLAYER_INPUT_FIELDS and week is not None:
+        raise ValueError(f"'{field}' is a season-scoped input lever (week must be null)")
     if not math.isfinite(float(value)):
         raise ValueError("value must be a finite number")
+    if field in ("pass_rate", "target_share", "rush_share", "snap_rate") and not (
+        0.0 < float(value) <= 1.0
+    ):
+        raise ValueError(f"'{field}' is a share in (0, 1]")
 
     row = (
         db.query(AdminOverride)
@@ -142,16 +164,30 @@ def upsert_override(
             row.note = note
         if created_by:
             row.created_by = created_by
+    from . import audit_service
+    audit_service.record(
+        db, actor=created_by or "", action="override_set", target_type="override",
+        target_key=f"{entity_type}:{entity_id}:{field}",
+        old_value=original_value, new_value=float(value), note=note or "",
+        context={"season": season, "week": week},
+    )
     db.commit()
     db.refresh(row)
     _refresh_version(db)
     return row.to_dict()
 
 
-def delete_override(db: Session, override_id: int) -> bool:
+def delete_override(db: Session, override_id: int, actor: str = "") -> bool:
     row = db.get(AdminOverride, override_id)
     if row is None:
         return False
+    from . import audit_service
+    audit_service.record(
+        db, actor=actor, action="override_delete", target_type="override",
+        target_key=f"{row.entity_type}:{row.entity_id}:{row.field}",
+        old_value=row.value, new_value=row.original_value,
+        context={"season": row.season, "week": row.week},
+    )
     db.delete(row)
     db.commit()
     _refresh_version(db)
@@ -226,6 +262,24 @@ def player_week_overrides(db: Session, season: int, week: int | None) -> dict[st
 def player_season_overrides(db: Session, season: int) -> dict[str, dict[str, float]]:
     """Season-scoped (week IS NULL) player overrides — leaderboard rank pins etc."""
     return _scoped_map(db, "player", season, None)
+
+
+def team_input_overrides(db: Session, season: int) -> dict[str, dict[str, float]]:
+    """{team_id: {pace|yards_per_play|pass_rate|points_per_game: value}} —
+    season-scoped model-input levers (coaching/scheme changes)."""
+    return _scoped_map(db, "team", season, None)
+
+
+def player_input_overrides(db: Session, season: int) -> dict[str, dict[str, float]]:
+    """{player_id: {usage lever: value}} — the PLAYER_INPUT_FIELDS subset of
+    season-scoped player overrides (rank pins etc. filtered out)."""
+    raw = _scoped_map(db, "player", season, None)
+    out: dict[str, dict[str, float]] = {}
+    for pid, fields in raw.items():
+        levers = {f: v for f, v in fields.items() if f in PLAYER_INPUT_FIELDS}
+        if levers:
+            out[pid] = levers
+    return out
 
 
 # ---- Application helpers -------------------------------------------------------

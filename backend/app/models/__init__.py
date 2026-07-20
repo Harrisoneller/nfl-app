@@ -14,6 +14,7 @@ from .feature_snapshot import FeatureSnapshot  # noqa: F401
 from .game import Game, GameStat  # noqa: F401
 from .model_artifact import ModelArtifact  # noqa: F401
 from .model_lifecycle_run import ModelLifecycleRun  # noqa: F401
+from .model_param import AdminAuditLog, ModelParam, ModelParamPreset  # noqa: F401
 from .news import NewsItem  # noqa: F401
 from .odds import OddsLine  # noqa: F401
 from .odds_snapshot import OddsSnapshot  # noqa: F401

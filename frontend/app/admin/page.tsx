@@ -7,13 +7,29 @@ import { useAuth } from "@/context/AuthProvider";
 import { GameOverridesTab } from "@/components/admin/GameOverridesTab";
 import { PlayerOverridesTab } from "@/components/admin/PlayerOverridesTab";
 import { FantasyRanksTab } from "@/components/admin/FantasyRanksTab";
+import { ModelInputsTab } from "@/components/admin/ModelInputsTab";
+import { ParametersTab } from "@/components/admin/ParametersTab";
+import { ChangeLogTab } from "@/components/admin/ChangeLogTab";
+import { ProjectionsBoardTab } from "@/components/admin/ProjectionsBoardTab";
 
-type TabId = "games" | "players" | "fantasy" | "audit";
+type TabId =
+  | "board"
+  | "games"
+  | "players"
+  | "fantasy"
+  | "inputs"
+  | "params"
+  | "changelog"
+  | "audit";
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "board", label: "Projections Board" },
   { id: "games", label: "Game Projections" },
   { id: "players", label: "Player Projections" },
   { id: "fantasy", label: "Fantasy Rankings" },
+  { id: "inputs", label: "Model Inputs" },
+  { id: "params", label: "Parameters" },
+  { id: "changelog", label: "Change Log" },
   { id: "audit", label: "All Overrides" },
 ];
 
@@ -33,7 +49,7 @@ export default function AdminPage() {
     if (!loading && !isAdmin) router.replace("/");
   }, [loading, isAdmin, router]);
 
-  const [tab, setTab] = useState<TabId>("games");
+  const [tab, setTab] = useState<TabId>("board");
 
   if (loading) {
     return <div className="panel p-6 text-sm text-muted">Checking access…</div>;
@@ -69,9 +85,13 @@ export default function AdminPage() {
         ))}
       </div>
 
+      {tab === "board" && <ProjectionsBoardTab />}
       {tab === "games" && <GameOverridesTab />}
       {tab === "players" && <PlayerOverridesTab />}
       {tab === "fantasy" && <FantasyRanksTab />}
+      {tab === "inputs" && <ModelInputsTab />}
+      {tab === "params" && <ParametersTab />}
+      {tab === "changelog" && <ChangeLogTab />}
       {tab === "audit" && <AuditTab />}
     </div>
   );

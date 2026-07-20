@@ -209,6 +209,13 @@ class NflDataPyAdapter:
         others, so the crosswalk is the reliable source."""
         return await _run_sync_safe(nfl.import_ids, fn_name="ids")
 
+    async def snap_counts_df(self, season: int):
+        """Weekly snap counts (offense_snaps / offense_pct per player-game).
+
+        Feeds the model-inputs layer's snap-rate baselines. Best-effort like
+        every other frame — None on failure."""
+        return await _run_sync_safe(nfl.import_snap_counts, [season], fn_name="snap_counts")
+
     async def pbp_df(self, season: int):
         """Play-by-play, projected to PBP_COLUMNS to keep memory bounded.
 

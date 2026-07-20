@@ -39,9 +39,9 @@ def attach_uncertainty(
     """Return prediction payload augmented with uncertainty and confidence labels."""
     dist = prediction.get("distribution") or {}
     expected_margin = float(dist.get("expected_margin", 0.0))
-    lo, hi = prediction_dist.margin_interval(expected_margin, prediction_dist.NFL_MARGIN_SIGMA, 0.8)
-    p_low = prediction_dist.win_prob(lo, prediction_dist.NFL_MARGIN_SIGMA)
-    p_high = prediction_dist.win_prob(hi, prediction_dist.NFL_MARGIN_SIGMA)
+    lo, hi = prediction_dist.margin_interval(expected_margin, prediction_dist.margin_sigma(), 0.8)
+    p_low = prediction_dist.win_prob(lo, prediction_dist.margin_sigma())
+    p_high = prediction_dist.win_prob(hi, prediction_dist.margin_sigma())
     home_low, home_high = sorted((round(p_low, 3), round(p_high, 3)))
     away_low, away_high = round(1.0 - home_high, 3), round(1.0 - home_low, 3)
     cal_score = calibration_score_from_ece(expected_calibration_error)

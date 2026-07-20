@@ -218,6 +218,14 @@ function WeeklyRow({
         {p.injury_status && (
           <span className="ml-1.5 text-[9px] text-amber-500 font-bold uppercase">{p.injury_status}</span>
         )}
+        {p.market?.trending_adds != null && p.market.trending_adds >= 500 && (
+          <span
+            className="ml-1 text-[9px] text-sky-300"
+            title={`${p.market.trending_adds.toLocaleString()} Sleeper adds in the last 24h — the fantasy market is moving on this player`}
+          >
+            🔥
+          </span>
+        )}
       </td>
       {showPos && <td className="pr-3">{p.position}</td>}
       <td className="pr-3 text-muted whitespace-nowrap">

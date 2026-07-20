@@ -14,6 +14,18 @@ Scope semantics
   ``receiving_tds``, …) or ``fantasy_points_<fmt>`` (ppr/half_ppr/standard).
   Week-scoped rank pin: ``pos_rank`` (start/sit board position rank).
   Season-scoped (``week IS NULL``) rank pin: ``rank`` (season leaderboard).
+  Season-scoped INPUT fields (``week IS NULL``, PLAYER_INPUT_FIELDS): usage
+  levers — ``target_share``, ``rush_share``, ``yards_per_target``,
+  ``yards_per_carry``, ``snap_rate`` — that scale the projection *inputs*
+  (posterior rates) rather than pinning outputs. For a role change the input
+  lever is the right tool: every downstream stat, prop probability, and
+  fantasy number moves consistently.
+* ``entity_type='team'`` — ``entity_id`` is the team id (e.g. "KC").
+  Season-scoped input levers (TEAM_INPUT_FIELDS): ``pace`` (offensive plays
+  per game), ``yards_per_play``, ``pass_rate`` (neutral-situation), and
+  ``points_per_game`` (direct scoring level). Set these for a coaching or
+  scheme change; they adjust the scoring model's inputs and flow through to
+  game totals, spreads, and every player on the roster.
 
 ``original_value`` snapshots what the model said at the moment the override
 was created — purely informational, shown in the admin UI as "model" vs
@@ -27,9 +39,19 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ..db import Base
 from ._mixins import TimestampMixin
 
-ENTITY_TYPES = ("game", "player")
+ENTITY_TYPES = ("game", "player", "team")
 
 GAME_FIELDS = ("predicted_spread", "predicted_total", "home_win_prob")
+
+# Team-level model-input levers (season/rest-of-season scoped, week IS NULL).
+TEAM_INPUT_FIELDS = ("pace", "yards_per_play", "pass_rate", "points_per_game")
+
+# Player-level usage levers (season scoped, week IS NULL). Distinct from stat
+# output overrides: these scale the posterior rates feeding every projection.
+PLAYER_INPUT_FIELDS = (
+    "target_share", "rush_share", "yards_per_target", "yards_per_carry",
+    "snap_rate",
+)
 
 
 class AdminOverride(Base, TimestampMixin):

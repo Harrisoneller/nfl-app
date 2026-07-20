@@ -249,6 +249,12 @@ function ProjectionsTab() {
                 >
                   Fty {SCORING_OPTIONS.find((s) => s.key === scoring)?.label}{sortKey === "fantasy" ? " ↓" : ""}
                 </th>
+                <th className="pr-3" title="FantasyFootballCalculator average draft position (12-team). 🔥 = heavy Sleeper adds in 24h.">ADP</th>
+                {sortKey === "fantasy" && (
+                  <th className="pr-3" title="ADP overall rank minus the displayed model rank. Positive (green) = drafters take this player later than the model ranks him — model sees value.">
+                    vs ADP
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -316,6 +322,17 @@ function ProjectionsTab() {
                     <td className="pr-3 tabular-nums text-muted">
                       {f ? `${f.mean.toFixed(0)} (${f.per_game.toFixed(1)}/gm)` : "—"}
                     </td>
+                    <td className="pr-3 tabular-nums text-muted">
+                      {p.market?.adp != null ? p.market.adp.toFixed(1) : "—"}
+                      {(p.market?.trending_adds ?? 0) >= 500 && (
+                        <span className="ml-1 text-[9px]" title={`${p.market!.trending_adds!.toLocaleString()} Sleeper adds in 24h`}>🔥</span>
+                      )}
+                    </td>
+                    {sortKey === "fantasy" && (
+                      <td className="pr-3 tabular-nums">
+                        <AdpDelta adpRank={p.market?.adp_overall_rank ?? null} modelRank={i + 1} />
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -363,6 +380,19 @@ function CoverageLine({
         );
       })}
     </div>
+  );
+}
+
+/** Signed rank delta vs the market: green = model ranks him higher than ADP. */
+function AdpDelta({ adpRank, modelRank }: { adpRank: number | null; modelRank: number }) {
+  if (adpRank == null) return <span className="text-muted">—</span>;
+  const delta = adpRank - modelRank;
+  if (Math.abs(delta) < 5) return <span className="text-muted">≈</span>;
+  const tone = delta > 0 ? "text-emerald-400" : "text-rose-400";
+  return (
+    <span className={`font-medium ${tone}`} title={`Market ADP rank ${adpRank} vs model rank ${modelRank}`}>
+      {delta > 0 ? "+" : ""}{delta}
+    </span>
   );
 }
 

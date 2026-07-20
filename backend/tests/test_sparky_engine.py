@@ -456,12 +456,13 @@ def test_calibration_buckets():
 
 @_skip_no_backtest
 def test_signal_lift_basic():
-    rows = [
-        {"signals": ["short_rest"], "correct": False},
-        {"signals": ["short_rest"], "correct": False},
-        {"signals": [], "correct": True},
-        {"signals": [], "correct": True},
-    ]
+    # signal_lift only reports signals with >= 5 samples on the "with" side.
+    rows = (
+        [{"signals": ["short_rest"], "correct": False}] * 4
+        + [{"signals": ["short_rest"], "correct": True}]
+        + [{"signals": [], "correct": True}] * 4
+        + [{"signals": [], "correct": False}]
+    )
     lift = signal_lift(rows)
     short = next((x for x in lift if x["signal"] == "short_rest"), None)
     assert short is not None

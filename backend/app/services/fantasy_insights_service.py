@@ -116,11 +116,19 @@ async def ros_value_board(
                 "vorp_per_game": round(vorp_pg, 2),
                 "vorp_ros": round(vorp_ros, 1),
                 "next_game": r.get("next_game"),
+                # Fantasy-market block from the projection board (ADP,
+                # trending). value_vs_adp is recomputed below against the
+                # VORP ordering — this board's own rank, not the raw
+                # points rank the projection board used.
+                "market": r.get("market"),
             })
 
     out.sort(key=lambda r: r["vorp_ros"], reverse=True)
     for i, r in enumerate(out):
         r["overall_rank"] = i + 1
+        m = r.get("market")
+        if isinstance(m, dict) and m.get("adp_overall_rank"):
+            m["value_vs_adp"] = int(m["adp_overall_rank"]) - (i + 1)
     if position:
         out = [r for r in out if r["position"] == position.upper()]
     return {

@@ -6,6 +6,7 @@ import { ExplainPopover } from "./ExplainPopover";
 import { TeamLogo } from "../TeamLogo";
 import { usePersona } from "@/context/PersonaProvider";
 import { WhyPredictionPanel } from "./WhyPredictionPanel";
+import { MarketBlendLine } from "./MarketBlendLine";
 
 /**
  * Compact game prediction card. Logos for casual readability, Elo + win
@@ -59,10 +60,21 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
           </ExplainPopover>
           {persona !== "fantasy" && (
             <div className="flex items-center justify-between text-[11px] text-muted pt-1">
-              <span>Pick: <span className="text-text font-medium">{fav} -{absSpread.toFixed(1)}</span></span>
+              <span>
+                Pick: <span className="text-text font-medium">{fav} -{absSpread.toFixed(1)}</span>
+                {p.prediction_basis === "market-blend-v1" && (
+                  <span
+                    className="ml-1.5 rounded px-1 py-px text-[9px] uppercase tracking-wide bg-sky-500/10 text-sky-300"
+                    title="Headline numbers blend the model with de-vigged sportsbook consensus (and Kalshi when available)."
+                  >
+                    blend
+                  </span>
+                )}
+              </span>
               <span>O/U <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>
             </div>
           )}
+          {persona !== "fantasy" && <MarketBlendLine game={game} />}
           {persona === "fantasy" && (
             <div className="flex items-center justify-between text-[11px] text-muted pt-1">
               <span>Scoring env: <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>

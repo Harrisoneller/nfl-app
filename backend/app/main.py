@@ -27,6 +27,7 @@ from .rate_limits import limiter
 from .routers import (
     admin,
     admin_overrides,
+    admin_params,
     ai,
     auth,
     betting,
@@ -207,6 +208,9 @@ def create_app() -> FastAPI:
     # before — dev convenience, but no reason to leave them open).
     app.include_router(
         admin_overrides.router, prefix="/admin/overrides", tags=["admin"],
+    )
+    app.include_router(
+        admin_params.router, prefix="/admin/params", tags=["admin"],
     )
     app.include_router(
         admin.router, prefix="/admin", tags=["admin"],
