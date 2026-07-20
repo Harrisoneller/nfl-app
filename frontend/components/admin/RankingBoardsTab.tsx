@@ -290,6 +290,22 @@ function BoardEditor({
 
   const set = detail.data;
   const board = rows ?? [];
+
+  // Live positional rank (RB5, WR12…) derived from board order, keyed by
+  // player_id. Recomputed on every reorder, so dragging a player up updates
+  // their pos rank immediately — it's never stored, always a function of the
+  // current ordering. Mirrors the public fantasy page's computation.
+  const posRankById = useMemo(() => {
+    const counts: Record<string, number> = {};
+    const out: Record<string, number> = {};
+    for (const r of board) {
+      const pos = (r.position ?? "?").toUpperCase();
+      counts[pos] = (counts[pos] ?? 0) + 1;
+      out[r.player_id] = counts[pos];
+    }
+    return out;
+  }, [board]);
+
   const filtered = posFilter !== "ALL" || search.trim() !== "";
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -411,6 +427,38 @@ function BoardEditor({
       onSetsChanged();
     });
 
+  const exportCsv = () => {
+    const head = [
+      "rank", "tier", "position", "pos_rank", "name", "team",
+      "player_id", "model_rank", "note",
+    ];
+    const esc = (v: unknown) => JSON.stringify(v ?? "");
+    const lines = board.map((r) =>
+      [
+        r.rank,
+        r.tier,
+        r.position ?? "",
+        posRankById[r.player_id] ?? "",
+        esc(r.name ?? ""),
+        r.team ?? "",
+        r.player_id,
+        r.model_rank ?? "",
+        esc(r.note ?? ""),
+      ].join(","),
+    );
+    const blob = new Blob([[head.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const slug = (set?.name ?? "board").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const season = String(set?.season ?? "");
+    const fname = season && !slug.includes(season) ? `${slug}_${season}` : slug;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${fname}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   if (detail.isLoading || !set) {
     return <div className="panel p-6 text-sm text-muted">Loading board…</div>;
   }
@@ -445,6 +493,14 @@ function BoardEditor({
 
         <div className="ml-auto flex items-center gap-2 flex-wrap">
           <SeedMenu onSeed={seed} busy={busy === "seed"} />
+          <button
+            onClick={exportCsv}
+            disabled={board.length === 0}
+            className="text-xs rounded px-3 py-1.5 border divider text-muted hover:text-white disabled:opacity-50"
+            title="Download the current board (including unsaved edits) as CSV"
+          >
+            Export CSV
+          </button>
           <button
             onClick={save}
             disabled={!dirty || busy !== null}
@@ -543,6 +599,7 @@ function BoardEditor({
                 <BoardRow
                   row={r}
                   index={i}
+                  posRank={posRankById[r.player_id]}
                   draggable={!filtered}
                   isDragOver={dragOver === i}
                   onDragStart={() => (dragFrom.current = i)}
@@ -667,6 +724,7 @@ function TierDivider({
 function BoardRow({
   row,
   index,
+  posRank,
   draggable,
   isDragOver,
   onDragStart,
@@ -680,6 +738,7 @@ function BoardRow({
 }: {
   row: Row;
   index: number;
+  posRank?: number;
   draggable: boolean;
   isDragOver: boolean;
   onDragStart: () => void;
@@ -748,7 +807,10 @@ function BoardRow({
           </span>
         )}
         <div className="text-[10px] text-muted">
-          {row.position ?? "?"} · {row.team ?? "FA"}
+          <span className="font-medium text-white/70 tabular-nums">
+            {(row.position ?? "?")}{posRank ?? ""}
+          </span>{" "}
+          · {row.team ?? "FA"}
         </div>
       </div>
       <span className="text-[10px] text-muted w-10">T{row.tier}</span>

@@ -109,6 +109,41 @@ function RankingBoard({ setId }: { setId: number }) {
     return out;
   }, [data]);
 
+  const exportCsv = () => {
+    if (!data) return;
+    const head = [
+      "rank", "tier", "position", "pos_rank", "name", "team", "player_id",
+      "model_rank", "vs_model", "model_points", "note",
+    ];
+    const esc = (v: unknown) => JSON.stringify(v ?? "");
+    const lines = (data.players ?? []).map((p) =>
+      [
+        p.rank,
+        p.tier,
+        p.position ?? "",
+        posRank[p.player_id] ?? "",
+        esc(p.name ?? ""),
+        p.team ?? "",
+        p.player_id,
+        p.model_rank ?? "",
+        p.vs_model ?? "",
+        p.model_points != null ? p.model_points.toFixed(1) : "",
+        esc(p.note ?? ""),
+      ].join(","),
+    );
+    const blob = new Blob([[head.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const slug = (data.name ?? "board").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const season = String(data.season ?? "");
+    const base = season && !slug.includes(season) ? `${slug}_${season}` : slug;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${base}_v${data.version}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   if (isLoading || !data) {
     return <Card><p className="text-sm text-muted">Loading board…</p></Card>;
   }
@@ -148,6 +183,13 @@ function RankingBoard({ setId }: { setId: number }) {
             placeholder="Search player…"
             className="bg-bg border divider rounded px-2 py-1.5 text-xs w-44"
           />
+          <button
+            onClick={exportCsv}
+            className="text-xs rounded px-3 py-1.5 border divider text-muted hover:text-white"
+            title="Download this board as CSV, including the model-comparison columns"
+          >
+            Export CSV
+          </button>
           <span className="ml-auto text-[10px] text-muted">
             v{data.version}
             {data.published_at &&
