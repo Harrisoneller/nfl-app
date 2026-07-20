@@ -143,6 +143,19 @@ def _rates_for(tbl: pd.DataFrame | None, gsis_id: str, stat: str) -> dict | None
     }
 
 
+def _games_by_season(
+    tables: dict[int, pd.DataFrame], gsis_id: str, prior_seasons: list[int],
+) -> list[float | None]:
+    """Games played per prior season (most-recent-first, aligned with the
+    engine's PRIOR_SEASON_WEIGHTS) — durability evidence. None = no frame row
+    that season (distinct from an injury-shortened season)."""
+    out: list[float | None] = []
+    for s in prior_seasons:
+        r = _rates_for(tables.get(s), gsis_id, "fantasy_points_ppr")
+        out.append(float(r["games"]) if r else None)
+    return out
+
+
 def _clean_gsis(v) -> str | None:
     """Sleeper pads gsis ids with whitespace (' 00-0034796') and leaves many
     null — normalize before any join against nflverse frames."""
@@ -292,9 +305,11 @@ async def positional_defense_factors(season: int) -> dict[str, dict[str, float]]
         league = float(per_team.mean()) if len(per_team) else 0.0
         if league <= 0:
             return {}
-        lo, hi = _DEF_CLAMP
+        from . import param_registry as _pr
+        lo, hi = _pr.value("defense.clamp_lo"), _pr.value("defense.clamp_hi")
+        shrink = _pr.value("defense.shrink")
         return {
-            str(t): float(min(hi, max(lo, 1.0 + _DEF_SHRINK * (f - 1.0))))
+            str(t): float(min(hi, max(lo, 1.0 + shrink * (f - 1.0))))
             for t, f in (per_team / league).items()
         }
 
@@ -347,7 +362,9 @@ async def league_game_environments(
     the same Elo + scoring inputs the game predictor uses. Each env carries the
     team's implied points, the opponent's, and the game-script label — the
     player layer's window into the game model."""
-    key = f"league_game_envs:{season}"
+    # Overrides version in the key: a team input lever (pace/YPP/PPG) changes
+    # implied points, so envs must rebuild when one is written.
+    key = f"league_game_envs:{season}:{overrides_service.version(db)}"
     if (v := cache.get(key)) is not None:
         return v
 
@@ -361,7 +378,9 @@ async def league_game_environments(
     aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)  # noqa: SLF001
     if not aggs:
         aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)  # noqa: SLF001
-    aggs = aggs or {}
+    from . import model_inputs_service  # late import (module imports us lazily)
+
+    aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
 
     remaining = sched[sched["home_score"].isna() | sched["away_score"].isna()]
     for _, g in remaining.sort_values("week").iterrows():
@@ -421,12 +440,19 @@ async def _stat_posteriors(
     games_observed = 0
     prior_games_total = 0
     used_rookie_prior = False
+    # Games played per prior season (max across stats) — durability evidence.
+    games_per_prior: list[float | None] = [None] * len(prior_seasons)
 
     for stat in stats:
         season_rates: list[dict | None] = []
         if gsis_id:
-            for s in prior_seasons:
-                season_rates.append(_rates_for(tables.get(s), gsis_id, stat))
+            for i, s in enumerate(prior_seasons):
+                r = _rates_for(tables.get(s), gsis_id, stat)
+                season_rates.append(r)
+                if r is not None:
+                    g = float(r["games"])
+                    if games_per_prior[i] is None or g > games_per_prior[i]:
+                        games_per_prior[i] = g
         prior = engine.build_prior(
             stat, season_rates, position=player.position or "", age=player.age,
             position_mean=pos_means.get(stat),
@@ -460,13 +486,88 @@ async def _stat_posteriors(
         "games_observed": games_observed,
         "rookie_prior": used_rookie_prior,
         "age": player.age,
+        "availability": round(
+            engine.availability_rate(games_per_prior, player.position or ""), 3,
+        ),
     }
     return posteriors, meta
 
 
+def _apply_player_input_levers(
+    posteriors: dict[str, engine.StatPosterior],
+    *,
+    player: Player,
+    gsis_id: str | None,
+    ctx: dict[str, Any],
+) -> tuple[dict[str, engine.StatPosterior], dict[str, Any] | None]:
+    """Scale a player's posteriors by admin input levers + team pass tilt.
+
+    Returns (possibly-new posteriors dict, applied-info | None). Shares scale
+    the full distribution (opportunity changes move the noise with the mean —
+    same contract as role multipliers). Availability lever is surfaced under
+    ``info["availability"]`` for season aggregation (not applied to posteriors).
+    """
+    levers = (ctx.get("overrides") or {}).get(str(player.id)) or {}
+    tilt = (ctx.get("tilts") or {}).get(player.team_id or "")
+    if not levers and not tilt:
+        return posteriors, None
+    baselines = (ctx.get("baselines") or {}).get(gsis_id or "") or {}
+    from . import model_inputs_service
+
+    mults = model_inputs_service.player_stat_multipliers(levers, baselines, tilt)
+    avail_ov = model_inputs_service.player_availability_override(levers)
+    if not mults and avail_ov is None:
+        return posteriors, None
+    scaled = (
+        {
+            s: (engine.scale_posterior(p, mults[s]) if s in mults else p)
+            for s, p in posteriors.items()
+        }
+        if mults
+        else posteriors
+    )
+    info: dict[str, Any] = {}
+    if mults:
+        info["multipliers"] = {s: round(m, 3) for s, m in mults.items()}
+    if avail_ov is not None:
+        info["availability"] = round(avail_ov, 3)
+    if levers:
+        info["levers"] = {
+            f: {"value": v, "baseline": baselines.get(f)} for f, v in levers.items()
+        }
+    if tilt:
+        info["team_pass_tilt"] = {k: round(v, 3) for k, v in tilt.items()}
+    return scaled, info
+
+
+def _anchor_from_consensus_item(item: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """One props-consensus row → (stat, anchor payload) or None.
+
+    Volume/yardage stats anchor off (line, de-vigged over price). Scoring stats
+    (TDs, INTs) anchor off the price too: a 0.5 line is a threshold, not a
+    median, but line + P(over) inverts to a market-implied Poisson rate
+    (engine.poisson_rate_from_over_prob) — so they're no longer excluded, they
+    just REQUIRE a usable price (enforced in _project_stat_for_game).
+    """
+    stat = PROP_MARKET_TO_STAT.get(item.get("market") or "")
+    if not stat or stat.startswith("__") or item.get("line") is None:
+        return None
+    if engine.STAT_CLASS.get(stat) not in ("volume", "yardage", "scoring"):
+        return None
+    books = int(item.get("books") or 0)
+    if books < 2:
+        return None
+    return stat, {
+        "line": float(item["line"]),
+        "books": books,
+        "over_prob": item.get("market_over_prob"),
+    }
+
+
 def _market_anchors(db: Session, full_name: str) -> dict[str, dict[str, Any]]:
-    """{stat: {line, books}} from the latest consensus prop lines for this
-    player's upcoming game. Best-effort — empty when books haven't posted."""
+    """{stat: {line, books, over_prob}} from the latest consensus prop lines
+    for this player's upcoming game. Best-effort — empty when books haven't
+    posted."""
     try:
         from . import player_props_service as props  # lazy: avoids import cycle
 
@@ -476,27 +577,40 @@ def _market_anchors(db: Session, full_name: str) -> dict[str, dict[str, Any]]:
         return {}
     out: dict[str, dict[str, Any]] = {}
     for item in consensus:
-        stat = PROP_MARKET_TO_STAT.get(item.get("market") or "")
-        if not stat or stat.startswith("__") or item.get("line") is None:
-            continue
-        # Anchor only volume/yardage stats: their line ≈ the market's median ≈
-        # our mean. TD/INT lines (0.5, 1.5) are thresholds, not medians —
-        # anchoring a Poisson-ish mean to them would distort the rate.
-        if engine.STAT_CLASS.get(stat) not in ("volume", "yardage"):
-            continue
-        books = int(item.get("books") or 0)
-        if books < 2:
-            continue
-        out[stat] = {"line": float(item["line"]), "books": books}
+        pair = _anchor_from_consensus_item(item)
+        if pair:
+            out[pair[0]] = pair[1]
     return out
 
 
-# How hard we pull a next-game mean toward the consensus line: 12% per book,
-# capped at 40%. The market is the best public forecast — we only keep the
-# share of our disagreement the evidence can support (spec: "treat the market
-# as the prior and the model as the attempt to find where it's wrong").
+# How hard we pull a next-game mean toward the market-implied value: 12% per
+# book, capped by stat class. The market is the best public forecast — we only
+# keep the share of our disagreement the evidence can support (spec: "treat the
+# market as the prior and the model as the attempt to find where it's wrong").
+# Scoring rates come from inverting a threshold price (noisier than a
+# median-ish yardage line), so their cap is lower.
 _ANCHOR_WEIGHT_PER_BOOK = 0.12
 _ANCHOR_WEIGHT_CAP = 0.40
+_ANCHOR_WEIGHT_CAP_SCORING = 0.30
+
+
+def _anchor_target(
+    stat: str, anchor: dict[str, Any], sd: float,
+) -> tuple[float, float] | None:
+    """(market_target_mean, weight_cap) for one stat, or None if unanchorable."""
+    line = float(anchor["line"])
+    over_prob = anchor.get("over_prob")
+    if engine.STAT_CLASS.get(stat) == "scoring":
+        if over_prob is None:
+            return None  # a bare 0.5 threshold says nothing about the rate
+        lam = engine.poisson_rate_from_over_prob(line, float(over_prob))
+        if lam is None:
+            return None
+        from . import param_registry as _pr
+        return lam, _pr.value("props.anchor_weight_cap_scoring")
+    # Volume/yardage: price-aware mean (falls back to the line when priceless).
+    from . import param_registry as _pr
+    return engine.market_implied_mean(line, over_prob, sd), _pr.value("props.anchor_weight_cap")
 
 
 def _project_stat_for_game(
@@ -521,15 +635,21 @@ def _project_stat_for_game(
 
     market_anchor: dict[str, Any] | None = None
     if anchor is not None and mean > 0:
-        k = min(_ANCHOR_WEIGHT_CAP, _ANCHOR_WEIGHT_PER_BOOK * anchor["books"])
-        raw_mean = mean
-        mean = mean + k * (anchor["line"] - mean)
-        market_anchor = {
-            "line": anchor["line"],
-            "books": anchor["books"],
-            "weight": round(k, 2),
-            "raw_mean": round(raw_mean, 2),
-        }
+        target = _anchor_target(stat, anchor, sd)
+        if target is not None:
+            target_mean, cap = target
+            from . import param_registry as _pr
+            k = min(cap, _pr.value("props.anchor_weight_per_book") * anchor["books"])
+            raw_mean = mean
+            mean = mean + k * (target_mean - mean)
+            market_anchor = {
+                "line": anchor["line"],
+                "target_mean": round(target_mean, 2),
+                "over_prob": anchor.get("over_prob"),
+                "books": anchor["books"],
+                "weight": round(k, 2),
+                "raw_mean": round(raw_mean, 2),
+            }
 
     lo50, hi50 = engine.stat_interval(mean, sd, 0.50)
     lo80, hi80 = engine.stat_interval(mean, sd, 0.80)
@@ -595,6 +715,14 @@ async def player_game_predictions(
         posteriors = {
             s: engine.scale_posterior(p, role_mult) for s, p in posteriors.items()
         }
+
+    # Admin input levers (usage shares / efficiency / snap rate + pass tilt).
+    from . import model_inputs_service
+
+    input_ctx = await model_inputs_service.player_input_context(db, season)
+    posteriors, input_levers = _apply_player_input_levers(
+        posteriors, player=player, gsis_id=gsis, ctx=input_ctx,
+    )
 
     envs = (await league_game_environments(db, season)).get(team_id, [])[:8]
     def_season = season if season <= latest_completed_season() else season - 1
@@ -692,6 +820,7 @@ async def player_game_predictions(
         "model_version": MODEL_VERSION,
         "evidence": evidence,
         "role": {"depth_chart_order": depth, "multiplier": round(role_mult, 2)},
+        "input_levers": input_levers,
         "games": games_out,
     }
     cache.set(cache_key, result, CACHE_TTL)
@@ -703,7 +832,11 @@ async def player_season_projection(
 ) -> dict[str, Any]:
     """YTD + remaining-schedule projection with a full season distribution."""
     season = season or current_or_upcoming_season()
-    cache_key = f"player_season_proj_v2:{player_id}:{season}"
+    # Overrides version: input levers (usage shares etc.) reshape this response.
+    cache_key = (
+        f"player_season_proj_v2:{player_id}:{season}"
+        f":{overrides_service.version(db)}"
+    )
     if (cached := cache.get(cache_key)) is not None:
         return cached
 
@@ -740,6 +873,14 @@ async def player_season_projection(
         posteriors = {
             s: engine.scale_posterior(p, role_mult) for s, p in posteriors.items()
         }
+
+    # Admin input levers — forward projection only, same as role share.
+    from . import model_inputs_service
+
+    input_ctx = await model_inputs_service.player_input_context(db, season)
+    posteriors, input_levers = _apply_player_input_levers(
+        posteriors, player=player, gsis_id=gsis, ctx=input_ctx,
+    )
 
     # YTD totals in the target season (0 in the offseason).
     ytd: dict[str, float] = {s: 0.0 for s in stats}
@@ -779,12 +920,19 @@ async def player_season_projection(
         else:
             game_means = [post.mean] * games_remaining
         agg = engine.aggregate_season(game_means, post.game_sd, post.talent_sd)
-        final_mean = ytd.get(stat, 0.0) + agg["mean"]
+        # Durability discount on the FORWARD projection only (YTD happened).
+        # Admin availability lever (input_levers) supersedes history-derived rate.
+        if input_levers and input_levers.get("availability") is not None:
+            avail = float(input_levers["availability"])
+        else:
+            avail = float(evidence.get("availability") or 1.0)
+        remaining_mean = agg["mean"] * avail
+        final_mean = ytd.get(stat, 0.0) + remaining_mean
         qs = engine.season_quantiles(final_mean, agg["sd"])
         out_stats[stat] = {
             "ytd": _round_for_stat(stat, ytd.get(stat, 0.0)),
             "per_game_pace": _round_for_stat(stat, post.mean),
-            "projected_remaining": _round_for_stat(stat, agg["mean"]),
+            "projected_remaining": _round_for_stat(stat, remaining_mean),
             "projected_final": _round_for_stat(stat, final_mean),
             "low_final": _round_for_stat(stat, qs["p25"]),
             "high_final": _round_for_stat(stat, qs["p75"]),
@@ -816,6 +964,7 @@ async def player_season_projection(
         "model_version": MODEL_VERSION,
         "evidence": evidence,
         "role": {"depth_chart_order": depth, "multiplier": round(role_mult, 2)},
+        "input_levers": input_levers,
         "stats": out_stats,
         "fantasy": fantasy,
     }
@@ -956,6 +1105,25 @@ async def projection_leaderboard(
         cache.set(cache_key, board, CACHE_TTL)
     rows = board["rows"]
 
+    # ---- Season-level market anchor (the board-rank fix) --------------------
+    # Shrink every fantasy projection toward the ADP-implied level BEFORE
+    # sorting, so the board's ordering itself is market-aware — a player the
+    # model loves but the market fades lands between the two views instead of
+    # a market-blind #3 overall. Runs before admin overrides (overrides
+    # replace values outright and must win). Best-effort: dead ADP source →
+    # pure model board, unchanged.
+    from . import fantasy_market_service  # late import: no cycle back into us
+
+    weeks_played = 0
+    if rows:
+        weeks_played = max(
+            0, 17 - max(int(r.get("games_remaining") or 17) for r in rows)
+        )
+    adp_map = await fantasy_market_service.adp_board(db, scoring, season)
+    rows = fantasy_market_service.apply_adp_anchor(
+        rows, adp_map, weeks_played=weeks_played,
+    )
+
     # Season-scoped admin overrides (week IS NULL): direct season fantasy-point
     # totals, applied on row copies so the shared cached board stays pristine.
     season_ovs = overrides_service.player_season_overrides(db, season)
@@ -977,6 +1145,10 @@ async def projection_leaderboard(
 
     fantasy_key = f"fantasy_{scoring}"
     sort_key = (sort or "fantasy").strip().lower()
+    # "consensus" = fantasy-composite model rank blended with market ADP rank.
+    sort_by_consensus = sort_key == "consensus"
+    if sort_by_consensus:
+        sort_key = "fantasy"
     if sort_key != "fantasy" and sort_key in _ALL_STATS:
         def _sorter(r: dict[str, Any]) -> float:
             s = r["stats"].get(sort_key)
@@ -1000,10 +1172,23 @@ async def projection_leaderboard(
         {**r, "rank": i + 1}
         for i, r in enumerate(filtered[: max(1, min(limit, 300))])
     ]
+
+    # Fantasy-market context (ADP + Sleeper trending) rides along on every
+    # response; sort="consensus" additionally orders by the blended
+    # model+market rank. Best-effort — dead sources leave market fields null.
+    # (adp_map fetched above, before the season anchor.)
+    fantasy_market_service.attach_market_context(
+        out_rows, adp_map, weeks_played=weeks_played,
+    )
+    if sort_by_consensus:
+        out_rows.sort(key=lambda r: r.get("consensus_rank_score", r["rank"]))
+        for i, r in enumerate(out_rows):
+            r["consensus_rank"] = i + 1
+
     return {
         "season": season,
         "scoring": scoring,
-        "sort": sort_key,
+        "sort": "consensus" if sort_by_consensus else sort_key,
         "position": position.upper() if position else None,
         "model_version": MODEL_VERSION,
         "count": len(out_rows),
@@ -1143,6 +1328,9 @@ async def _collect_candidates(db: Session, season: int) -> dict[str, Any]:
             "gsis_id": gsis_id, "pos": pos, "player": player,
             "posteriors": posteriors, "envs": envs,
             "depth": _depth_order(player), "rookie": False,
+            "availability": engine.availability_rate(
+                _games_by_season(tables, gsis_id, prior_seasons), pos,
+            ),
         })
 
     # ---- Phase 1.5: supplemental candidates the historical pool can't see ----
@@ -1190,6 +1378,12 @@ async def _collect_candidates(db: Session, season: int) -> dict[str, Any]:
             "gsis_id": gsis_id or player.id, "pos": pos, "player": player,
             "posteriors": posteriors, "envs": envs,
             "depth": depth, "rookie": rookie,
+            # Rookies have no games history → availability_rate returns the
+            # positional norm; vets with history get their regressed rate.
+            "availability": engine.availability_rate(
+                _games_by_season(tables, gsis_id, prior_seasons) if gsis_id else [],
+                pos,
+            ),
         })
 
     # ---- Phase 2: role assignment (depth chart; QB fallback = team ranking) --
@@ -1219,6 +1413,24 @@ async def _collect_candidates(db: Session, season: int) -> dict[str, Any]:
         if "role_mult" not in c:
             c["role_mult"] = engine.role_multiplier(c["pos"], c["depth"])
 
+    # ---- Phase 3: admin model-input levers -----------------------------------
+    # Usage-share / efficiency / snap-rate overrides + team pass-rate tilts
+    # scale the posteriors themselves, so every consumer of these candidates
+    # (season board, weekly board, downstream fantasy values) moves together.
+    # Callers' cache keys embed the overrides version, so a lever write
+    # invalidates every cached board.
+    from . import model_inputs_service
+
+    ctx = await model_inputs_service.player_input_context(db, season)
+    if ctx["overrides"] or ctx["tilts"]:
+        for c in candidates:
+            scaled, info = _apply_player_input_levers(
+                c["posteriors"], player=c["player"], gsis_id=c["gsis_id"], ctx=ctx,
+            )
+            c["posteriors"] = scaled
+            if info:
+                c["input_levers"] = info
+
     return {
         "candidates": candidates,
         "envs_by_team": envs_by_team,
@@ -1239,7 +1451,7 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for c in candidates:
         role_mult = c["role_mult"]
-        if role_mult < engine.ROLE_LEADERBOARD_MIN:
+        if role_mult < engine.role_leaderboard_min():
             continue  # backups don't belong on a season projection board
         gsis_id, pos, player, envs = c["gsis_id"], c["pos"], c["player"], c["envs"]
         posteriors = c["posteriors"]
@@ -1249,6 +1461,16 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
             }
         team_id = player.team_id
         games_remaining = len(envs)
+        # Durability discount: expected share of the remaining slate this
+        # player actually plays (regressed games-played history — see
+        # engine.availability_rate). Admin availability lever supersedes.
+        # Scales season MEANS only; the untouched sd keeps the band honest
+        # about missed-time risk.
+        lever_info = c.get("input_levers") or {}
+        if lever_info.get("availability") is not None:
+            avail = float(lever_info["availability"])
+        else:
+            avail = float(c.get("availability") or 1.0)
 
         season_means: dict[str, float] = {}
         season_sds: dict[str, float] = {}
@@ -1264,12 +1486,13 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
                 for e in envs
             ]
             agg = engine.aggregate_season(game_means, post.game_sd, post.talent_sd)
-            season_means[stat] = agg["mean"]
+            mean = agg["mean"] * avail
+            season_means[stat] = mean
             season_sds[stat] = agg["sd"]
             headline[stat] = {
-                "mean": _round_for_stat(stat, agg["mean"]),
-                "p10": _round_for_stat(stat, engine.stat_quantile(agg["mean"], agg["sd"], 0.10)),
-                "p90": _round_for_stat(stat, engine.stat_quantile(agg["mean"], agg["sd"], 0.90)),
+                "mean": _round_for_stat(stat, mean),
+                "p10": _round_for_stat(stat, engine.stat_quantile(mean, agg["sd"], 0.10)),
+                "p90": _round_for_stat(stat, engine.stat_quantile(mean, agg["sd"], 0.90)),
             }
 
         fantasy: dict[str, Any] = {}
@@ -1294,6 +1517,8 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
             "injury_status": (player.metadata_json or {}).get("injury_status"),
             "role": {"depth_chart_order": c["depth"], "multiplier": round(role_mult, 2)},
             "rookie": bool(c.get("rookie")),
+            "availability": round(avail, 3),
+            "input_levers": c.get("input_levers"),
             "games_remaining": games_remaining,
             "next_game": {
                 "week": next_env["week"],
@@ -1355,18 +1580,13 @@ def _bulk_market_anchors(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
         return {}
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for item in consensus:
-        stat = PROP_MARKET_TO_STAT.get(item.get("market") or "")
-        if not stat or stat.startswith("__") or item.get("line") is None:
-            continue
-        if engine.STAT_CLASS.get(stat) not in ("volume", "yardage"):
-            continue
-        books = int(item.get("books") or 0)
-        if books < 2:
+        pair = _anchor_from_consensus_item(item)
+        if pair is None:
             continue
         name = (item.get("player_name") or "").strip().lower()
         if not name:
             continue
-        out.setdefault(name, {})[stat] = {"line": float(item["line"]), "books": books}
+        out.setdefault(name, {})[pair[0]] = pair[1]
     return out
 
 
@@ -1568,6 +1788,23 @@ async def weekly_projection_board(
     else:
         out_rows.sort(key=_mean, reverse=True)
     out_rows = out_rows[: max(1, min(limit, 600))]
+
+    # Fantasy-market momentum: Sleeper trending adds + ADP context per row
+    # (waiver-wire market signal for start/sit). Best-effort enrichment.
+    from . import fantasy_market_service  # late import: no cycle back into us
+
+    adp_map = await fantasy_market_service.adp_board(db, scoring, season)
+    if adp_map:
+        weeks_played = max(0, int(slate_week or 1) - 1)
+        for r in out_rows:
+            m = adp_map.get(fantasy_market_service._norm(r.get("name")))  # noqa: SLF001
+            r["market"] = {
+                "adp": (m or {}).get("adp"),
+                "adp_pos_rank": (m or {}).get("adp_pos_rank"),
+                "trending_adds": (m or {}).get("trending_adds"),
+                "adp_weight": round(fantasy_market_service.adp_weight(weeks_played), 2),
+            }
+
     return {
         "season": season,
         "week": slate_week,
@@ -1710,52 +1947,65 @@ _RECEIVING = {"targets", "receptions", "receiving_yards", "receiving_tds"}
 
 
 def weather_multiplier(weather: dict | None, stat: str) -> float:
-    """Multiplier (1.0 = no adjustment) for the given stat given the forecast."""
+    """Multiplier (1.0 = no adjustment) for the given stat given the forecast.
+
+    Thresholds and multipliers are registry-backed (weather.* params) so the
+    admin console can retune outdoor impacts without a deploy.
+    """
     if not weather or not weather.get("available") or weather.get("is_indoor"):
         return 1.0
+    from . import param_registry as _pr
+
     wind = float(weather.get("wind_mph") or 0)
     precip = float(weather.get("precipitation_in") or 0)
     temp = weather.get("temperature_f")
     temp = float(temp) if temp is not None else 65.0
 
+    wind_mod = _pr.value("weather.wind_mod_mph")
+    wind_high = _pr.value("weather.wind_high_mph")
+    precip_mod = _pr.value("weather.precip_mod_in")
+    precip_high = _pr.value("weather.precip_high_in")
+
     mult = 1.0
     if stat in _PASSING:
-        if wind >= 25:
-            mult *= 0.85
-        elif wind >= 15:
-            mult *= 0.92
-        if precip >= 0.4:
-            mult *= 0.85
-        elif precip >= 0.15:
-            mult *= 0.93
-        if temp <= 25:
-            mult *= 0.95
+        if wind >= wind_high:
+            mult *= _pr.value("weather.pass_wind_high_mult")
+        elif wind >= wind_mod:
+            mult *= _pr.value("weather.pass_wind_mod_mult")
+        if precip >= precip_high:
+            mult *= _pr.value("weather.pass_precip_high_mult")
+        elif precip >= precip_mod:
+            mult *= _pr.value("weather.pass_precip_mod_mult")
+        if temp <= _pr.value("weather.cold_temp_f"):
+            mult *= _pr.value("weather.cold_pass_mult")
     elif stat in _RUSHING:
-        if wind >= 20 or precip >= 0.4:
-            mult *= 1.04
+        if wind >= 20 or precip >= precip_high:
+            mult *= _pr.value("weather.rush_boost_mult")
     elif stat in _RECEIVING:
-        if wind >= 25:
-            mult *= 0.88
-        elif wind >= 15:
-            mult *= 0.94
-        if precip >= 0.4:
-            mult *= 0.88
-        elif precip >= 0.15:
-            mult *= 0.95
+        if wind >= wind_high:
+            mult *= _pr.value("weather.recv_wind_high_mult")
+        elif wind >= wind_mod:
+            mult *= _pr.value("weather.recv_wind_mod_mult")
+        if precip >= precip_high:
+            mult *= _pr.value("weather.recv_precip_high_mult")
+        elif precip >= precip_mod:
+            mult *= _pr.value("weather.recv_precip_mod_mult")
     return mult
 
 
 def injury_multiplier(injury_status: str | None) -> float:
-    """Status comes from Sleeper metadata."""
+    """Status comes from Sleeper metadata. Doubtful/Questionable are tunable."""
     if not injury_status:
         return 1.0
     s = injury_status.strip().upper()
     if s in ("OUT", "IR", "PUP", "NFI", "SUSPENDED"):
         return 0.0
     if s == "DOUBTFUL":
-        return 0.3
+        from . import param_registry as _pr
+        return _pr.value("injury.doubtful_mult")
     if s == "QUESTIONABLE":
-        return 0.85
+        from . import param_registry as _pr
+        return _pr.value("injury.questionable_mult")
     if s in ("PROBABLE", "ACTIVE", "HEALTHY"):
         return 1.0
     return 1.0

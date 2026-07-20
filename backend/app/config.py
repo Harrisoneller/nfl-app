@@ -136,6 +136,14 @@ class Settings(BaseSettings):
             key = key.split("#", 1)[0].strip()
         return key
 
+    # Market-aware layer — prediction markets + fantasy ADP (all keyless, all
+    # best-effort: any source failing degrades gracefully to model-only).
+    kalshi_enabled: bool = True
+    kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_nfl_series_ticker: str = "KXNFLGAME"
+    adp_enabled: bool = True
+    ffc_adp_base: str = "https://fantasyfootballcalculator.com/api/v1"
+
     # News / social
     enable_twitter: bool = False
     twitter_bearer_token: str = ""

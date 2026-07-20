@@ -40,10 +40,21 @@ PREDICTION_MODEL_VERSION = "elo-v2"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
+# Registry-backed ("game_model" / "distribution" categories): the module
+# constants are import-safe fallbacks, the helpers below resolve live values.
 LEAGUE_AVG_POINTS_PER_TEAM = 22.0
 
 # Game-margin SD used to turn the point spread into an outcome distribution.
 GAME_SIGMA = prediction_dist.NFL_MARGIN_SIGMA  # ~13.5 points
+
+
+def _league_avg() -> float:
+    from . import param_registry
+    return param_registry.value("game.league_avg_points")
+
+
+def _game_sigma() -> float:
+    return prediction_dist.margin_sigma()
 
 # Season-long latent-strength uncertainty per team (Elo points), drawn once per
 # Monte Carlo trial and held across that team's whole slate. This is what makes
@@ -51,6 +62,11 @@ GAME_SIGMA = prediction_dist.NFL_MARGIN_SIGMA  # ~13.5 points
 # an over-tight sum of independent coin flips. TUNABLE: validate against the
 # backtest PIT histogram / observed win-total dispersion (see PREDICTION_MODEL_SPEC).
 RATING_SIGMA_ELO = 55.0
+
+
+def _rating_sigma() -> float:
+    from . import param_registry
+    return param_registry.value("game.rating_sigma_elo")
 
 
 def _build_explainability(
@@ -69,7 +85,7 @@ def _build_explainability(
     home_matchup_edge = home_off_ppg - away_def_ppg_allowed
     away_matchup_edge = away_off_ppg - home_def_ppg_allowed
     scoring_edge = home_matchup_edge - away_matchup_edge
-    pace_bias = (home_off_ppg + away_off_ppg) - (2 * LEAGUE_AVG_POINTS_PER_TEAM)
+    pace_bias = (home_off_ppg + away_off_ppg) - (2 * _league_avg())
     defense_resistance_edge = away_def_ppg_allowed - home_def_ppg_allowed
 
     contributors = [
@@ -122,17 +138,19 @@ def predict_game(
     expected_margin = -spread  # home perspective: positive = home favored
     # Win probability is derived FROM the margin distribution (not the Elo
     # logistic) so spread, win prob, and score ranges are mutually consistent.
-    win_p = prediction_dist.win_prob(expected_margin, GAME_SIGMA)
+    game_sigma = _game_sigma()
+    win_p = prediction_dist.win_prob(expected_margin, game_sigma)
 
-    h_off = home_off_ppg if home_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
-    a_off = away_off_ppg if away_off_ppg is not None else LEAGUE_AVG_POINTS_PER_TEAM
-    h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
-    a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else LEAGUE_AVG_POINTS_PER_TEAM
+    league_avg = _league_avg()
+    h_off = home_off_ppg if home_off_ppg is not None else league_avg
+    a_off = away_off_ppg if away_off_ppg is not None else league_avg
+    h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else league_avg
+    a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else league_avg
     # Matchup-adjusted scoring relative to the league baseline (replaces the
     # midpoint average): a team's own pace, nudged by how much more/less than a
     # league-average defense the opponent allows. Same correction as h2h_service.
-    expected_home_pts = h_off + (a_def - LEAGUE_AVG_POINTS_PER_TEAM)
-    expected_away_pts = a_off + (h_def - LEAGUE_AVG_POINTS_PER_TEAM)
+    expected_home_pts = h_off + (a_def - league_avg)
+    expected_away_pts = a_off + (h_def - league_avg)
     total = expected_home_pts + expected_away_pts
 
     # Reconcile the (well-calibrated) Elo margin with the total for displayed scores.
@@ -141,8 +159,8 @@ def predict_game(
 
     # Outcome distribution — the "likely outcomes" view. Margin credible
     # intervals translate to score ranges (total held at its expectation).
-    m_lo80, m_hi80 = prediction_dist.margin_interval(expected_margin, GAME_SIGMA, 0.80)
-    m_lo50, m_hi50 = prediction_dist.margin_interval(expected_margin, GAME_SIGMA, 0.50)
+    m_lo80, m_hi80 = prediction_dist.margin_interval(expected_margin, game_sigma, 0.80)
+    m_lo50, m_hi50 = prediction_dist.margin_interval(expected_margin, game_sigma, 0.50)
 
     # Game-script label: shootout / methodical / defensive based on total + spread.
     abs_spread = abs(spread)
@@ -164,11 +182,11 @@ def predict_game(
         "predicted_home_score": round(predicted_home_score, 1),
         "predicted_away_score": round(predicted_away_score, 1),
         "game_script": script,
-        "margin_sd": GAME_SIGMA,
+        "margin_sd": game_sigma,
         # Full outcome distribution so the UI can show honest ranges, not just a point.
         "distribution": {
             "expected_margin": round(expected_margin, 1),
-            "margin_sd": GAME_SIGMA,
+            "margin_sd": game_sigma,
             "home_win_prob": round(win_p, 3),
             "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
             "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],
@@ -185,7 +203,7 @@ def predict_game(
             "away_off_ppg": round(a_off, 1),
             "home_def_ppg_allowed": round(h_def, 1),
             "away_def_ppg_allowed": round(a_def, 1),
-            "league_avg_points": LEAGUE_AVG_POINTS_PER_TEAM,
+            "league_avg_points": league_avg,
             "expected_home_pts": round(expected_home_pts, 1),
             "expected_away_pts": round(expected_away_pts, 1),
         },
@@ -287,11 +305,27 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
     aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
         aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
+    # Admin model-input levers (pace / yards-per-play / pass-rate / PPG) adjust
+    # the scoring inputs BEFORE prediction — a coaching-change lever moves
+    # totals, scores, and game scripts through the normal pipeline.
+    from . import model_inputs_service
+
+    aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
     games = sched[sched["week"] == week]
     if "game_type" in games.columns:
         games = games[games["game_type"].astype(str).str.upper() == "REG"]
     out = []
     calibration_score, expected_calibration_error = await _calibration_context(db)
+    # Market-aware layer: de-vigged multi-book consensus (+ Kalshi when
+    # reachable) fetched once for the whole slate. Best-effort — an empty
+    # context leaves every game on model-only numbers.
+    from . import market_service  # late import: market_service ← prediction_dist only
+
+    try:
+        market_ctx = await market_service.week_market_context(db)
+    except Exception as e:  # noqa: BLE001 — market context must never take down predictions
+        log.warning("market_context_failed", error=str(e)[:200])
+        market_ctx = {}
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
         if not h or not a:
@@ -308,6 +342,12 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
             pred,
             model_version=PREDICTION_MODEL_VERSION,
             expected_calibration_error=expected_calibration_error,
+        )
+        # Headline numbers become the market blend when consensus exists;
+        # pure-model values move to pred["model_only"] with pred["edge"]
+        # exposing the disagreement. Admin overrides (below) still win.
+        market_service.apply_market_blend(
+            pred, market_service.context_for_game(market_ctx, h, a),
         )
         explainability = pred.get("explainability")
         if isinstance(explainability, dict):
@@ -440,7 +480,8 @@ async def _simulate_season_compute(
         # wide) instead of an over-tight sum of independent coin flips. The draws
         # are mean-zero, so the central projection is unchanged — only the spread
         # widens.
-        offset = {t: rng.gauss(0.0, RATING_SIGMA_ELO) for t in ratings}
+        rating_sigma = _rating_sigma()
+        offset = {t: rng.gauss(0.0, rating_sigma) for t in ratings}
         sim_wins: dict[str, int] = {t: banked_wins.get(t, 0) for t in ratings}
         sim_pd: dict[str, float] = {t: banked_pd.get(t, 0.0) for t in ratings}
 
@@ -549,6 +590,9 @@ async def team_remaining_schedule_predictions(
     aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
     if not aggs:
         aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
+    from . import model_inputs_service
+
+    aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
 
     out_games = []
     cumulative_expected_wins = 0.0

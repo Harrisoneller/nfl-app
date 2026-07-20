@@ -10,7 +10,13 @@ from ..models.user import User
 from ..rate_limits import limiter
 from ..schemas.ai import ChatResponse
 from ..schemas.news import NewsItemOut
-from ..services import ai_service, fantasy_insights_service, fantasy_service, news_service
+from ..services import (
+    ai_service,
+    fantasy_insights_service,
+    fantasy_service,
+    news_service,
+    rankings_service,
+)
 from ..services.cost_service import BudgetExceeded
 
 router = APIRouter()
@@ -56,6 +62,22 @@ async def trending_players(
             "injury_status": ((p.metadata_json or {}).get("injury_status") if p else None),
         })
     return {"kind": kind, "items": out}
+
+
+@router.get("/rankings")
+def published_ranking_sets(season: int | None = None, db: Session = Depends(get_db)):
+    """Published admin ranking boards available for this season (meta only)."""
+    return {"sets": rankings_service.public_sets(db, season=season)}
+
+
+@router.get("/rankings/{set_id}")
+async def published_rankings(set_id: int, db: Session = Depends(get_db)):
+    """One published board: snapshot ranks/tiers + live injury status and
+    model-rank comparison. Draft edits are never visible here."""
+    out = await rankings_service.public_rankings(db, set_id)
+    if out is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Ranking set not found or unpublished")
+    return out
 
 
 @router.get("/ros")

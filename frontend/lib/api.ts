@@ -191,6 +191,39 @@ export type GamePrediction = {
     model_version?: string;
     inputs?: PredictionInputs;
     explainability?: PredictionExplainability;
+    // ---- Market-aware layer (market-blend-v1) ----
+    // "market-blend-v1" when headline numbers are blended with consensus,
+    // "model_only" when no market data existed for the game.
+    prediction_basis?: string;
+    model_only?: {
+      home_win_prob: number;
+      away_win_prob: number;
+      predicted_spread: number;
+      predicted_total: number;
+    };
+    market?: {
+      consensus_home_prob: number;
+      spread_home: number | null;
+      total: number | null;
+      books: number;
+      kalshi_home_prob?: number | null;
+      effective_sources: number;
+      movement?: {
+        open_home_prob: number;
+        latest_home_prob: number;
+        delta_home_prob: number;
+        snapshots: number;
+      } | null;
+      sources?: { sportsbooks: number; kalshi: boolean };
+      weight: number;
+    };
+    // Model − market disagreement (positive win-prob edge = model likes HOME
+    // more than the market does). This gap is the value signal.
+    edge?: {
+      home_win_prob: number;
+      spread: number | null;
+      total: number | null;
+    };
   };
   ml_prediction?: {
     predicted_spread: number;
@@ -488,8 +521,16 @@ export type StatDistribution = {
   interval_80: [number, number];
   env_multiplier: number;
   anytime_prob?: number;
-  // Present when the mean was blended toward a consensus sportsbook line.
-  market_anchor?: { line: number; books: number; weight: number; raw_mean: number };
+  // Present when the mean was blended toward the market-implied value
+  // (price-aware: target_mean uses the de-vigged over price, not just the line).
+  market_anchor?: {
+    line: number;
+    target_mean?: number;
+    over_prob?: number | null;
+    books: number;
+    weight: number;
+    raw_mean: number;
+  };
 };
 
 export type PlayerRole = {
@@ -589,6 +630,19 @@ export type LeaderboardPlayer = {
   fantasy_ppr: { mean: number; p10: number; p90: number; per_game: number };
   fantasy_half_ppr: { mean: number; p10: number; p90: number; per_game: number };
   fantasy_standard: { mean: number; p10: number; p90: number; per_game: number };
+  // ---- Fantasy market layer (ADP + trending) ----
+  market?: {
+    adp: number | null;
+    adp_overall_rank: number | null;
+    adp_pos_rank: number | null;
+    trending_adds: number | null;
+    // ADP rank − model rank. Positive = drafters take this player LATER than
+    // our model ranks him (model sees value); negative = market is higher.
+    value_vs_adp: number | null;
+    adp_weight: number;
+  };
+  consensus_rank_score?: number;
+  consensus_rank?: number;
 };
 
 export type PositionCoverage = {
@@ -676,6 +730,13 @@ export type WeeklyBoardPlayer = {
   injury_multiplier?: number;
   predicted?: Record<string, { predicted: number; low: number; high: number; mean: number; sd: number; anytime_prob?: number }>;
   fantasy?: Record<string, WeeklyFantasyBand>;
+  // Fantasy market momentum (waiver-wire signal).
+  market?: {
+    adp: number | null;
+    adp_pos_rank: number | null;
+    trending_adds: number | null;
+    adp_weight: number;
+  };
 };
 
 export type WeeklyBoard = {
@@ -762,6 +823,8 @@ export type RosPlayer = {
   vorp_per_game: number;
   vorp_ros: number;
   next_game: LeaderboardPlayer["next_game"];
+  // ADP + trending context; value_vs_adp is vs this board's VORP rank.
+  market?: LeaderboardPlayer["market"];
 };
 
 export type RosBoard = {
@@ -1618,11 +1681,429 @@ export const api = {
     }),
   adminDeleteOverride: (id: number) =>
     req<{ deleted: number }>(`/admin/overrides/${id}`, { method: "DELETE" }),
+  adminTeamModelInputs: (season?: number) =>
+    req<TeamModelInputs>(
+      `/admin/overrides/model-inputs/teams${season ? `?season=${season}` : ""}`,
+    ),
+  adminPlayerModelInputs: (playerId: string, season?: number) =>
+    req<PlayerModelInputs>(
+      `/admin/overrides/model-inputs/players/${playerId}${season ? `?season=${season}` : ""}`,
+    ),
+
+  // custom fantasy ranking sets (admin authoring — draft → publish)
+  adminListRankingSets: (season?: number) =>
+    req<{ formats: string[]; sets: RankingSetMeta[] }>(
+      `/admin/rankings${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminCreateRankingSet: (body: {
+    name: string;
+    season?: number;
+    format?: string;
+    description?: string;
+  }) =>
+    req<RankingSetDetail>("/admin/rankings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminGetRankingSet: (id: number) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}`),
+  adminUpdateRankingSet: (
+    id: number,
+    body: { name?: string; format?: string; description?: string },
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteRankingSet: (id: number) =>
+    req<{ deleted: number }>(`/admin/rankings/${id}`, { method: "DELETE" }),
+  adminReplaceRankingEntries: (
+    id: number,
+    entries: { player_id: string; tier?: number; note?: string }[],
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}/entries`, {
+      method: "PUT",
+      body: JSON.stringify({ entries }),
+    }),
+  adminSeedRankingSet: (
+    id: number,
+    body?: { source?: string; scoring?: string; position?: string; limit?: number },
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}/seed`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+  adminPublishRankingSet: (id: number) =>
+    req<RankingSetMeta>(`/admin/rankings/${id}/publish`, { method: "POST" }),
+  adminUnpublishRankingSet: (id: number) =>
+    req<RankingSetMeta>(`/admin/rankings/${id}/unpublish`, { method: "POST" }),
+
+  // published ranking boards (public fantasy page)
+  fantasyRankingSets: (season?: number) =>
+    req<{ sets: RankingSetMeta[] }>(
+      `/fantasy/rankings${season != null ? `?season=${season}` : ""}`,
+    ),
+  fantasyRankings: (setId: number) =>
+    req<PublicRankingBoard>(`/fantasy/rankings/${setId}`),
+
+  // global model-parameter registry (admin-only)
+  adminListParams: () => req<ParamRegistry>("/admin/params"),
+  adminSetParam: (key: string, value: number, note = "") =>
+    req<{ key: string; value: number; is_overridden: boolean }>(
+      `/admin/params/values/${key}`,
+      { method: "PUT", body: JSON.stringify({ value, note }) },
+    ),
+  adminBulkSetParams: (changes: Record<string, number>, note = "") =>
+    req<{ applied: Record<string, number> }>("/admin/params/bulk", {
+      method: "POST",
+      body: JSON.stringify({ changes, note }),
+    }),
+  adminRevertParam: (key: string) =>
+    req<{ key: string; value: number; is_overridden: boolean }>(
+      `/admin/params/values/${key}`,
+      { method: "DELETE" },
+    ),
+  adminRevertAllParams: (note = "") =>
+    req<{ reverted: string[] }>("/admin/params/revert-all", {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+  adminTuningStatus: (season?: number) =>
+    req<TuningStatus>(
+      `/admin/params/status${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminExportSnapshot: (season?: number) =>
+    req<ConfigSnapshot>(
+      `/admin/params/snapshot${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminImportSnapshot: (
+    snapshot: ConfigSnapshot | Record<string, unknown>,
+    opts?: {
+      note?: string;
+      include_params?: boolean;
+      include_overrides?: boolean;
+      replace_params?: boolean;
+    },
+  ) =>
+    req<ConfigImportResult>("/admin/params/import", {
+      method: "POST",
+      body: JSON.stringify({
+        snapshot,
+        note: opts?.note ?? "",
+        include_params: opts?.include_params ?? true,
+        include_overrides: opts?.include_overrides ?? true,
+        replace_params: opts?.replace_params ?? false,
+      }),
+    }),
+  adminListPresets: () => req<{ presets: ParamPreset[] }>("/admin/params/presets"),
+  adminSavePreset: (name: string, description = "", params?: Record<string, number>) =>
+    req<ParamPreset>("/admin/params/presets", {
+      method: "POST",
+      body: JSON.stringify({ name, description, params }),
+    }),
+  adminApplyPreset: (name: string, note = "") =>
+    req<{ applied: string; changed: Record<string, number> }>(
+      `/admin/params/presets/${encodeURIComponent(name)}/apply`,
+      { method: "POST", body: JSON.stringify({ note }) },
+    ),
+  adminDeletePreset: (name: string) =>
+    req<{ deleted: string }>(`/admin/params/presets/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  adminParamAudit: (q?: {
+    target_type?: string;
+    action?: string;
+    actor?: string;
+    search?: string;
+    limit?: number;
+    before_id?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (q?.target_type) p.set("target_type", q.target_type);
+    if (q?.action) p.set("action", q.action);
+    if (q?.actor) p.set("actor", q.actor);
+    if (q?.search) p.set("search", q.search);
+    if (q?.limit != null) p.set("limit", String(q.limit));
+    if (q?.before_id != null) p.set("before_id", String(q.before_id));
+    const qs = p.toString();
+    return req<ParamAuditPage>(`/admin/params/audit${qs ? `?${qs}` : ""}`);
+  },
+  adminPreviewParams: (changes: Record<string, number>, opts?: {
+    season?: number; week?: number; scoring?: string; player_limit?: number;
+  }) =>
+    req<ParamPreview>("/admin/params/preview", {
+      method: "POST",
+      body: JSON.stringify({ changes, ...opts }),
+    }),
+  adminProjectionsBoard: (q?: { season?: number; week?: number; scoring?: string }) => {
+    const p = new URLSearchParams();
+    if (q?.season != null) p.set("season", String(q.season));
+    if (q?.week != null) p.set("week", String(q.week));
+    if (q?.scoring) p.set("scoring", q.scoring);
+    const qs = p.toString();
+    return req<ProjectionsBoard>(`/admin/overrides/projections-board${qs ? `?${qs}` : ""}`);
+  },
+};
+
+export type BoardWeekCell = {
+  week?: number | null;
+  bye?: boolean;
+  opponent?: string | null;
+  is_home?: boolean | null;
+  tier?: string | null;
+  pos_rank?: number | null;
+  matchup_grade?: string | null;
+  defense_factor?: number | null;
+  injury_multiplier?: number | null;
+  fantasy?: number | null;
+  fantasy_p10?: number | null;
+  fantasy_p90?: number | null;
+  stats?: Record<string, number | null>;
+  game_env?: { game_script?: string | null; predicted_total?: number | null } | null;
+  market?: { adp?: number | null; adp_pos_rank?: number | null; trending_adds?: number | null } | null;
+};
+
+export type BoardSeasonCell = {
+  rank?: number | null;
+  pos_rank?: number | null;
+  fantasy?: number | null;
+  fantasy_per_game?: number | null;
+  fantasy_p10?: number | null;
+  fantasy_p90?: number | null;
+  availability?: number | null;
+  games_remaining?: number | null;
+  role_multiplier?: number | null;
+  stats?: Record<string, number | null>;
+};
+
+export type ProjectionsBoardRow = {
+  player_id: string;
+  name: string | null;
+  position: string | null;
+  team: string | null;
+  injury_status: string | null;
+  rookie: boolean;
+  week: BoardWeekCell;
+  season: BoardSeasonCell;
+  inputs: {
+    baselines: Record<string, number | null>;
+    levers: Record<string, number>;
+  };
+  overrides: AdminOverride[];
+  override_count: number;
+};
+
+export type ProjectionsBoard = {
+  season: number;
+  week: number | null;
+  scoring: string;
+  baseline_season: number;
+  count: number;
+  lever_fields: string[];
+  players: ProjectionsBoardRow[];
+};
+
+// ---- custom fantasy ranking sets ------------------------------------------
+
+export type RankingSetMeta = {
+  id: number;
+  name: string;
+  season: number;
+  format: string;
+  description: string;
+  status: "draft" | "published";
+  version: number;
+  published_at: string | null;
+  created_by?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  entry_count?: number;
+  has_unpublished_changes?: boolean;
+};
+
+export type RankingEntryRow = {
+  player_id: string;
+  rank: number;
+  tier: number;
+  note: string;
+  name?: string | null;
+  position?: string | null;
+  team?: string | null;
+  injury_status?: string | null;
+  model_rank?: number | null;
+  vs_model?: number | null;
+  model_points?: number | null;
+};
+
+export type RankingSetDetail = RankingSetMeta & {
+  entries: RankingEntryRow[];
+};
+
+export type PublicRankingBoard = {
+  id: number;
+  name: string;
+  season: number;
+  format: string;
+  description: string;
+  version: number;
+  published_at: string | null;
+  scoring_for_comparison?: string;
+  count: number;
+  players: RankingEntryRow[];
+};
+
+export type ModelParamEntry = {
+  key: string;
+  label: string;
+  description: string;
+  default: number;
+  min: number;
+  max: number;
+  step: number;
+  kind: "float" | "int";
+  unit: string;
+  category: string;
+  affects: string[];
+  value: number;
+  is_overridden: boolean;
+  note: string;
+  updated_by: string;
+  updated_at: string | null;
+};
+
+export type ParamCategory = {
+  id: string;
+  label: string;
+  description: string;
+  params: ModelParamEntry[];
+};
+
+export type ParamRegistry = {
+  categories: ParamCategory[];
+  overridden_count: number;
+  total_count: number;
+};
+
+export type ParamPreset = {
+  id: number;
+  name: string;
+  description: string;
+  params: Record<string, number>;
+  created_by: string;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type ParamAuditEntry = {
+  id: number;
+  actor: string;
+  action: string;
+  target_type: "param" | "override" | "preset";
+  target_key: string;
+  old_value: number | null;
+  new_value: number | null;
+  note: string;
+  context: Record<string, unknown>;
+  created_at: string | null;
+};
+
+export type ParamAuditPage = {
+  entries: ParamAuditEntry[];
+  has_more: boolean;
+  next_before_id: number | null;
+};
+
+export type ParamPreviewGame = {
+  game_id: string;
+  home_team: string;
+  away_team: string;
+  before: { spread: number | null; total: number | null; home_win_prob: number | null };
+  after: { spread: number | null; total: number | null; home_win_prob: number | null };
+  delta: { spread: number | null; total: number | null; home_win_prob: number | null };
+};
+
+export type ParamPreviewPlayer = {
+  player_id: string;
+  name: string | null;
+  position: string | null;
+  team: string | null;
+  before: number;
+  after: number;
+  delta: number;
+};
+
+export type ParamPreview = {
+  season: number;
+  week: number | null;
+  changes: Record<string, number>;
+  summary: {
+    games_evaluated: number;
+    games_moved: number;
+    max_spread_delta: number;
+    max_total_delta: number;
+    players_moved: number;
+    max_player_delta: number;
+  };
+  games: ParamPreviewGame[];
+  players: ParamPreviewPlayer[];
+  notes: string[];
+};
+
+export type ConfigSnapshot = {
+  snapshot_version: number;
+  exported_at: string;
+  season_filter: number | null;
+  params: Record<string, number>;
+  params_detail?: Record<
+    string,
+    { value: number; default: number; label: string; category: string }
+  >;
+  team_input_levers: AdminOverride[];
+  player_input_levers: AdminOverride[];
+  game_output_overrides: AdminOverride[];
+  player_output_overrides: AdminOverride[];
+  counts: {
+    params: number;
+    team_input_levers: number;
+    player_input_levers: number;
+    game_output_overrides: number;
+    player_output_overrides: number;
+    total_overrides: number;
+  };
+};
+
+export type ConfigImportResult = {
+  params_applied: Record<string, number>;
+  params_reverted: string[];
+  overrides_upserted: number;
+  errors: string[];
+};
+
+export type TuningStatus = {
+  season_filter: number | null;
+  version_token: string;
+  counts: ConfigSnapshot["counts"];
+  params_by_category: {
+    id: string;
+    label: string;
+    params: {
+      key: string;
+      label: string;
+      value: number;
+      default: number;
+      delta: number;
+    }[];
+  }[];
+  recent_overrides: AdminOverride[];
+  team_input_levers: AdminOverride[];
+  player_input_levers: AdminOverride[];
+  registry_total: number;
+  categories: { id: string; label: string; description: string }[];
 };
 
 export type AdminOverride = {
   id: number;
-  entity_type: "game" | "player";
+  entity_type: "game" | "player" | "team";
   entity_id: string;
   season: number | null;
   week: number | null;
@@ -1636,7 +2117,7 @@ export type AdminOverride = {
 };
 
 export type AdminOverrideInput = {
-  entity_type: "game" | "player";
+  entity_type: "game" | "player" | "team";
   entity_id: string;
   field: string;
   value: number;
@@ -1644,6 +2125,31 @@ export type AdminOverrideInput = {
   week?: number | null;
   original_value?: number | null;
   note?: string;
+};
+
+// ---- Model-input levers (admin) ---------------------------------------------
+
+export type TeamModelInputs = {
+  season: number;
+  baseline_season: number;
+  fields: Record<string, string>;
+  teams: {
+    team_id: string;
+    baselines: Record<string, number | null>;
+    overrides: Record<string, number>;
+  }[];
+};
+
+export type PlayerModelInputs = {
+  player_id: string;
+  name: string;
+  position: string | null;
+  team: string | null;
+  season: number;
+  baseline_season: number;
+  fields: Record<string, string>;
+  baselines: Record<string, number | null>;
+  overrides: Record<string, number>;
 };
 
 export const NFL_BASE = BASE;

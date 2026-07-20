@@ -36,6 +36,33 @@ export function WhyPredictionPanel({
           );
         })}
       </ul>
+      {game.prediction.model_only && game.prediction.market && (
+        <div className="text-[10px] text-muted border-t divider pt-1.5 space-y-0.5">
+          <div className="flex items-center justify-between gap-2">
+            <span>Model alone</span>
+            <span className="tabular-nums">
+              {game.home_team_id} {Math.round(game.prediction.model_only.home_win_prob * 100)}%
+              {" · "}{game.prediction.model_only.predicted_spread.toFixed(1)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span>
+              Market ({game.prediction.market.books} bk
+              {game.prediction.market.sources?.kalshi ? "+K" : ""})
+            </span>
+            <span className="tabular-nums">
+              {game.home_team_id} {Math.round(game.prediction.market.consensus_home_prob * 100)}%
+              {game.prediction.market.spread_home != null
+                ? ` · ${game.prediction.market.spread_home.toFixed(1)}`
+                : ""}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span>Blend weight</span>
+            <span className="tabular-nums">{Math.round((game.prediction.market.weight ?? 0) * 100)}% market</span>
+          </div>
+        </div>
+      )}
       <div className="text-[10px] text-muted">
         {confidence?.tier ?? game.prediction.confidence_tier ?? "low"} confidence
         {confidence?.calibration_score != null

@@ -36,25 +36,34 @@ _nfl = NflDataPyAdapter()
 
 # ---- Constants -------------------------------------------------------------
 
+# Registry-backed defaults (see services/param_registry.py; tune via /admin →
+# Parameters → Elo Ratings). Module constants remain as import-time fallbacks
+# and documentation, but all math reads the registry at call time.
 K_FACTOR = 20.0
 HOME_FIELD_ADVANTAGE = 55.0      # Elo points (≈ +2.2 spread points)
 SEASON_REGRESSION = 0.75         # Carry-over fraction; new season blends toward 1500
-INITIAL_RATING = 1500.0
+INITIAL_RATING = 1500.0          # Structural anchor — deliberately NOT tunable
 ELO_PER_POINT = 25.0             # Elo diff per game-point on the spread
+
+
+def _p(key: str) -> float:
+    from . import param_registry
+    return param_registry.value(key)
 
 
 # ---- Math helpers ---------------------------------------------------------
 
 
 def win_probability(home_rating: float, away_rating: float, neutral_site: bool = False) -> float:
-    diff = home_rating - away_rating + (0 if neutral_site else HOME_FIELD_ADVANTAGE)
+    hfa = _p("elo.home_field_advantage")
+    diff = home_rating - away_rating + (0 if neutral_site else hfa)
     return 1.0 / (1.0 + 10 ** (-diff / 400.0))
 
 
 def predicted_spread(home_rating: float, away_rating: float, neutral_site: bool = False) -> float:
     """Negative spread = home team favored. Matches sportsbook convention."""
-    diff = home_rating - away_rating + (0 if neutral_site else HOME_FIELD_ADVANTAGE)
-    return -(diff / ELO_PER_POINT)
+    diff = home_rating - away_rating + (0 if neutral_site else _p("elo.home_field_advantage"))
+    return -(diff / _p("elo.elo_per_point"))
 
 
 def _mov_multiplier(margin: int, elo_diff: float) -> float:
@@ -72,11 +81,11 @@ def update_rating(
     """Returns (new_home, new_away) given a played game."""
     expected_home = win_probability(home_rating, away_rating, neutral_site)
     actual_home = 1.0 if home_margin > 0 else (0.0 if home_margin < 0 else 0.5)
-    diff_for_mov = home_rating - away_rating + (0 if neutral_site else HOME_FIELD_ADVANTAGE)
+    diff_for_mov = home_rating - away_rating + (0 if neutral_site else _p("elo.home_field_advantage"))
     if home_margin < 0:
         diff_for_mov = -diff_for_mov  # winning team's perspective for MOV
     mov = _mov_multiplier(home_margin, diff_for_mov)
-    delta = K_FACTOR * mov * (actual_home - expected_home)
+    delta = _p("elo.k_factor") * mov * (actual_home - expected_home)
     return home_rating + delta, away_rating - delta
 
 
@@ -136,7 +145,8 @@ async def rebuild_history(db: Session, seasons: list[int]) -> int:
     for season in seasons:
         # Season regression toward 1500
         for t in list(ratings.keys()):
-            ratings[t] = SEASON_REGRESSION * ratings[t] + (1 - SEASON_REGRESSION) * INITIAL_RATING
+            carry = _p("elo.season_regression")
+            ratings[t] = carry * ratings[t] + (1 - carry) * INITIAL_RATING
 
         # Persist Week 0 (pre-season baseline)
         _persist_week(db, season, 0, dict(ratings))

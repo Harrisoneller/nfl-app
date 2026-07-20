@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, RosPlayer, TradeResult } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { LiveFeed } from "@/components/LiveFeed";
+import { RankingsSection } from "./RankingsSection";
 
 /**
  * Fantasy command center — ROS values (VORP), model-checked waiver targets,
@@ -20,6 +21,7 @@ const SCORING = [
 ] as const;
 
 const SECTIONS = [
+  { id: "rankings", label: "Rankings" },
   { id: "ros", label: "ROS values" },
   { id: "waivers", label: "Waiver wire" },
   { id: "trade", label: "Trade analyzer" },
@@ -28,7 +30,7 @@ const SECTIONS = [
 ] as const;
 
 export function FantasyTab() {
-  const [section, setSection] = useState<string>("ros");
+  const [section, setSection] = useState<string>("rankings");
   const [scoring, setScoring] = useState("ppr");
   const [leagueSize, setLeagueSize] = useState(12);
 
@@ -77,6 +79,7 @@ export function FantasyTab() {
         </div>
       </div>
 
+      {section === "rankings" && <RankingsSection />}
       {section === "ros" && <RosSection scoring={scoring} leagueSize={leagueSize} />}
       {section === "waivers" && <WaiversSection scoring={scoring} />}
       {section === "trade" && <TradeSection scoring={scoring} leagueSize={leagueSize} />}
@@ -148,6 +151,8 @@ function RosSection({ scoring, leagueSize }: { scoring: string; leagueSize: numb
                 <th className="pr-3" title="Value over replacement per game">VORP/gm</th>
                 <th className="pr-3" title="Rest-of-season value over replacement">ROS VORP</th>
                 <th className="pr-3" title="Projected rest-of-season points">ROS pts</th>
+                <th className="pr-3" title="FantasyFootballCalculator average draft position (12-team)">ADP</th>
+                <th className="pr-3" title="ADP overall rank minus our VORP rank. Positive (green) = the market drafts this player later than we rank him — model sees value.">vs ADP</th>
                 <th className="pr-3">Gms</th>
                 <th className="pr-3">Next</th>
               </tr>
@@ -187,6 +192,17 @@ function RosSection({ scoring, leagueSize }: { scoring: string; leagueSize: numb
                     {r.ros_points.toFixed(0)}
                     <span className="text-[10px]"> ±{r.ros_sd.toFixed(0)}</span>
                   </td>
+                  <td className="pr-3 tabular-nums text-muted">
+                    {r.market?.adp != null ? r.market.adp.toFixed(1) : "—"}
+                    {r.market?.trending_adds != null && r.market.trending_adds > 0 && (
+                      <span className="ml-1 text-[9px] text-sky-300" title={`${r.market.trending_adds.toLocaleString()} Sleeper adds in 24h`}>
+                        🔥
+                      </span>
+                    )}
+                  </td>
+                  <td className="pr-3 tabular-nums">
+                    <ValueVsAdp value={r.market?.value_vs_adp ?? null} />
+                  </td>
                   <td className="pr-3 tabular-nums text-muted">{r.games_remaining}</td>
                   <td className="pr-3 text-muted">
                     {r.next_game ? `${r.next_game.is_home ? "vs" : "@"} ${r.next_game.opponent}` : "—"}
@@ -198,6 +214,20 @@ function RosSection({ scoring, leagueSize }: { scoring: string; leagueSize: numb
         </div>
       </Card>
     </div>
+  );
+}
+
+/** Signed "value vs ADP" badge: green = market drafts him later than we rank
+ * him (model sees value), red = market is higher on him than we are. */
+function ValueVsAdp({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted">—</span>;
+  if (Math.abs(value) < 5) return <span className="text-muted">≈</span>;
+  const tone = value > 0 ? "text-emerald-400" : "text-rose-400";
+  return (
+    <span className={`font-medium ${tone}`}>
+      {value > 0 ? "+" : ""}
+      {value}
+    </span>
   );
 }
 

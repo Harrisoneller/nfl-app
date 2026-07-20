@@ -6,14 +6,33 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthProvider";
 import { GameOverridesTab } from "@/components/admin/GameOverridesTab";
 import { PlayerOverridesTab } from "@/components/admin/PlayerOverridesTab";
-import { FantasyRanksTab } from "@/components/admin/FantasyRanksTab";
+import { RankingBoardsTab } from "@/components/admin/RankingBoardsTab";
+import { ModelInputsTab } from "@/components/admin/ModelInputsTab";
+import { ParametersTab } from "@/components/admin/ParametersTab";
+import { ChangeLogTab } from "@/components/admin/ChangeLogTab";
+import { ProjectionsBoardTab } from "@/components/admin/ProjectionsBoardTab";
+import { ConfigStatusTab } from "@/components/admin/ConfigStatusTab";
 
-type TabId = "games" | "players" | "fantasy" | "audit";
+type TabId =
+  | "board"
+  | "status"
+  | "games"
+  | "players"
+  | "fantasy"
+  | "inputs"
+  | "params"
+  | "changelog"
+  | "audit";
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "board", label: "Projections Board" },
+  { id: "status", label: "Config Status" },
   { id: "games", label: "Game Projections" },
   { id: "players", label: "Player Projections" },
   { id: "fantasy", label: "Fantasy Rankings" },
+  { id: "inputs", label: "Model Inputs" },
+  { id: "params", label: "Parameters" },
+  { id: "changelog", label: "Change Log" },
   { id: "audit", label: "All Overrides" },
 ];
 
@@ -33,7 +52,7 @@ export default function AdminPage() {
     if (!loading && !isAdmin) router.replace("/");
   }, [loading, isAdmin, router]);
 
-  const [tab, setTab] = useState<TabId>("games");
+  const [tab, setTab] = useState<TabId>("board");
 
   if (loading) {
     return <div className="panel p-6 text-sm text-muted">Checking access…</div>;
@@ -43,13 +62,15 @@ export default function AdminPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-bold">Projection Overrides</h1>
+        <h1 className="text-xl font-bold">Projection Control Room</h1>
         <p className="text-sm text-muted mt-1 max-w-3xl">
-          Hand-set any number the models produce. Overrides are a layer on top
-          of model output — the models keep running, adjusted values flow into
-          every downstream surface (odds edges, Prop Finder, start/sit,
-          compare, fantasy), and reverting restores the model instantly.
-          Adjusted values are <em>not</em> flagged on public pages.
+          Three tuning layers: <strong>global parameters</strong> (Elo, market
+          blend, weather, injury, priors…), <strong>model-input levers</strong>{" "}
+          (pace, usage, defense, availability — recompute downstream), and{" "}
+          <strong>output pins</strong> (spread/total/stat lines). Everything is
+          audited, versioned into cache keys, and exportable. Reverting restores
+          pure model output instantly. Adjusted values are <em>not</em> flagged
+          on public pages.
         </p>
       </div>
 
@@ -69,9 +90,14 @@ export default function AdminPage() {
         ))}
       </div>
 
+      {tab === "board" && <ProjectionsBoardTab />}
+      {tab === "status" && <ConfigStatusTab />}
       {tab === "games" && <GameOverridesTab />}
       {tab === "players" && <PlayerOverridesTab />}
-      {tab === "fantasy" && <FantasyRanksTab />}
+      {tab === "fantasy" && <RankingBoardsTab />}
+      {tab === "inputs" && <ModelInputsTab />}
+      {tab === "params" && <ParametersTab />}
+      {tab === "changelog" && <ChangeLogTab />}
       {tab === "audit" && <AuditTab />}
     </div>
   );

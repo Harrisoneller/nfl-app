@@ -25,6 +25,9 @@ import math
 # ~13.5; total points around their expectation ~10. Both are tunable and should
 # be validated with the PIT histogram in the backtest (a U-shaped PIT means the
 # SD is too small, a domed PIT means it's too large).
+# Registry-backed ("distribution" category): tune margin/total sigma from the
+# admin Parameters tab. Constants stay as import-safe fallbacks; call-time
+# resolution happens via the None-default pattern below.
 NFL_MARGIN_SIGMA = 13.5
 NFL_TOTAL_SIGMA = 10.0
 
@@ -92,28 +95,46 @@ def norm_ppf(p: float) -> float:
 # ---- Game-level probabilities (all derived from one margin distribution) ---
 
 
-def win_prob(expected_margin: float, sigma: float = NFL_MARGIN_SIGMA) -> float:
+def margin_sigma() -> float:
+    """Effective margin sigma (admin-tunable; falls back to NFL_MARGIN_SIGMA)."""
+    from . import param_registry
+    return param_registry.value("dist.margin_sigma")
+
+
+def total_sigma() -> float:
+    """Effective total sigma (admin-tunable; falls back to NFL_TOTAL_SIGMA)."""
+    from . import param_registry
+    return param_registry.value("dist.total_sigma")
+
+
+def win_prob(expected_margin: float, sigma: float | None = None) -> float:
     """P(home wins) = P(margin > 0) for margin ~ Normal(expected_margin, sigma)."""
+    if sigma is None:
+        sigma = margin_sigma()
     if sigma <= 0:
         return 1.0 if expected_margin > 0 else (0.0 if expected_margin < 0 else 0.5)
     return norm_cdf(expected_margin / sigma)
 
 
 def cover_prob_home(expected_margin: float, home_line: float,
-                    sigma: float = NFL_MARGIN_SIGMA) -> float:
+                    sigma: float | None = None) -> float:
     """P(home covers `home_line`), sportsbook convention (negative = home favored).
 
     Home covers iff actual margin > -home_line. Continuous approximation (ignores
     the discrete push mass — see KEY_NUMBER_PUSH / push_prob for that).
     """
+    if sigma is None:
+        sigma = margin_sigma()
     if sigma <= 0:
         return 1.0 if expected_margin > -home_line else 0.0
     return norm_cdf((expected_margin + home_line) / sigma)
 
 
 def over_prob(expected_total: float, line: float,
-              sigma: float = NFL_TOTAL_SIGMA) -> float:
+              sigma: float | None = None) -> float:
     """P(combined points > line) for total ~ Normal(expected_total, sigma)."""
+    if sigma is None:
+        sigma = total_sigma()
     if sigma <= 0:
         return 1.0 if expected_total > line else 0.0
     return norm_cdf((expected_total - line) / sigma)
@@ -126,9 +147,11 @@ def push_prob(home_line: float) -> float:
     return KEY_NUMBER_PUSH.get(abs(int(round(home_line))), 0.0)
 
 
-def margin_interval(expected_margin: float, sigma: float = NFL_MARGIN_SIGMA,
+def margin_interval(expected_margin: float, sigma: float | None = None,
                     level: float = 0.8) -> tuple[float, float]:
     """Central credible interval on the margin at the given probability level."""
+    if sigma is None:
+        sigma = margin_sigma()
     z = norm_ppf(0.5 + level / 2.0)
     return (expected_margin - z * sigma, expected_margin + z * sigma)
 
