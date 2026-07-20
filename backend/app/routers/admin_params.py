@@ -1,11 +1,15 @@
 """Admin-only model-parameter endpoints — the global tuning console.
 
-Backs /admin → Parameters + Change Log:
+Backs /admin → Parameters + Change Log + Config Status:
 
 * ``GET    /admin/params``                 registry grouped by category
 * ``PUT    /admin/params/values/{key}``    set one param (bounds-validated, audited)
 * ``DELETE /admin/params/values/{key}``    revert one param to its code default
+* ``POST   /admin/params/bulk``            atomic multi-param write
 * ``POST   /admin/params/revert-all``      revert everything
+* ``GET    /admin/params/status``          dashboard of all active tuning
+* ``GET    /admin/params/snapshot``        portable export (params + overrides)
+* ``POST   /admin/params/import``          restore from a snapshot
 * ``GET/POST/DELETE /admin/params/presets`` named configuration snapshots
 * ``POST   /admin/params/presets/{name}/apply``
 * ``GET    /admin/params/audit``           unified change log (params + overrides)
@@ -63,6 +67,22 @@ class PreviewRequest(BaseModel):
     player_limit: int = Field(default=60, ge=10, le=_MAX_PREVIEW_PLAYERS)
 
 
+class BulkSetRequest(BaseModel):
+    changes: dict[str, float] = Field(min_length=1)
+    note: str = Field(default="", max_length=500)
+
+
+class ConfigImportRequest(BaseModel):
+    """Apply a previously exported config snapshot (params and/or overrides)."""
+    snapshot: dict[str, Any]
+    note: str = Field(default="", max_length=500)
+    include_params: bool = True
+    include_overrides: bool = True
+    # When true, imported params replace the whole config (keys not present
+    # revert to defaults). Default is a merge on top of current overrides.
+    replace_params: bool = False
+
+
 # ---- Registry ---------------------------------------------------------------
 
 
@@ -105,6 +125,63 @@ def revert_all(
     admin: User = Depends(require_admin),
 ):
     return model_params_service.revert_all(db, actor=admin.email or "", note=body.note)
+
+
+@router.post("/bulk")
+def bulk_set_params(
+    body: BulkSetRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Atomic multi-param write (all-or-nothing bounds + cross-param validation)."""
+    try:
+        return model_params_service.bulk_set(
+            db, changes=body.changes, actor=admin.email or "", note=body.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from None
+
+
+# ---- Config snapshot / status -----------------------------------------------
+
+
+@router.get("/status")
+def tuning_status(season: int | None = None, db: Session = Depends(get_db)):
+    """Dashboard: every active param override + input lever + output pin."""
+    from ..services import config_snapshot_service
+
+    return config_snapshot_service.tuning_status(db, season=season)
+
+
+@router.get("/snapshot")
+def export_snapshot(season: int | None = None, db: Session = Depends(get_db)):
+    """Portable JSON of the full tuning config (params + overrides + levers)."""
+    from ..services import config_snapshot_service
+
+    return config_snapshot_service.export_snapshot(db, season=season)
+
+
+@router.post("/import")
+def import_snapshot(
+    body: ConfigImportRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Restore params and/or entity overrides from an exported snapshot."""
+    from ..services import config_snapshot_service
+
+    try:
+        return config_snapshot_service.import_snapshot(
+            db,
+            payload=body.snapshot,
+            actor=admin.email or "",
+            note=body.note,
+            include_params=body.include_params,
+            include_overrides=body.include_overrides,
+            replace_params=body.replace_params,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from None
 
 
 # ---- Presets ----------------------------------------------------------------

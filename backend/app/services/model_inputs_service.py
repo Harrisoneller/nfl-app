@@ -2,28 +2,27 @@
 
 Output overrides (spread, total, a stat line) pin one number and leave every
 related number inconsistent. Input levers adjust what the model *believes*
-about a team or player — pace, efficiency, pass rate, usage shares — and let
-the pipeline recompute everything downstream, so a coaching-change adjustment
-moves totals, spreads, game scripts, every roster player's projection, prop
-probabilities, and fantasy ranks together.
+about a team or player — pace, efficiency, pass rate, usage shares, defense,
+availability — and let the pipeline recompute everything downstream, so a
+coaching-change adjustment moves totals, spreads, game scripts, every roster
+player's projection, prop probabilities, and fantasy ranks together.
 
 Two lever families (storage: admin_overrides, season-scoped, week IS NULL):
 
-**Team** (`entity_type='team'`): ``pace`` (off plays/gm), ``yards_per_play``,
-``pass_rate`` (neutral), ``points_per_game``. Baselines come from the same
-PBP aggregates the scoring model reads. Pace and YPP multiply scoring
-(points ≈ plays × yds/play × pts/yd): elasticity 1.0 and 0.9, ratios clamped.
-``points_per_game`` is a direct level-set that supersedes the multipliers.
-``pass_rate`` barely moves totals, so it is a *tilt*: it shifts pass-family
-volume up / rush-family volume down (or vice versa) for every player on the
-team's roster.
+**Team** (`entity_type='team'`): offense — ``pace``, ``yards_per_play``,
+``pass_rate``, ``points_per_game``; defense — ``points_allowed_per_game``,
+``def_yards_per_play``. Baselines come from the same PBP aggregates the
+scoring model reads. Pace and YPP multiply scoring; PPG is a direct level-set;
+pass rate is a roster volume tilt. Defense levers reshape
+``points_allowed_per_game`` so opponent matchups recompute (direct PAPG
+supersedes def-YPP multipliers).
 
 **Player** (`entity_type='player'`, PLAYER_INPUT_FIELDS): ``target_share``,
-``rush_share``, ``yards_per_target``, ``yards_per_carry``, ``snap_rate``.
-Baselines are computed from the most recent completed season's weekly frame
-(+ snap counts). Overrides scale posterior rates by (new / baseline), clamped:
-share levers move the whole family distribution; efficiency levers move
-yardage 1:1 and TDs with 0.5 elasticity.
+``rush_share``, ``yards_per_target``, ``yards_per_carry``, ``snap_rate``,
+``availability``. Baselines from the most recent completed season's weekly
+frame (+ snap counts). Share/efficiency levers scale posterior rates;
+``availability`` overrides the games-played durability fraction used on
+season projections.
 
 Everything degrades gracefully: no override → untouched pipeline; a missing
 baseline → that lever is a no-op (surfaced as such in the admin API).
@@ -82,6 +81,8 @@ TEAM_INPUT_LABELS = {
     "yards_per_play": "Yards per play",
     "pass_rate": "Neutral-situation pass rate",
     "points_per_game": "Points per game",
+    "points_allowed_per_game": "Points allowed per game",
+    "def_yards_per_play": "Defensive yards per play allowed",
 }
 PLAYER_INPUT_LABELS = {
     "target_share": "Target share",
@@ -89,6 +90,7 @@ PLAYER_INPUT_LABELS = {
     "yards_per_target": "Yards per target",
     "yards_per_carry": "Yards per carry",
     "snap_rate": "Offensive snap rate",
+    "availability": "Games-played availability",
 }
 
 _TEAM_FIELD_TO_AGG = {
@@ -96,8 +98,9 @@ _TEAM_FIELD_TO_AGG = {
     "yards_per_play": "off_yards_per_play",
     "pass_rate": "pass_rate_neutral",
     "points_per_game": "points_per_game",
+    "points_allowed_per_game": "points_allowed_per_game",
+    "def_yards_per_play": "def_yards_per_play",
 }
-
 
 def _clamp(v: float, lo_hi: tuple[float, float]) -> float:
     return max(lo_hi[0], min(lo_hi[1], v))
@@ -122,10 +125,10 @@ def adjusted_team_aggregates(
 ) -> dict[str, dict[str, Any]]:
     """Apply team input levers to the aggregates the scoring model reads.
 
-    Returns a copy with adjusted ``points_per_game`` for overridden teams
-    (plus ``_input_adjustment`` metadata for explainability); untouched teams
-    share the original dicts. Defense is intentionally not adjustable v1 —
-    the levers describe the admin's view of an OFFENSE.
+    Returns a copy with adjusted ``points_per_game`` and/or
+    ``points_allowed_per_game`` for overridden teams (plus
+    ``_input_adjustment`` metadata for explainability); untouched teams share
+    the original dicts.
     """
     ovs = overrides_service.team_input_overrides(db, season)
     if not ovs or not aggs:
@@ -137,8 +140,11 @@ def adjusted_team_aggregates(
         if ppg is None:
             ppg = 22.0
         ppg = float(ppg)
+        papg = base.get("points_allowed_per_game")
+        papg = float(papg) if papg is not None else 22.0
         applied: dict[str, Any] = {}
 
+        # ---- Offense scoring ------------------------------------------------
         if "points_per_game" in fields:
             new_ppg = float(fields["points_per_game"])
             applied["points_per_game"] = {"from": round(ppg, 1), "to": round(new_ppg, 1)}
@@ -168,6 +174,34 @@ def adjusted_team_aggregates(
                 }
                 ppg *= mult
 
+        # ---- Defense scoring ------------------------------------------------
+        if "points_allowed_per_game" in fields:
+            new_papg = float(fields["points_allowed_per_game"])
+            applied["points_allowed_per_game"] = {
+                "from": round(papg, 1), "to": round(new_papg, 1),
+            }
+            papg = new_papg
+        elif "def_yards_per_play" in fields:
+            baseline = base.get("def_yards_per_play")
+            if baseline is None or float(baseline) <= 0:
+                applied["def_yards_per_play"] = {"skipped": "no baseline"}
+            else:
+                ratio = _clamp(
+                    float(fields["def_yards_per_play"]) / float(baseline),
+                    _p_clamp("team_ratio_clamp"),
+                )
+                elast = _p("levers.def_ypp_elasticity")
+                mult = ratio ** elast
+                applied["def_yards_per_play"] = {
+                    "from": round(float(baseline), 2),
+                    "to": round(float(fields["def_yards_per_play"]), 2),
+                    "allowed_multiplier": round(mult, 3),
+                }
+                applied["points_allowed_per_game_effect"] = {
+                    "from": round(papg, 1), "to": round(papg * mult, 1),
+                }
+                papg *= mult
+
         if "pass_rate" in fields:
             applied["pass_rate"] = {
                 "from": base.get("pass_rate_neutral"),
@@ -176,6 +210,7 @@ def adjusted_team_aggregates(
             }
 
         base["points_per_game"] = ppg
+        base["points_allowed_per_game"] = papg
         base["_input_adjustment"] = applied
         out[team] = base
     return out
@@ -246,6 +281,9 @@ async def player_usage_baselines(season: int) -> dict[str, dict[str, float | Non
         df.groupby("recent_team")["carries"].sum() if "carries" in df.columns else None
     )
 
+    # Games played per player (for availability baseline ≈ g / 17).
+    games_played = g["week"].nunique() if "week" in df.columns else None
+
     for pid in team_of.index:
         team = team_of.get(pid)
         tgt = float(sums["targets"].get(pid, 0) or 0) if sums["targets"] is not None else 0.0
@@ -254,12 +292,14 @@ async def player_usage_baselines(season: int) -> dict[str, dict[str, float | Non
         rush_y = float(sums["rushing_yards"].get(pid, 0) or 0) if sums["rushing_yards"] is not None else 0.0
         t_tot = float(team_targets.get(team, 0) or 0) if team_targets is not None and team else 0.0
         c_tot = float(team_carries.get(team, 0) or 0) if team_carries is not None and team else 0.0
+        gp = float(games_played.get(pid, 0) or 0) if games_played is not None else 0.0
         out[str(pid)] = {
             "target_share": round(tgt / t_tot, 4) if t_tot > 0 and tgt > 0 else None,
             "rush_share": round(car / c_tot, 4) if c_tot > 0 and car > 0 else None,
             "yards_per_target": round(rec_y / tgt, 2) if tgt >= 20 else None,
             "yards_per_carry": round(rush_y / car, 2) if car >= 25 else None,
             "snap_rate": None,  # filled below when snap counts are available
+            "availability": round(min(1.0, gp / 17.0), 3) if gp > 0 else None,
         }
 
     # Snap rates (best-effort; separate nflverse dataset keyed by pfr ids but
@@ -299,6 +339,8 @@ def player_stat_multipliers(
 
     Each lever contributes (override / baseline), clamped; levers with no
     baseline are no-ops. Multipliers compose multiplicatively per stat.
+    ``availability`` is NOT applied here — it scales season means at the
+    aggregation layer via ``player_availability_override``.
     """
     mults: dict[str, float] = {}
 
@@ -308,6 +350,8 @@ def player_stat_multipliers(
 
     b = baselines or {}
     for field, value in (levers or {}).items():
+        if field == "availability":
+            continue  # season-mean scaler, not a per-stat mult
         base = b.get(field)
         if field == "snap_rate":
             if base:
@@ -335,6 +379,20 @@ def player_stat_multipliers(
         bump(_RUSH_STATS, tilt.get("rush", 1.0))
 
     return {s: m for s, m in mults.items() if abs(m - 1.0) > 1e-9}
+
+
+def player_availability_override(
+    levers: dict[str, float] | None,
+) -> float | None:
+    """Return a clamped availability rate if the lever is set, else None.
+
+    When present, supersedes the history-derived availability_rate on season
+    projections. Clamped by levers.availability_clamp_*.
+    """
+    if not levers or "availability" not in levers:
+        return None
+    lo, hi = _p_clamp("availability_clamp")
+    return _clamp(float(levers["availability"]), (lo, hi))
 
 
 async def player_input_context(db: Session, season: int) -> dict[str, Any]:

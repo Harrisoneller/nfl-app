@@ -504,7 +504,8 @@ def _apply_player_input_levers(
 
     Returns (possibly-new posteriors dict, applied-info | None). Shares scale
     the full distribution (opportunity changes move the noise with the mean —
-    same contract as role multipliers).
+    same contract as role multipliers). Availability lever is surfaced under
+    ``info["availability"]`` for season aggregation (not applied to posteriors).
     """
     levers = (ctx.get("overrides") or {}).get(str(player.id)) or {}
     tilt = (ctx.get("tilts") or {}).get(player.team_id or "")
@@ -514,15 +515,22 @@ def _apply_player_input_levers(
     from . import model_inputs_service
 
     mults = model_inputs_service.player_stat_multipliers(levers, baselines, tilt)
-    if not mults:
+    avail_ov = model_inputs_service.player_availability_override(levers)
+    if not mults and avail_ov is None:
         return posteriors, None
-    scaled = {
-        s: (engine.scale_posterior(p, mults[s]) if s in mults else p)
-        for s, p in posteriors.items()
-    }
-    info: dict[str, Any] = {
-        "multipliers": {s: round(m, 3) for s, m in mults.items()},
-    }
+    scaled = (
+        {
+            s: (engine.scale_posterior(p, mults[s]) if s in mults else p)
+            for s, p in posteriors.items()
+        }
+        if mults
+        else posteriors
+    )
+    info: dict[str, Any] = {}
+    if mults:
+        info["multipliers"] = {s: round(m, 3) for s, m in mults.items()}
+    if avail_ov is not None:
+        info["availability"] = round(avail_ov, 3)
     if levers:
         info["levers"] = {
             f: {"value": v, "baseline": baselines.get(f)} for f, v in levers.items()
@@ -913,7 +921,11 @@ async def player_season_projection(
             game_means = [post.mean] * games_remaining
         agg = engine.aggregate_season(game_means, post.game_sd, post.talent_sd)
         # Durability discount on the FORWARD projection only (YTD happened).
-        avail = float(evidence.get("availability") or 1.0)
+        # Admin availability lever (input_levers) supersedes history-derived rate.
+        if input_levers and input_levers.get("availability") is not None:
+            avail = float(input_levers["availability"])
+        else:
+            avail = float(evidence.get("availability") or 1.0)
         remaining_mean = agg["mean"] * avail
         final_mean = ytd.get(stat, 0.0) + remaining_mean
         qs = engine.season_quantiles(final_mean, agg["sd"])
@@ -1439,7 +1451,7 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for c in candidates:
         role_mult = c["role_mult"]
-        if role_mult < engine.ROLE_LEADERBOARD_MIN:
+        if role_mult < engine.role_leaderboard_min():
             continue  # backups don't belong on a season projection board
         gsis_id, pos, player, envs = c["gsis_id"], c["pos"], c["player"], c["envs"]
         posteriors = c["posteriors"]
@@ -1451,9 +1463,14 @@ async def _build_leaderboard_rows(db: Session, season: int) -> dict[str, Any]:
         games_remaining = len(envs)
         # Durability discount: expected share of the remaining slate this
         # player actually plays (regressed games-played history — see
-        # engine.availability_rate). Scales season MEANS only; the untouched
-        # sd keeps the band honest about missed-time risk.
-        avail = float(c.get("availability") or 1.0)
+        # engine.availability_rate). Admin availability lever supersedes.
+        # Scales season MEANS only; the untouched sd keeps the band honest
+        # about missed-time risk.
+        lever_info = c.get("input_levers") or {}
+        if lever_info.get("availability") is not None:
+            avail = float(lever_info["availability"])
+        else:
+            avail = float(c.get("availability") or 1.0)
 
         season_means: dict[str, float] = {}
         season_sds: dict[str, float] = {}
@@ -1930,52 +1947,65 @@ _RECEIVING = {"targets", "receptions", "receiving_yards", "receiving_tds"}
 
 
 def weather_multiplier(weather: dict | None, stat: str) -> float:
-    """Multiplier (1.0 = no adjustment) for the given stat given the forecast."""
+    """Multiplier (1.0 = no adjustment) for the given stat given the forecast.
+
+    Thresholds and multipliers are registry-backed (weather.* params) so the
+    admin console can retune outdoor impacts without a deploy.
+    """
     if not weather or not weather.get("available") or weather.get("is_indoor"):
         return 1.0
+    from . import param_registry as _pr
+
     wind = float(weather.get("wind_mph") or 0)
     precip = float(weather.get("precipitation_in") or 0)
     temp = weather.get("temperature_f")
     temp = float(temp) if temp is not None else 65.0
 
+    wind_mod = _pr.value("weather.wind_mod_mph")
+    wind_high = _pr.value("weather.wind_high_mph")
+    precip_mod = _pr.value("weather.precip_mod_in")
+    precip_high = _pr.value("weather.precip_high_in")
+
     mult = 1.0
     if stat in _PASSING:
-        if wind >= 25:
-            mult *= 0.85
-        elif wind >= 15:
-            mult *= 0.92
-        if precip >= 0.4:
-            mult *= 0.85
-        elif precip >= 0.15:
-            mult *= 0.93
-        if temp <= 25:
-            mult *= 0.95
+        if wind >= wind_high:
+            mult *= _pr.value("weather.pass_wind_high_mult")
+        elif wind >= wind_mod:
+            mult *= _pr.value("weather.pass_wind_mod_mult")
+        if precip >= precip_high:
+            mult *= _pr.value("weather.pass_precip_high_mult")
+        elif precip >= precip_mod:
+            mult *= _pr.value("weather.pass_precip_mod_mult")
+        if temp <= _pr.value("weather.cold_temp_f"):
+            mult *= _pr.value("weather.cold_pass_mult")
     elif stat in _RUSHING:
-        if wind >= 20 or precip >= 0.4:
-            mult *= 1.04
+        if wind >= 20 or precip >= precip_high:
+            mult *= _pr.value("weather.rush_boost_mult")
     elif stat in _RECEIVING:
-        if wind >= 25:
-            mult *= 0.88
-        elif wind >= 15:
-            mult *= 0.94
-        if precip >= 0.4:
-            mult *= 0.88
-        elif precip >= 0.15:
-            mult *= 0.95
+        if wind >= wind_high:
+            mult *= _pr.value("weather.recv_wind_high_mult")
+        elif wind >= wind_mod:
+            mult *= _pr.value("weather.recv_wind_mod_mult")
+        if precip >= precip_high:
+            mult *= _pr.value("weather.recv_precip_high_mult")
+        elif precip >= precip_mod:
+            mult *= _pr.value("weather.recv_precip_mod_mult")
     return mult
 
 
 def injury_multiplier(injury_status: str | None) -> float:
-    """Status comes from Sleeper metadata."""
+    """Status comes from Sleeper metadata. Doubtful/Questionable are tunable."""
     if not injury_status:
         return 1.0
     s = injury_status.strip().upper()
     if s in ("OUT", "IR", "PUP", "NFI", "SUSPENDED"):
         return 0.0
     if s == "DOUBTFUL":
-        return 0.3
+        from . import param_registry as _pr
+        return _pr.value("injury.doubtful_mult")
     if s == "QUESTIONABLE":
-        return 0.85
+        from . import param_registry as _pr
+        return _pr.value("injury.questionable_mult")
     if s in ("PROBABLE", "ACTIVE", "HEALTHY"):
         return 1.0
     return 1.0

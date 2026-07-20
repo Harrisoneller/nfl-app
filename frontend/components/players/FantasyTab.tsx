@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, RosPlayer, TradeResult } from "@/lib/api";
 import { Card } from "@/components/Card";
 import { LiveFeed } from "@/components/LiveFeed";
+import { RankingsSection } from "./RankingsSection";
 
 /**
  * Fantasy command center — ROS values (VORP), model-checked waiver targets,
@@ -20,6 +21,7 @@ const SCORING = [
 ] as const;
 
 const SECTIONS = [
+  { id: "rankings", label: "Rankings" },
   { id: "ros", label: "ROS values" },
   { id: "waivers", label: "Waiver wire" },
   { id: "trade", label: "Trade analyzer" },
@@ -28,7 +30,7 @@ const SECTIONS = [
 ] as const;
 
 export function FantasyTab() {
-  const [section, setSection] = useState<string>("ros");
+  const [section, setSection] = useState<string>("rankings");
   const [scoring, setScoring] = useState("ppr");
   const [leagueSize, setLeagueSize] = useState(12);
 
@@ -77,6 +79,7 @@ export function FantasyTab() {
         </div>
       </div>
 
+      {section === "rankings" && <RankingsSection />}
       {section === "ros" && <RosSection scoring={scoring} leagueSize={leagueSize} />}
       {section === "waivers" && <WaiversSection scoring={scoring} />}
       {section === "trade" && <TradeSection scoring={scoring} leagueSize={leagueSize} />}

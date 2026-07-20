@@ -60,6 +60,67 @@ class TestAdjustedTeamAggregates:
         assert out["KC"]["points_per_game"] == pytest.approx(26.0 * 1.25, rel=1e-3)
 
 
+class TestDefenseLevers:
+    def _aggs(self) -> dict:
+        return {
+            "KC": {
+                "points_per_game": 26.0,
+                "points_allowed_per_game": 18.0,
+                "def_yards_per_play": 4.8,
+                "off_plays_per_game": 64.0,
+            },
+        }
+
+    def test_direct_papg_override(self, monkeypatch):
+        monkeypatch.setattr(
+            overrides_service, "team_input_overrides",
+            lambda db, s: {"KC": {"points_allowed_per_game": 22.0}},
+        )
+        out = mi.adjusted_team_aggregates(None, 2026, self._aggs())
+        assert out["KC"]["points_allowed_per_game"] == 22.0
+        assert out["KC"]["points_per_game"] == 26.0  # offense untouched
+
+    def test_def_ypp_scales_papg(self, monkeypatch):
+        monkeypatch.setattr(
+            overrides_service, "team_input_overrides",
+            lambda db, s: {"KC": {"def_yards_per_play": 5.28}},  # +10%
+        )
+        out = mi.adjusted_team_aggregates(None, 2026, self._aggs())
+        # default def_ypp_elasticity = 0.85
+        assert out["KC"]["points_allowed_per_game"] == pytest.approx(
+            18.0 * (1.10 ** 0.85), rel=1e-3,
+        )
+
+    def test_papg_supersedes_def_ypp(self, monkeypatch):
+        monkeypatch.setattr(
+            overrides_service, "team_input_overrides",
+            lambda db, s: {"KC": {
+                "points_allowed_per_game": 21.0,
+                "def_yards_per_play": 6.0,
+            }},
+        )
+        out = mi.adjusted_team_aggregates(None, 2026, self._aggs())
+        assert out["KC"]["points_allowed_per_game"] == 21.0
+
+
+class TestAvailabilityLever:
+    def test_override_clamped(self):
+        assert mi.player_availability_override({"availability": 0.95}) == pytest.approx(0.95)
+        assert mi.player_availability_override({"availability": 0.05}) == pytest.approx(0.40)
+        assert mi.player_availability_override({}) is None
+        assert mi.player_availability_override(None) is None
+
+    def test_stat_multipliers_ignore_availability(self):
+        # Availability is a season-mean scaler, not a per-stat mult.
+        mults = mi.player_stat_multipliers(
+            {"availability": 0.80, "target_share": 0.26},
+            {"availability": 0.90, "target_share": 0.20},
+            None,
+        )
+        assert "targets" in mults
+        assert all(s != "availability" for s in mults)
+
+
 class TestPassTilts:
     def test_pass_heavier_tilts_both_families(self, monkeypatch):
         monkeypatch.setattr(
@@ -149,3 +210,10 @@ class TestUpsertValidation:
                 None, entity_type="team", entity_id="KC",
                 field="pass_rate", value=58.0, season=2026,  # meant 0.58
             )
+
+    def test_defense_fields_accepted(self):
+        from app.models.admin_override import TEAM_INPUT_FIELDS, PLAYER_INPUT_FIELDS
+
+        assert "points_allowed_per_game" in TEAM_INPUT_FIELDS
+        assert "def_yards_per_play" in TEAM_INPUT_FIELDS
+        assert "availability" in PLAYER_INPUT_FIELDS

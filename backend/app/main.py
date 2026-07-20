@@ -28,6 +28,7 @@ from .routers import (
     admin,
     admin_overrides,
     admin_params,
+    admin_rankings,
     ai,
     auth,
     betting,
@@ -211,6 +212,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(
         admin_params.router, prefix="/admin/params", tags=["admin"],
+    )
+    app.include_router(
+        admin_rankings.router, prefix="/admin/rankings", tags=["admin"],
     )
     app.include_router(
         admin.router, prefix="/admin", tags=["admin"],

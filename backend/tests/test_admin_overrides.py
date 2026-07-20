@@ -13,26 +13,31 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("MULTI_USER_MODE", "true")
+    # The repo-root .env may set ADMIN_EMAILS; a real env var takes priority
+    # in pydantic-settings, so blank it to exercise the DB is_admin path.
+    monkeypatch.setenv("ADMIN_EMAILS", "")
     from app.config import get_settings
 
     get_settings.cache_clear()
 
     from app.db import engine
     from app.models.admin_override import AdminOverride
+    from app.models.model_param import AdminAuditLog
     from app.models.user import User
 
-    AdminOverride.__table__.drop(bind=engine, checkfirst=True)
-    User.__table__.drop(bind=engine, checkfirst=True)
-    User.__table__.create(bind=engine, checkfirst=True)
-    AdminOverride.__table__.create(bind=engine, checkfirst=True)
+    tables = (AdminOverride, AdminAuditLog, User)
+    for t in tables:
+        t.__table__.drop(bind=engine, checkfirst=True)
+    for t in reversed(tables):
+        t.__table__.create(bind=engine, checkfirst=True)
 
     from app.main import create_app
 
     with TestClient(create_app()) as c:
         yield c
 
-    AdminOverride.__table__.drop(bind=engine, checkfirst=True)
-    User.__table__.drop(bind=engine, checkfirst=True)
+    for t in tables:
+        t.__table__.drop(bind=engine, checkfirst=True)
     get_settings.cache_clear()
 
 

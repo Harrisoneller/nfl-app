@@ -58,11 +58,30 @@ def _prior_weights() -> tuple[float, float, float]:
 # How many pseudo-games of evidence the prior is worth, by stat class.
 # Volume (attempts/targets/carries) is sticky role-driven → prior fades fast.
 # Efficiency (yards) and scoring (TDs) are noisier → prior holds longer.
+# Registry-backed defaults; _prior_n_for() resolves live admin values.
 PRIOR_EFFECTIVE_GAMES: dict[str, float] = {
     "volume": 5.0,
     "yardage": 8.0,
     "scoring": 12.0,
 }
+
+
+def _prior_n_for(stat_class: str) -> float:
+    key = {
+        "volume": "player.prior_n_volume",
+        "yardage": "player.prior_n_yardage",
+        "scoring": "player.prior_n_scoring",
+    }.get(stat_class, "player.prior_n_yardage")
+    return _p(key)
+
+
+def _shrink_k_for(stat_class: str) -> float:
+    key = {
+        "volume": "player.shrink_k_volume",
+        "yardage": "player.shrink_k_yardage",
+        "scoring": "player.shrink_k_scoring",
+    }.get(stat_class, "player.shrink_k_yardage")
+    return _p(key)
 
 STAT_CLASS: dict[str, str] = {
     "attempts": "volume", "completions": "volume", "carries": "volume",
@@ -153,7 +172,12 @@ ROLE_MULTIPLIERS: dict[str, dict[int, float]] = {
 _ROLE_FLOOR = {"QB": 0.02, "RB": 0.10, "WR": 0.12, "TE": 0.15}
 
 # Leaderboards only list players projected for a meaningful role.
+# Registry-backed: player.role_leaderboard_min (default 0.30).
 ROLE_LEADERBOARD_MIN = 0.30
+
+
+def role_leaderboard_min() -> float:
+    return _p("player.role_leaderboard_min")
 
 
 def role_multiplier(position: str, depth_order: int | None) -> float:
@@ -236,6 +260,7 @@ class StatPosterior:
 # role + variance, and markets price heavy regression the flat K missed
 # (the classic way a goal-line RB gets over-ranked). Volume is sticky and
 # role-driven → lightest shrink.
+# Registry-backed via _shrink_k_for(); constants remain import-safe defaults.
 POSITION_SHRINK_K: dict[str, float] = {
     "volume": 2.0,
     "yardage": 3.0,
@@ -288,12 +313,13 @@ def build_prior(
 
     total_games = sum(min(float(s["games"]), 17.0) for _, s in pairs)
     # Regression to the positional starter mean (see POSITION_SHRINK_K note) —
-    # scoring stats regress hardest, volume lightest.
+    # scoring stats regress hardest, volume lightest. Live admin-tuned K.
+    stat_class = STAT_CLASS.get(stat, "yardage")
     if position_mean is not None:
-        k = POSITION_SHRINK_K.get(STAT_CLASS.get(stat, "yardage"), 3.0)
+        k = _shrink_k_for(stat_class)
         mean = (total_games * mean + k * position_mean) / (total_games + k)
 
-    n0 = PRIOR_EFFECTIVE_GAMES.get(STAT_CLASS.get(stat, "yardage"), 8.0)
+    n0 = _prior_n_for(stat_class)
     # A thin history (rookie year only, few games) is worth fewer pseudo-games.
     n0 *= min(1.0, total_games / 12.0)
     return mean, game_sd, max(1.0, n0)
@@ -350,9 +376,12 @@ def bayesian_update(
 
 # ---- Game coupling ----------------------------------------------------------
 
+# League avg is registry-backed via game.league_avg_points; constant is
+# import-safe fallback for pure-math callers without a DB.
 LEAGUE_AVG_TEAM_POINTS = 22.0
 
 # Elasticities: how strongly each stat class responds to game environment.
+# Registry-backed; constants are documentation / offline defaults.
 _SCORING_ELASTICITY = {"volume": 0.30, "yardage": 0.55, "scoring": 1.0}
 # Game-script tilt per expected point of margin (favored → run more, trail → pass).
 _SCRIPT_PASS_PER_PT = -0.008
@@ -362,6 +391,13 @@ _SCRIPT_CAP = 0.12  # ±12%
 _PASS_STATS = {"attempts", "completions", "passing_yards", "passing_tds", "interceptions"}
 _RUSH_STATS = {"carries", "rushing_yards", "rushing_tds"}
 _RECV_STATS = {"targets", "receptions", "receiving_yards", "receiving_tds"}
+
+
+def _league_avg_points() -> float:
+    try:
+        return _p("game.league_avg_points")
+    except Exception:  # noqa: BLE001 — pure-math fallback
+        return LEAGUE_AVG_TEAM_POINTS
 
 
 def game_environment_multiplier(
@@ -380,12 +416,15 @@ def game_environment_multiplier(
       league average; >1 = leaky). Computed upstream from weekly data.
     """
     env = 1.0
+    league_avg = _league_avg_points()
+    lo = _p("player.env_clamp_lo")
+    hi = _p("player.env_clamp_hi")
 
-    ratio = max(0.60, min(1.45, team_expected_pts / LEAGUE_AVG_TEAM_POINTS))
+    ratio = max(0.60, min(1.45, team_expected_pts / max(league_avg, 1e-6)))
     _elast_live = {
         "volume": _p("player.scoring_elasticity_volume"),
         "yardage": _p("player.scoring_elasticity_yardage"),
-        "scoring": _SCORING_ELASTICITY["scoring"],
+        "scoring": _p("player.scoring_elasticity_scoring"),
     }
     elast = _elast_live.get(STAT_CLASS.get(stat, "yardage"), 0.5)
     env *= ratio ** elast
@@ -400,11 +439,11 @@ def game_environment_multiplier(
     script_cap = _p("player.script_cap")
     env *= 1.0 + max(-script_cap, min(script_cap, tilt))
 
-    env *= max(0.75, min(1.30, defense_factor))
+    env *= max(lo, min(hi, defense_factor))
     # Overall clamp: no single game environment moves a projection by more
-    # than ~±25–30%. Uncapped, the three components compound into swings the
-    # market never prices — keeping gaps to consensus honest.
-    return max(0.75, min(1.30, env))
+    # than the admin-tuned band. Uncapped, the three components compound into
+    # swings the market never prices — keeping gaps to consensus honest.
+    return max(lo, min(hi, env))
 
 
 # ---- Distribution outputs ---------------------------------------------------
@@ -462,7 +501,11 @@ def market_implied_mean(line: float, over_prob: float | None, sd: float) -> floa
     if over_prob is None or not (0.08 <= over_prob <= 0.92):
         return line
     shift = sd * dist.norm_ppf(over_prob)
-    cap = 0.8 * sd
+    try:
+        cap_sd = _p("props.price_shift_cap_sd")
+    except Exception:  # noqa: BLE001
+        cap_sd = 0.8
+    cap = cap_sd * sd
     return line + max(-cap, min(cap, shift))
 
 
@@ -510,11 +553,25 @@ def poisson_rate_from_over_prob(line: float, over_prob: float) -> float | None:
 
 # Expected share of a full slate a healthy starter actually plays, by position.
 # RBs miss the most time; QBs the least (of games they'd start).
+# Registry-backed via _availability_norm(); constants are offline defaults.
 AVAILABILITY_NORM: dict[str, float] = {"QB": 0.94, "RB": 0.87, "WR": 0.90, "TE": 0.90}
 _AVAILABILITY_DEFAULT_NORM = 0.90
 # Pseudo-games of league-norm evidence the prior contributes (≈ 1.2 seasons).
 _AVAILABILITY_PSEUDO_GAMES = 20.0
 _AVAILABILITY_FLOOR = 0.65
+
+
+def _availability_norm(position: str) -> float:
+    pos = (position or "").upper()
+    key = {
+        "QB": "player.avail_norm_qb",
+        "RB": "player.avail_norm_rb",
+        "WR": "player.avail_norm_wr",
+        "TE": "player.avail_norm_te",
+    }.get(pos)
+    if key is None:
+        return _AVAILABILITY_DEFAULT_NORM
+    return _p(key)
 
 
 def availability_rate(
@@ -527,7 +584,7 @@ def availability_rate(
     shrunk toward the positional norm by _AVAILABILITY_PSEUDO_GAMES. A player
     with no history (rookie) gets exactly the norm.
     """
-    norm = AVAILABILITY_NORM.get((position or "").upper(), _AVAILABILITY_DEFAULT_NORM)
+    norm = _availability_norm(position)
     exposure = 0.0
     played = 0.0
     for w, g in zip(_prior_weights(), games_by_season):

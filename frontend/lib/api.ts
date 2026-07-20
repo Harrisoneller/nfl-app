@@ -1690,6 +1690,62 @@ export const api = {
       `/admin/overrides/model-inputs/players/${playerId}${season ? `?season=${season}` : ""}`,
     ),
 
+  // custom fantasy ranking sets (admin authoring — draft → publish)
+  adminListRankingSets: (season?: number) =>
+    req<{ formats: string[]; sets: RankingSetMeta[] }>(
+      `/admin/rankings${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminCreateRankingSet: (body: {
+    name: string;
+    season?: number;
+    format?: string;
+    description?: string;
+  }) =>
+    req<RankingSetDetail>("/admin/rankings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminGetRankingSet: (id: number) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}`),
+  adminUpdateRankingSet: (
+    id: number,
+    body: { name?: string; format?: string; description?: string },
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteRankingSet: (id: number) =>
+    req<{ deleted: number }>(`/admin/rankings/${id}`, { method: "DELETE" }),
+  adminReplaceRankingEntries: (
+    id: number,
+    entries: { player_id: string; tier?: number; note?: string }[],
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}/entries`, {
+      method: "PUT",
+      body: JSON.stringify({ entries }),
+    }),
+  adminSeedRankingSet: (
+    id: number,
+    body?: { source?: string; scoring?: string; position?: string; limit?: number },
+  ) =>
+    req<RankingSetDetail>(`/admin/rankings/${id}/seed`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+  adminPublishRankingSet: (id: number) =>
+    req<RankingSetMeta>(`/admin/rankings/${id}/publish`, { method: "POST" }),
+  adminUnpublishRankingSet: (id: number) =>
+    req<RankingSetMeta>(`/admin/rankings/${id}/unpublish`, { method: "POST" }),
+
+  // published ranking boards (public fantasy page)
+  fantasyRankingSets: (season?: number) =>
+    req<{ sets: RankingSetMeta[] }>(
+      `/fantasy/rankings${season != null ? `?season=${season}` : ""}`,
+    ),
+  fantasyRankings: (setId: number) =>
+    req<PublicRankingBoard>(`/fantasy/rankings/${setId}`),
+
   // global model-parameter registry (admin-only)
   adminListParams: () => req<ParamRegistry>("/admin/params"),
   adminSetParam: (key: string, value: number, note = "") =>
@@ -1697,6 +1753,11 @@ export const api = {
       `/admin/params/values/${key}`,
       { method: "PUT", body: JSON.stringify({ value, note }) },
     ),
+  adminBulkSetParams: (changes: Record<string, number>, note = "") =>
+    req<{ applied: Record<string, number> }>("/admin/params/bulk", {
+      method: "POST",
+      body: JSON.stringify({ changes, note }),
+    }),
   adminRevertParam: (key: string) =>
     req<{ key: string; value: number; is_overridden: boolean }>(
       `/admin/params/values/${key}`,
@@ -1706,6 +1767,33 @@ export const api = {
     req<{ reverted: string[] }>("/admin/params/revert-all", {
       method: "POST",
       body: JSON.stringify({ note }),
+    }),
+  adminTuningStatus: (season?: number) =>
+    req<TuningStatus>(
+      `/admin/params/status${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminExportSnapshot: (season?: number) =>
+    req<ConfigSnapshot>(
+      `/admin/params/snapshot${season != null ? `?season=${season}` : ""}`,
+    ),
+  adminImportSnapshot: (
+    snapshot: ConfigSnapshot | Record<string, unknown>,
+    opts?: {
+      note?: string;
+      include_params?: boolean;
+      include_overrides?: boolean;
+      replace_params?: boolean;
+    },
+  ) =>
+    req<ConfigImportResult>("/admin/params/import", {
+      method: "POST",
+      body: JSON.stringify({
+        snapshot,
+        note: opts?.note ?? "",
+        include_params: opts?.include_params ?? true,
+        include_overrides: opts?.include_overrides ?? true,
+        replace_params: opts?.replace_params ?? false,
+      }),
     }),
   adminListPresets: () => req<{ presets: ParamPreset[] }>("/admin/params/presets"),
   adminSavePreset: (name: string, description = "", params?: Record<string, number>) =>
@@ -1815,6 +1903,55 @@ export type ProjectionsBoard = {
   players: ProjectionsBoardRow[];
 };
 
+// ---- custom fantasy ranking sets ------------------------------------------
+
+export type RankingSetMeta = {
+  id: number;
+  name: string;
+  season: number;
+  format: string;
+  description: string;
+  status: "draft" | "published";
+  version: number;
+  published_at: string | null;
+  created_by?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  entry_count?: number;
+  has_unpublished_changes?: boolean;
+};
+
+export type RankingEntryRow = {
+  player_id: string;
+  rank: number;
+  tier: number;
+  note: string;
+  name?: string | null;
+  position?: string | null;
+  team?: string | null;
+  injury_status?: string | null;
+  model_rank?: number | null;
+  vs_model?: number | null;
+  model_points?: number | null;
+};
+
+export type RankingSetDetail = RankingSetMeta & {
+  entries: RankingEntryRow[];
+};
+
+export type PublicRankingBoard = {
+  id: number;
+  name: string;
+  season: number;
+  format: string;
+  description: string;
+  version: number;
+  published_at: string | null;
+  scoring_for_comparison?: string;
+  count: number;
+  players: RankingEntryRow[];
+};
+
 export type ModelParamEntry = {
   key: string;
   label: string;
@@ -1910,6 +2047,58 @@ export type ParamPreview = {
   games: ParamPreviewGame[];
   players: ParamPreviewPlayer[];
   notes: string[];
+};
+
+export type ConfigSnapshot = {
+  snapshot_version: number;
+  exported_at: string;
+  season_filter: number | null;
+  params: Record<string, number>;
+  params_detail?: Record<
+    string,
+    { value: number; default: number; label: string; category: string }
+  >;
+  team_input_levers: AdminOverride[];
+  player_input_levers: AdminOverride[];
+  game_output_overrides: AdminOverride[];
+  player_output_overrides: AdminOverride[];
+  counts: {
+    params: number;
+    team_input_levers: number;
+    player_input_levers: number;
+    game_output_overrides: number;
+    player_output_overrides: number;
+    total_overrides: number;
+  };
+};
+
+export type ConfigImportResult = {
+  params_applied: Record<string, number>;
+  params_reverted: string[];
+  overrides_upserted: number;
+  errors: string[];
+};
+
+export type TuningStatus = {
+  season_filter: number | null;
+  version_token: string;
+  counts: ConfigSnapshot["counts"];
+  params_by_category: {
+    id: string;
+    label: string;
+    params: {
+      key: string;
+      label: string;
+      value: number;
+      default: number;
+      delta: number;
+    }[];
+  }[];
+  recent_overrides: AdminOverride[];
+  team_input_levers: AdminOverride[];
+  player_input_levers: AdminOverride[];
+  registry_total: number;
+  categories: { id: string; label: string; description: string }[];
 };
 
 export type AdminOverride = {

@@ -495,37 +495,44 @@ can't see yet. Storage reuses `admin_overrides` (season-scoped, `week IS
 NULL`); reverting a lever instantly restores pure model output, and every
 hooked cache key embeds the overrides version.
 
-**Team levers** (`entity_type='team'`): `pace` (off plays/gm),
-`yards_per_play`, `pass_rate` (neutral), `points_per_game`. Baselines come
-from the same PBP aggregates the scoring model reads. Pace and YPP multiply
-expected scoring (elasticity 1.0 / 0.9, ratios clamped ±25%);
-`points_per_game` is a direct level-set that supersedes both; `pass_rate` is
-volume-neutral and instead tilts pass-family volume vs rush-family volume for
-every player on the roster. Applied in `predict_week`,
-`team_remaining_schedule_predictions`, and `league_game_environments` — so
-totals, spreads, scripts, and player environments move together.
+**Team levers** (`entity_type='team'`):
+
+* **Offense** — `pace` (off plays/gm), `yards_per_play`, `pass_rate`
+  (neutral), `points_per_game`. Pace and YPP multiply expected scoring
+  (elasticities registry-tunable under `levers.*`, ratios clamped);
+  `points_per_game` is a direct level-set that supersedes both; `pass_rate`
+  is volume-neutral and tilts pass-family vs rush-family volume for every
+  player on the roster.
+* **Defense** — `points_allowed_per_game` (direct level-set) and
+  `def_yards_per_play` (scales points allowed via `levers.def_ypp_elasticity`).
+  Applied into the same aggregates `predict_week` and
+  `league_game_environments` read, so opponent matchups and player envs
+  recompute with offense levers.
 
 **Player levers** (`entity_type='player'`, PLAYER_INPUT_FIELDS):
 `target_share`, `rush_share`, `yards_per_target`, `yards_per_carry`,
-`snap_rate`. Baselines are computed from the last completed season's weekly
-frame (+ nflverse snap counts). Each lever scales posterior rates by
-(override ÷ baseline), clamped: shares move their whole stat family's
-distribution (like role multipliers), efficiency moves yardage 1:1 and TDs at
-0.5 elasticity, snap rate scales everything. Applied in `_collect_candidates`
-(season + weekly boards), `player_game_predictions`, and
-`player_season_projection`; responses expose the applied multipliers under
-`input_levers`. A lever with no baseline is a no-op — surfaced as inactive in
-the admin UI, never a silent distortion.
+`snap_rate`, `availability`. Baselines are computed from the last completed
+season's weekly frame (+ nflverse snap counts; availability ≈ games/17).
+Share levers move their whole stat family's distribution; efficiency moves
+yardage 1:1 and TDs at half elasticity; snap rate scales everything;
+`availability` supersedes the history-derived games-played durability rate
+on season projections only. Applied in `_collect_candidates`,
+`player_game_predictions`, and `player_season_projection`; responses expose
+applied multipliers under `input_levers`. A lever with no baseline is a
+no-op — surfaced as inactive in the admin UI, never a silent distortion.
 
 ## 12. Global Parameter Registry (`param_registry`)
 
 Every judgment-call constant in the projection stack — Elo K-factor and HFA,
-market blend weights, scoring elasticities, game-script sensitivities, prop
-anchor caps, defense shrink/clamps, ADP decay, lever elasticities, margin and
-total sigmas — is declared once as a `ParamSpec` in
-`services/param_registry.py` (key, label, description, code default, hard
-bounds, category, affected surfaces) and read at call time via
-`param_registry.value("elo.k_factor")`. ~45 tunables across 9 categories.
+market blend weights, scoring elasticities, game-script sensitivities, prior
+strength / positional shrink K by stat class, game-env clamps, prop anchor
+caps (including price-implied mean shift), defense shrink/clamps, ADP decay,
+lever elasticities (offense + defense + availability), margin/total sigmas,
+weather thresholds/multipliers, injury Doubtful/Questionable multipliers —
+is declared once as a `ParamSpec` in `services/param_registry.py` (key,
+label, description, code default, hard bounds, category, affected surfaces)
+and read at call time via `param_registry.value("elo.k_factor")`. ~75
+tunables across 11 categories.
 
 **Resolution order**: preview overlay (context-local) → `model_params` DB row
 → code default. No DB row means exact pre-registry behavior; any DB failure
@@ -536,9 +543,11 @@ all replicas within seconds — no deploy, no restart.
 
 **Write path** (`model_params_service`, `/admin/params/*`, admin → Parameters
 tab): bounds validation plus cross-param pair rules (clamp floors must stay
-below ceilings, `market.w_base` below `market.w_cap`); every set / revert /
-preset action appends to `admin_audit_log` (also fed by entity overrides —
-one unified Change Log timeline with old value, new value, actor, note).
+below ceilings, `market.w_base` below `market.w_cap`, weather wind/precip
+mod below high); every set / revert / bulk / preset action appends to
+`admin_audit_log` (also fed by entity overrides — one unified Change Log
+timeline with old value, new value, actor, note). Staged multi-param applies
+use `POST /admin/params/bulk` (atomic all-or-nothing).
 
 **Presets** (`model_param_presets`): named snapshots of the full
 deviation-from-default configuration ("preseason", "sharp-market weeks").
@@ -554,9 +563,16 @@ Elo ratings are rebuilt by the batch job, so K-factor / season-regression
 changes preview as no-ops until the next rebuild; the market consensus cache
 (~10 min) can lag a Kalshi-weight change by one cycle.
 
+**Config snapshot / status** (`config_snapshot_service`, admin → Config Status
+tab): `GET /admin/params/status` summarizes every active param override, team
+lever, player lever, and output pin; `GET /admin/params/snapshot` exports a
+portable JSON of the full tuning stack; `POST /admin/params/import` restores
+params (merge or replace) and upserts overrides with a full audit trail.
+
 **Adding a tunable** is a one-liner: declare the `ParamSpec`, read it with
 `value()` at the point of use (never at import time). It then appears in the
-admin UI, validation, audit, presets, and preview automatically.
+admin UI, validation, audit, presets, snapshot export, and preview
+automatically.
 
 ---
 

@@ -141,12 +141,22 @@ def test_list_params_shape(client, admin_headers):
     r = client.get("/admin/params", headers=admin_headers)
     assert r.status_code == 200
     body = r.json()
-    assert body["total_count"] >= 40
+    assert body["total_count"] >= 70  # expanded registry (weather/injury/priors/…)
     cats = {c["id"]: c for c in body["categories"]}
     assert "elo" in cats and "market_blend" in cats
+    assert "weather" in cats and "injury" in cats
     p = next(p for c in body["categories"] for p in c["params"]
              if p["key"] == "market.w_base")
     assert p["default"] == 0.30 and "min" in p and "description" in p
+    # New prior/weather/injury keys are present and bounds-validated.
+    keys = {p["key"] for c in body["categories"] for p in c["params"]}
+    for k in (
+        "player.prior_n_scoring", "player.shrink_k_scoring",
+        "player.env_clamp_lo", "weather.wind_high_mph",
+        "injury.doubtful_mult", "levers.def_ypp_elasticity",
+        "levers.availability_clamp_lo",
+    ):
+        assert k in keys
 
 
 def test_requires_admin(client):
@@ -258,5 +268,95 @@ def test_override_writes_land_in_unified_audit(client, admin_headers):
         assert entry["action"] == "override_set"
         assert entry["target_key"] == "game:2026_01_KC_BUF:predicted_total"
         assert entry["new_value"] == 51.5
+    finally:
+        AdminOverride.__table__.drop(bind=engine, checkfirst=True)
+
+
+# ---- Bulk set / snapshot / status -------------------------------------------
+
+
+def test_bulk_set_atomic_and_audited(client, admin_headers):
+    from app.services import param_registry
+
+    # Cross-param failure rolls back — nothing applied.
+    r = client.post(
+        "/admin/params/bulk",
+        json={"changes": {"defense.clamp_lo": 1.2, "defense.clamp_hi": 1.0},
+              "note": "bad pair"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 422
+    assert param_registry.value("defense.clamp_lo") == 0.80
+
+    r = client.post(
+        "/admin/params/bulk",
+        json={"changes": {"elo.k_factor": 32.0, "dist.margin_sigma": 14.0},
+              "note": "bulk mid-season"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert param_registry.value("elo.k_factor") == 32.0
+    assert param_registry.value("dist.margin_sigma") == 14.0
+
+
+def test_weather_and_injury_params_wire_into_math(client, admin_headers):
+    from app.services import player_predictions_service as pps
+
+    # Default outdoor moderate wind applies pass penalty.
+    weather = {"available": True, "is_indoor": False, "wind_mph": 18,
+               "precipitation_in": 0, "temperature_f": 55}
+    base = pps.weather_multiplier(weather, "passing_yards")
+    assert base < 1.0
+
+    client.put("/admin/params/values/weather.pass_wind_mod_mult",
+               json={"value": 0.70}, headers=admin_headers)
+    assert pps.weather_multiplier(weather, "passing_yards") == pytest.approx(0.70)
+
+    assert pps.injury_multiplier("DOUBTFUL") == pytest.approx(0.30)
+    client.put("/admin/params/values/injury.doubtful_mult",
+               json={"value": 0.10}, headers=admin_headers)
+    assert pps.injury_multiplier("DOUBTFUL") == pytest.approx(0.10)
+    assert pps.injury_multiplier("OUT") == 0.0  # always zero, not tunable
+
+
+def test_snapshot_export_import_roundtrip(client, admin_headers):
+    from app.models.admin_override import AdminOverride
+    from app.db import engine
+    from app.services import param_registry
+
+    AdminOverride.__table__.create(bind=engine, checkfirst=True)
+    try:
+        client.put("/admin/params/values/elo.k_factor",
+                   json={"value": 28.0}, headers=admin_headers)
+        client.post(
+            "/admin/overrides",
+            json={"entity_type": "team", "entity_id": "KC", "field": "pace",
+                  "value": 68.0, "season": 2026, "original_value": 64.0,
+                  "note": "new OC"},
+            headers=admin_headers,
+        )
+
+        snap = client.get("/admin/params/snapshot", headers=admin_headers).json()
+        assert snap["counts"]["params"] >= 1
+        assert snap["counts"]["team_input_levers"] >= 1
+        assert "elo.k_factor" in snap["params"]
+
+        status = client.get("/admin/params/status", headers=admin_headers).json()
+        assert status["counts"]["params"] >= 1
+        assert status["registry_total"] >= 70
+        assert any(c["params"] for c in status["params_by_category"])
+
+        # Wipe params, re-import merge.
+        client.post("/admin/params/revert-all", json={}, headers=admin_headers)
+        assert param_registry.value("elo.k_factor") == 20.0
+
+        r = client.post(
+            "/admin/params/import",
+            json={"snapshot": snap, "note": "restore", "include_overrides": False},
+            headers=admin_headers,
+        )
+        assert r.status_code == 200, r.text
+        assert param_registry.value("elo.k_factor") == 28.0
+        assert "elo.k_factor" in r.json()["params_applied"]
     finally:
         AdminOverride.__table__.drop(bind=engine, checkfirst=True)

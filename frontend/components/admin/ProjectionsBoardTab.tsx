@@ -49,6 +49,7 @@ const LEVER_LABELS: Record<string, string> = {
   yards_per_target: "Y/T",
   yards_per_carry: "Y/C",
   snap_rate: "Snap%",
+  availability: "Avail%",
 };
 
 export function ProjectionsBoardTab() {

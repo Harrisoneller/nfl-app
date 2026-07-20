@@ -126,7 +126,7 @@ def upsert_override(
         raise ValueError(f"'{field}' is a season-scoped input lever (week must be null)")
     if not math.isfinite(float(value)):
         raise ValueError("value must be a finite number")
-    if field in ("pass_rate", "target_share", "rush_share", "snap_rate") and not (
+    if field in ("pass_rate", "target_share", "rush_share", "snap_rate", "availability") and not (
         0.0 < float(value) <= 1.0
     ):
         raise ValueError(f"'{field}' is a share in (0, 1]")

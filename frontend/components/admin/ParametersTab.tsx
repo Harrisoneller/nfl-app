@@ -79,9 +79,14 @@ export function ParametersTab() {
     setApplyBusy(true);
     setErr(null);
     try {
-      for (const [key, value] of Object.entries(staged)) {
-        await api.adminSetParam(key, value, notes[key] || "");
-      }
+      // Atomic bulk write: all-or-nothing bounds + cross-param validation.
+      const noteParts = Object.keys(staged)
+        .map((k) => notes[k])
+        .filter(Boolean);
+      await api.adminBulkSetParams(
+        staged,
+        noteParts.length ? noteParts.join("; ") : "bulk apply from admin UI",
+      );
       setStaged({});
       setNotes({});
       setPreview(null);
