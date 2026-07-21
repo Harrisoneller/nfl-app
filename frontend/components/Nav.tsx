@@ -34,7 +34,8 @@ const links: NavLink[] = [
   { href: "/h2h/PHI/SF", label: "H2H", seg: "/h2h", icon: <H2HIcon /> },
   { href: "/odds", label: "Odds", seg: "/odds", icon: <OddsIcon /> },
   { href: "/sparky", label: "Sparky", seg: "/sparky", icon: <SparkyIcon /> },
-  { href: "/bets", label: "My Bets", seg: "/bets", icon: <BetsIcon /> },
+  // "My Bets" is personal-to-user, so it lives in the account area (top-right
+  // pill → /account) and Cmd+K rather than the primary content nav.
   // /fantasy still redirects into the Players hub (/players?tab=fantasy).
   // /ai hidden until ready — route still works via direct URL.
 ];
@@ -243,15 +244,6 @@ function FantasyIcon() {
       <path d="M12 12v4" />
       <path d="M9 20h6" />
       <path d="M10 16h4l.5 4h-5l.5-4Z" />
-    </svg>
-  );
-}
-function BetsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <rect x="3" y="5" width="18" height="14" rx="2" />
-      <path d="M3 10h18" />
-      <path d="M7 15h4" />
     </svg>
   );
 }

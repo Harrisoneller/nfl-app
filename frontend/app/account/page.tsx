@@ -90,6 +90,31 @@ export default function AccountPage() {
         </div>
       </div>
 
+      <Link
+        href="/bets"
+        className="block rounded-lg border divider bg-panel/40 hover:bg-panel/70 transition-colors px-4 py-3"
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className="w-9 h-9 rounded-md bg-team-primary/15 text-team-primary flex items-center justify-center"
+            aria-hidden
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="M3 10h18" />
+              <path d="M7 15h4" />
+            </svg>
+          </span>
+          <div className="flex-1">
+            <div className="text-sm font-medium">My Bets</div>
+            <div className="text-xs text-muted">Your bet log, parlays, and closing-line value</div>
+          </div>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-muted" aria-hidden>
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </div>
+      </Link>
+
       <Card title="Profile">
         <form onSubmit={saveProfile} className="space-y-3">
           <label className="block space-y-1">
