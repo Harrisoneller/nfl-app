@@ -69,10 +69,43 @@ def run() -> None:
         log.warning("doctor_missing_grok_api_key",
                     hint="Set GROK_API_KEY in .env to enable AI features")
         issues.append("GROK_API_KEY not set")
-    if s.secret_key == "change-me":
-        log.warning("doctor_default_secret_key",
-                    hint="Generate one: python -c 'import secrets; print(secrets.token_urlsafe(64))'")
-        issues.append("SECRET_KEY is default placeholder")
+    secret_is_placeholder = (
+        not s.secret_key
+        or s.secret_key == "change-me"
+        or s.secret_key.startswith("change-me")
+    )
+    if secret_is_placeholder:
+        # Always bad; *critical* once auth is load-bearing, because a rotating or
+        # guessable SECRET_KEY silently invalidates (or forges) JWTs.
+        if s.multi_user_mode:
+            log.error(
+                "doctor_default_secret_key_multi_user",
+                hint="MULTI_USER_MODE=true but SECRET_KEY is a placeholder. Real logins "
+                "depend on it — set a stable random value on every service: "
+                "python -c 'import secrets; print(secrets.token_urlsafe(64))'",
+            )
+            issues.append("SECRET_KEY is placeholder while MULTI_USER_MODE=true (logins unreliable)")
+        else:
+            log.warning("doctor_default_secret_key",
+                        hint="Generate one: python -c 'import secrets; print(secrets.token_urlsafe(64))'")
+            issues.append("SECRET_KEY is default placeholder")
+
+    # ---- Auth posture: the ADMIN_EMAILS + single-user trap -----------------
+    # When ADMIN_EMAILS is set but MULTI_USER_MODE is off, get_current_user
+    # ignores the login JWT and resolves EVERY request to the seeded
+    # system@local user — whose email is not in the allowlist — so require_admin
+    # 403s and /auth/me reports is_admin=false. Net effect: a successful admin
+    # login still can't reach /admin, and the account shows as system@local.
+    if s.admin_email_set and not s.multi_user_mode:
+        log.warning(
+            "doctor_admin_emails_without_multi_user",
+            admin_emails=sorted(s.admin_email_set),
+            hint="ADMIN_EMAILS is set but MULTI_USER_MODE=false, so all requests resolve "
+            "to system@local and NO ONE can reach admin routes (the login JWT is ignored). "
+            "Set MULTI_USER_MODE=true to honor logins and unlock admin for the allowlisted "
+            "email(s).",
+        )
+        issues.append("ADMIN_EMAILS set but MULTI_USER_MODE=false (admin unreachable)")
 
     if s.app_env == "production" and s.app_role == "web":
         log.info(
