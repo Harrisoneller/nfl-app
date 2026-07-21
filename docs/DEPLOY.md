@@ -256,7 +256,7 @@ Once you're past friends-testing and want to put this on the open internet:
 
 | Item | What | How |
 |---|---|---|
-| Auth | Enable real signups | Set `MULTI_USER_MODE=true`. Wire Clerk's Next.js SDK; pass tokens as Bearer headers from the frontend; the backend's `get_current_user` already accepts them. |
+| Auth | Enable real signups | Set `MULTI_USER_MODE=true` on **both** the web and worker services. Public pages stay browseable anonymously; per-user features (bets, widgets) become private per account. Admin is granted by `ADMIN_EMAILS` (allowlisted email = admin, everyone else = normal user). The built-in email/password `/auth` flow already issues Bearer tokens the frontend sends; wiring a provider like Clerk is optional. ⚠️ If `ADMIN_EMAILS` is set while `MULTI_USER_MODE=false`, **no one** can reach admin routes (every request is `system@local`, which isn't in the allowlist) — `startup_doctor` logs `doctor_admin_emails_without_multi_user` to catch this. |
 | Sentry | Error tracking | Sign up at sentry.io, drop the DSN into `SENTRY_DSN` env var. |
 | Backups | Postgres dumps | Railway has a one-click backup feature, or schedule `scripts/backup_db.sh` to S3. |
 | Tighten cost caps | Lower per-user budget | Drop `AI_PER_USER_DAILY_BUDGET_USD` to 0.10 or gate AI behind auth-only. |
@@ -276,6 +276,7 @@ Once you're past friends-testing and want to put this on the open internet:
 - **Frontend deploy fails on Vercel with type errors** — `next build` is stricter than `next dev`. If you see errors, run `npm run build` locally first to surface them.
 - **Elo never rebuilds** — Railway's container restarts happen periodically; the in-memory cache resets. APScheduler restarts cleanly. If you see no `elo_history_rebuilt` log, hit `POST /predictions/admin/elo/rebuild` manually.
 - **"Deploy ran out of memory" / backend crashes with >1 user, repeated `Started server process` every few minutes** — an out-of-memory crash-loop. Provision **≥1 GB** (Railway → Settings → Resources) and keep a **single** uvicorn worker (no `--workers N`). See [Memory & sizing](#6-memory--sizing). If it persists after raising RAM, something is loading full (un-projected) play-by-play or warming multiple seasons at boot — check recent changes against `PBP_COLUMNS`, the `_team_pbp_aggregates` singleflight, and `_job_warmup_analytics`.
+- **Logged in as the admin email but the account shows `system@local` and `/admin` bounces you home** — `MULTI_USER_MODE` is `false` on the web service, so the backend ignores the login JWT and resolves everyone to the seeded `system@local` user. Because that email isn't in `ADMIN_EMAILS`, `/auth/me` returns `is_admin=false` and the admin page redirects. Fix: set `MULTI_USER_MODE=true` on the web (and worker) service and redeploy. Confirm `SECRET_KEY` is set to a stable random value (same on both services) so tokens verify. Check boot logs for `doctor_admin_emails_without_multi_user` — its presence means this trap is active.
 - **xAI / Grok API key not working** — verify at https://console.x.ai/. The current default model is `grok-2-latest`; older keys may need `grok-beta` (set `GROK_MODEL=grok-beta`).
 
 ---
