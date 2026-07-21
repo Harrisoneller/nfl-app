@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@/context/AuthProvider";
 import { ThemeToggle } from "./ThemeProvider";
 
@@ -16,17 +16,26 @@ type NavLink = {
   // route prefix used to mark the entry active (Home matches "/" exactly)
   seg: string;
   icon: ReactNode;
+  // When set, the entry is active only if the ?tab= query equals this value.
+  // Lets two links share the same /players hub and light up independently.
+  tab?: string;
+  // When set, the entry is active on `seg` EXCEPT when ?tab= equals this value.
+  exceptTab?: string;
 };
 
 const links: NavLink[] = [
   { href: "/", label: "Home", seg: "/", icon: <HomeIcon /> },
   { href: "/teams", label: "Teams", seg: "/teams", icon: <TeamsIcon /> },
-  { href: "/players", label: "Players", seg: "/players", icon: <PlayersIcon /> },
+  // Players and Fantasy both live in the /players hub; the ?tab= query decides
+  // which pill is active. Players = the hub for anything other than the fantasy
+  // command center; Fantasy deep-links straight to that tab.
+  { href: "/players", label: "Players", seg: "/players", exceptTab: "fantasy", icon: <PlayersIcon /> },
+  { href: "/players?tab=fantasy", label: "Fantasy", seg: "/players", tab: "fantasy", icon: <FantasyIcon /> },
   { href: "/h2h/PHI/SF", label: "H2H", seg: "/h2h", icon: <H2HIcon /> },
   { href: "/odds", label: "Odds", seg: "/odds", icon: <OddsIcon /> },
   { href: "/sparky", label: "Sparky", seg: "/sparky", icon: <SparkyIcon /> },
   { href: "/bets", label: "My Bets", seg: "/bets", icon: <BetsIcon /> },
-  // /fantasy now redirects into the Players hub (/players?tab=fantasy).
+  // /fantasy still redirects into the Players hub (/players?tab=fantasy).
   // /ai hidden until ready — route still works via direct URL.
 ];
 
@@ -37,11 +46,29 @@ const adminLink: NavLink = {
   href: "/admin", label: "Admin", seg: "/admin", icon: <AdminIcon />,
 };
 
-function isActive(pathname: string, seg: string) {
-  return seg === "/" ? pathname === "/" : pathname.startsWith(seg);
+function isActive(pathname: string, tab: string | null, l: NavLink) {
+  if (l.seg === "/") return pathname === "/";
+  if (!pathname.startsWith(l.seg)) return false;
+  if (l.tab) return tab === l.tab; // Fantasy: only on ?tab=fantasy
+  if (l.exceptTab) return tab !== l.exceptTab; // Players: any tab but fantasy
+  return true;
 }
 
 export function Nav() {
+  // useSearchParams must sit under a Suspense boundary in the app router.
+  return (
+    <Suspense fallback={<NavView tab={null} />}>
+      <NavWithParams />
+    </Suspense>
+  );
+}
+
+function NavWithParams() {
+  const tab = useSearchParams().get("tab");
+  return <NavView tab={tab} />;
+}
+
+function NavView({ tab }: { tab: string | null }) {
   const { user, loading } = useAuth();
   const pathname = usePathname() || "/";
   const [isMac, setIsMac] = useState(true);
@@ -81,7 +108,7 @@ export function Nav() {
                 key={l.href}
                 href={l.href}
                 className="nav-link"
-                data-active={isActive(pathname, l.seg)}
+                data-active={isActive(pathname, tab, l)}
               >
                 {l.label}
               </Link>
@@ -140,8 +167,8 @@ export function Nav() {
             key={l.href}
             href={l.href}
             className="tab-item"
-            data-active={isActive(pathname, l.seg)}
-            aria-current={isActive(pathname, l.seg) ? "page" : undefined}
+            data-active={isActive(pathname, tab, l)}
+            aria-current={isActive(pathname, tab, l) ? "page" : undefined}
           >
             {l.icon}
             <span>{l.label}</span>
@@ -204,6 +231,18 @@ function SparkyIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z" />
       <path d="M19 15.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2Z" />
+    </svg>
+  );
+}
+function FantasyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M7 4h10v3a5 5 0 0 1-10 0V4Z" />
+      <path d="M7 5H4v1a3 3 0 0 0 3 3" />
+      <path d="M17 5h3v1a3 3 0 0 1-3 3" />
+      <path d="M12 12v4" />
+      <path d="M9 20h6" />
+      <path d="M10 16h4l.5 4h-5l.5-4Z" />
     </svg>
   );
 }
