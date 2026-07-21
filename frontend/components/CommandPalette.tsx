@@ -13,6 +13,7 @@ const NAV_ITEMS: Hit[] = [
   { kind: "nav", id: "/", label: "Home", sub: "Scores + news + widgets", color: "#94a3b8" },
   { kind: "nav", id: "/teams", label: "Teams", sub: "All 32, grouped by division", color: "#94a3b8" },
   { kind: "nav", id: "/odds", label: "Odds", sub: "Sportsbook markets", color: "#94a3b8" },
+  { kind: "nav", id: "/bets", label: "My Bets", sub: "Your bet log + closing-line value", color: "#94a3b8" },
   // /fantasy and /ai hidden until ready — see Nav.tsx
 ];
 
