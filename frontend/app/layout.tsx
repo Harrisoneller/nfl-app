@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
+import { Analytics } from "@vercel/analytics/next";
 import { Nav } from "@/components/Nav";
 import { Footer } from "@/components/Footer";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Footer />
           <CommandPalette />
         </ToastProvider>
+        <Analytics />
       </body>
     </html>
   );
