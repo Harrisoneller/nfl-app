@@ -8,8 +8,10 @@ import { Card } from "@/components/Card";
 /**
  * Published custom ranking boards — the admin's hand-built rankings, one
  * toggle per board (PPR, Superflex, Dynasty…). Independent of the projection
- * engine by design: the "vs model" column shows where each ranking diverges
- * from the model's season leaderboard, which is the whole point.
+ * engine by design: board rank reflects perceived value and draft strategy,
+ * not raw point projections, so we intentionally do NOT surface a
+ * rank-vs-model comparison anywhere (apples to oranges) — not on screen and
+ * not in the CSV export. "Proj pts" stays as a neutral points reference.
  */
 
 const POSITIONS = ["ALL", "QB", "RB", "WR", "TE"] as const;
@@ -113,7 +115,7 @@ function RankingBoard({ setId }: { setId: number }) {
     if (!data) return;
     const head = [
       "rank", "tier", "position", "pos_rank", "name", "team", "player_id",
-      "model_rank", "vs_model", "model_points", "note",
+      "model_points", "note",
     ];
     const esc = (v: unknown) => JSON.stringify(v ?? "");
     const lines = (data.players ?? []).map((p) =>
@@ -125,8 +127,6 @@ function RankingBoard({ setId }: { setId: number }) {
         esc(p.name ?? ""),
         p.team ?? "",
         p.player_id,
-        p.model_rank ?? "",
-        p.vs_model ?? "",
         p.model_points != null ? p.model_points.toFixed(1) : "",
         esc(p.note ?? ""),
       ].join(","),
@@ -186,7 +186,7 @@ function RankingBoard({ setId }: { setId: number }) {
           <button
             onClick={exportCsv}
             className="text-xs rounded px-3 py-1.5 border divider text-muted hover:text-white"
-            title="Download this board as CSV, including the model-comparison columns"
+            title="Download this board as CSV (rank, tier, position, projected points, notes)"
           >
             Export CSV
           </button>
@@ -211,8 +211,6 @@ function RankingBoard({ setId }: { setId: number }) {
                 <th className="pr-3">Tier</th>
                 <th className="pr-3">Player</th>
                 <th className="pr-3">Team</th>
-                <th className="pr-3" title="The projection model's season leaderboard rank">Model</th>
-                <th className="pr-3" title="Model rank minus board rank. Positive = ranked ahead of the model (higher conviction); negative = ranked below the model.">vs model</th>
                 <th className="pr-3" title="Model projected season fantasy points">Proj pts</th>
                 <th className="pr-3">Note</th>
               </tr>
@@ -251,12 +249,6 @@ function RankingBoard({ setId }: { setId: number }) {
                   </td>
                   <td className="pr-3">{p.team ?? "FA"}</td>
                   <td className="pr-3 tabular-nums text-muted">
-                    {p.model_rank != null ? `#${p.model_rank}` : "—"}
-                  </td>
-                  <td className="pr-3 tabular-nums">
-                    <VsModel value={p.vs_model ?? null} />
-                  </td>
-                  <td className="pr-3 tabular-nums text-muted">
                     {p.model_points != null ? p.model_points.toFixed(0) : "—"}
                   </td>
                   <td className="pr-3 text-muted max-w-[220px] truncate" title={p.note || undefined}>
@@ -269,18 +261,5 @@ function RankingBoard({ setId }: { setId: number }) {
         </div>
       </Card>
     </div>
-  );
-}
-
-/** Signed divergence badge: how far this board strays from the model. */
-function VsModel({ value }: { value: number | null }) {
-  if (value == null) return <span className="text-muted">—</span>;
-  if (Math.abs(value) < 3) return <span className="text-muted">≈</span>;
-  const tone = value > 0 ? "text-emerald-400" : "text-rose-400";
-  return (
-    <span className={`font-medium ${tone}`}>
-      {value > 0 ? "+" : ""}
-      {value}
-    </span>
   );
 }

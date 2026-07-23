@@ -154,6 +154,19 @@ def invalidate(db: Session, kind: str, key: str | None = None) -> int:
     return n
 
 
+def evict(db: Session, kind: str, key: str) -> int:
+    """Drop one artifact from BOTH L1 (in-process) and L2 (DB).
+
+    ``invalidate`` only clears the Postgres row; a subsequent ``get_or_compute``
+    would still return the warm L1 copy (default 5-min TTL) and skip the
+    recompute. A model rerun needs the value gone from *both* layers so the
+    next read actually recomputes under the new params — that's what this does.
+    Returns the number of L2 rows deleted.
+    """
+    l1_cache.delete(f"artifact:{kind}:{key}")
+    return invalidate(db, kind, key)
+
+
 # ============================================================================
 # Async two-layer pattern
 # ============================================================================

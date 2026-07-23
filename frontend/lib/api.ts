@@ -1843,6 +1843,53 @@ export const api = {
     const qs = p.toString();
     return req<ProjectionsBoard>(`/admin/overrides/projections-board${qs ? `?${qs}` : ""}`);
   },
+
+  // ---- Model reruns -------------------------------------------------------
+  adminTriggerRerun: (
+    scope: RerunScope = "quick",
+    opts?: { season?: number; week?: number },
+  ) =>
+    req<RerunStarted>("/admin/rerun", {
+      method: "POST",
+      body: JSON.stringify({ scope, season: opts?.season, week: opts?.week }),
+    }),
+  adminRerunStatus: () => req<RerunStatus>("/admin/rerun/status"),
+};
+
+export type RerunScope = "quick" | "games" | "players" | "full";
+
+export type RerunStarted = {
+  status: "started";
+  run_id: number;
+  scope: RerunScope;
+  label: string;
+  season: number;
+  week: number | null;
+};
+
+export type RerunRun = {
+  id: number;
+  domain: string;
+  season: number | null;
+  status: "running" | "ok" | "error";
+  started_at: string | null;
+  finished_at: string | null;
+  rows_affected: number | null;
+  message: string | null;
+};
+
+export type RerunStatus = {
+  running: boolean;
+  active: {
+    run_id: number;
+    scope: RerunScope;
+    actor?: string;
+    season?: number;
+    week?: number | null;
+    started_at?: string;
+  } | null;
+  scopes: Record<string, string>;
+  runs: RerunRun[];
 };
 
 export type BoardWeekCell = {

@@ -208,6 +208,7 @@ async def _compute_head_to_head(
             ratings.get(away, elo_service.INITIAL_RATING),
             home_off_ppg=h_off, away_off_ppg=a_off,
             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
+            home_aggs=aggs.get(h), away_aggs=aggs.get(away),
         )
         predicted_game = {**upcoming_game, "prediction": pred}
     else:
@@ -221,6 +222,7 @@ async def _compute_head_to_head(
             home_off_ppg=h_off, away_off_ppg=b_off,
             home_def_ppg_allowed=h_def, away_def_ppg_allowed=b_def,
             neutral_site=True,
+            home_aggs=aggs.get(a), away_aggs=aggs.get(b),
         )
         predicted_game = {
             "home_team": a, "away_team": b, "week": None, "gameday": None,
