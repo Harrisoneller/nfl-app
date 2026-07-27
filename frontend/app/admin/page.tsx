@@ -12,6 +12,7 @@ import { ParametersTab } from "@/components/admin/ParametersTab";
 import { ChangeLogTab } from "@/components/admin/ChangeLogTab";
 import { ProjectionsBoardTab } from "@/components/admin/ProjectionsBoardTab";
 import { ConfigStatusTab } from "@/components/admin/ConfigStatusTab";
+import { RerunsTab } from "@/components/admin/RerunsTab";
 
 type TabId =
   | "board"
@@ -21,6 +22,7 @@ type TabId =
   | "fantasy"
   | "inputs"
   | "params"
+  | "reruns"
   | "changelog"
   | "audit";
 
@@ -32,6 +34,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "fantasy", label: "Fantasy Rankings" },
   { id: "inputs", label: "Model Inputs" },
   { id: "params", label: "Parameters" },
+  { id: "reruns", label: "Reruns" },
   { id: "changelog", label: "Change Log" },
   { id: "audit", label: "All Overrides" },
 ];
@@ -97,6 +100,7 @@ export default function AdminPage() {
       {tab === "fantasy" && <RankingBoardsTab />}
       {tab === "inputs" && <ModelInputsTab />}
       {tab === "params" && <ParametersTab />}
+      {tab === "reruns" && <RerunsTab />}
       {tab === "changelog" && <ChangeLogTab />}
       {tab === "audit" && <AuditTab />}
     </div>

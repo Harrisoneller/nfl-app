@@ -3,6 +3,10 @@
   "framework": "nextjs",
   "buildCommand": "next build",
   "outputDirectory": ".next",
+  "rewrites": [
+    { "source": "/cfb", "destination": "https://cfb-app-jet.vercel.app/cfb" },
+    { "source": "/cfb/:path*", "destination": "https://cfb-app-jet.vercel.app/cfb/:path*" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

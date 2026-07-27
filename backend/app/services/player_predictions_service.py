@@ -395,6 +395,7 @@ async def league_game_environments(
             away_off_ppg=(aggs.get(a) or {}).get("points_per_game"),
             home_def_ppg_allowed=(aggs.get(h) or {}).get("points_allowed_per_game"),
             away_def_ppg_allowed=(aggs.get(a) or {}).get("points_allowed_per_game"),
+            home_aggs=aggs.get(h), away_aggs=aggs.get(a),
         )
         base = {
             "week": _safe_int(g.get("week")),

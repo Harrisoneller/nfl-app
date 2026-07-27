@@ -61,6 +61,9 @@ PBP_COLUMNS: list[str] = [
     "play_type", "epa", "success", "yards_gained", "yardline_100",
     "touchdown", "drive", "down", "first_down", "posteam_score",
     "wp", "qtr", "interception", "fumble_lost", "sack",
+    # Adjusted-EPA core (epa_adjust_service): QB accuracy over expectation,
+    # pass-rate over expected, and clock context for neutral-situation pace.
+    "cpoe", "pass_oe", "game_seconds_remaining",
 ]
 
 

@@ -36,7 +36,7 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
-PREDICTION_MODEL_VERSION = "elo-v2"
+PREDICTION_MODEL_VERSION = "epa-elo-v3"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
@@ -69,6 +69,132 @@ def _rating_sigma() -> float:
     return param_registry.value("game.rating_sigma_elo")
 
 
+def _param(key: str) -> float:
+    from . import param_registry
+    return param_registry.value(key)
+
+
+# Scale matching success-rate deviations to EPA/play deviations: league SR
+# spread is ~±0.05, EPA/play spread ~±0.08, so 1.6·SR_dev sits on the EPA scale.
+_SR_TO_EPA_SCALE = 1.6
+# Pace can move a total by at most ±8% — pace is real but bounded.
+_PACE_MULT_CLAMP = (0.92, 1.08)
+
+
+def _lever_ratio(aggs: dict[str, Any] | None, *keys: str) -> float:
+    """Admin input-lever passthrough for the EPA path.
+
+    model_inputs_service records its PPG-space adjustments in
+    ``_input_adjustment`` ({"points_per_game": {"from": x, "to": y}, ...});
+    the fundamentals layer honors them as a multiplicative ratio so a
+    coaching-change lever still moves EPA-based scores.
+    """
+    adj = (aggs or {}).get("_input_adjustment")
+    if not isinstance(adj, dict):
+        return 1.0
+    ratio = 1.0
+    for k in keys:
+        entry = adj.get(k)
+        if isinstance(entry, dict):
+            frm, to = entry.get("from"), entry.get("to")
+            if frm and to and float(frm) > 0:
+                ratio *= float(to) / float(frm)
+    return ratio
+
+
+def _team_strengths(aggs: dict[str, Any] | None) -> tuple[float, float] | None:
+    """(off_strength, def_strength) in EPA/play deviations, or None if the
+    adjusted-EPA layer isn't available for this team.
+
+    Offense: opponent-adjusted EPA/play blended with adjusted success rate
+    (stability) plus a CPOE credit (QB accuracy sustains, box-score EPA doesn't).
+    Defense: positive = allows more than league average = bad.
+    """
+    if not aggs:
+        return None
+    off_epa = aggs.get("adj_off_epa_per_play")
+    def_epa = aggs.get("adj_def_epa_per_play")
+    if off_epa is None or def_epa is None:
+        return None
+    w_sr = _param("game.success_rate_weight")
+    off = (1 - w_sr) * float(off_epa) + w_sr * _SR_TO_EPA_SCALE * float(
+        aggs.get("adj_off_success_rate") or 0.0
+    )
+    cpoe = aggs.get("off_cpoe")
+    if cpoe is not None:
+        off += _param("game.cpoe_epa_per_pct") * float(cpoe)
+    deff = (1 - w_sr) * float(def_epa) + w_sr * _SR_TO_EPA_SCALE * float(
+        aggs.get("adj_def_success_rate") or 0.0
+    )
+    return off, deff
+
+
+def _fundamentals(
+    home_aggs: dict[str, Any] | None,
+    away_aggs: dict[str, Any] | None,
+    neutral_site: bool,
+) -> dict[str, Any] | None:
+    """Adjusted-EPA fundamentals layer: expected points, margin, and total.
+
+    Expected points = league avg + (own adjusted offense + opponent adjusted
+    defense) · points-per-net-EPA — both effects come from one ridge fit, so
+    this is the model's E[game EPA] mapped to points. Totals then get the two
+    matchup-specific drivers PPG can't see: neutral-situation pace (seconds
+    per snap → play volume) and combined PROE (pass-heavy → clock stops →
+    more plays/points). Returns None when either team lacks adjusted metrics
+    (cold start / missing PBP) — callers fall back to the PPG path.
+    """
+    hs = _team_strengths(home_aggs)
+    as_ = _team_strengths(away_aggs)
+    if hs is None or as_ is None:
+        return None
+    league_avg = _league_avg()
+    ppe = _param("game.points_per_net_epa")
+
+    exp_h = league_avg + (hs[0] + as_[1]) * ppe
+    exp_a = league_avg + (as_[0] + hs[1]) * ppe
+    # Admin lever passthrough (PPG-space levers scale the EPA path too).
+    exp_h *= _lever_ratio(home_aggs, "points_per_game", "points_per_game_effect")
+    exp_h *= _lever_ratio(away_aggs, "points_allowed_per_game", "points_allowed_per_game_effect")
+    exp_a *= _lever_ratio(away_aggs, "points_per_game", "points_per_game_effect")
+    exp_a *= _lever_ratio(home_aggs, "points_allowed_per_game", "points_allowed_per_game_effect")
+
+    # Pace: harmonic-ish blend of both teams' neutral sec/snap vs league anchor.
+    anchor = _param("game.league_neutral_sec_per_play")
+    paces = [
+        float(v) for v in (
+            (home_aggs or {}).get("off_neutral_sec_per_play"),
+            (away_aggs or {}).get("off_neutral_sec_per_play"),
+        ) if v
+    ]
+    pace_mult = 1.0
+    if paces:
+        raw = (anchor / (sum(paces) / len(paces))) ** _param("game.pace_elasticity")
+        pace_mult = min(max(raw, _PACE_MULT_CLAMP[0]), _PACE_MULT_CLAMP[1])
+
+    proe_h = float((home_aggs or {}).get("off_proe") or 0.0)
+    proe_a = float((away_aggs or {}).get("off_proe") or 0.0)
+    proe_pts = (proe_h + proe_a) * _param("game.proe_total_pts")
+
+    exp_h = exp_h * pace_mult + proe_pts / 2
+    exp_a = exp_a * pace_mult + proe_pts / 2
+
+    hfa_pts = 0.0 if neutral_site else (
+        elo_service.HOME_FIELD_ADVANTAGE / _param("elo.elo_per_point")
+    )
+    return {
+        "expected_home_pts": exp_h,
+        "expected_away_pts": exp_a,
+        "margin": (exp_h - exp_a) + hfa_pts,
+        "total": exp_h + exp_a,
+        "home_strength": {"off": round(hs[0], 4), "def": round(hs[1], 4)},
+        "away_strength": {"off": round(as_[0], 4), "def": round(as_[1], 4)},
+        "pace_multiplier": round(pace_mult, 4),
+        "proe_total_pts": round(proe_pts, 2),
+        "hfa_pts": round(hfa_pts, 2),
+    }
+
+
 def _build_explainability(
     *,
     home_rating: float,
@@ -78,15 +204,16 @@ def _build_explainability(
     away_off_ppg: float,
     home_def_ppg_allowed: float,
     away_def_ppg_allowed: float,
+    fundamentals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Transparent v1 feature contribution heuristic for prediction UI."""
+    """Feature-contribution heuristic for the prediction UI.
+
+    v2: when the adjusted-EPA layer is live, contributors are stated in its
+    terms (opponent-adjusted efficiency, pace/PROE environment); otherwise the
+    legacy PPG heuristic applies.
+    """
     hfa = 0.0 if neutral_site else elo_service.HOME_FIELD_ADVANTAGE
     rating_edge = home_rating + hfa - away_rating
-    home_matchup_edge = home_off_ppg - away_def_ppg_allowed
-    away_matchup_edge = away_off_ppg - home_def_ppg_allowed
-    scoring_edge = home_matchup_edge - away_matchup_edge
-    pace_bias = (home_off_ppg + away_off_ppg) - (2 * _league_avg())
-    defense_resistance_edge = away_def_ppg_allowed - home_def_ppg_allowed
 
     contributors = [
         {
@@ -95,29 +222,67 @@ def _build_explainability(
             "impact": round(rating_edge / 28.0, 2),
             "direction": "home" if rating_edge >= 0 else "away",
         },
-        {
-            "feature": "offense_vs_defense_gap",
-            "label": "Offense vs opposing defense",
-            "impact": round(scoring_edge / 2.8, 2),
-            "direction": "home" if scoring_edge >= 0 else "away",
-        },
-        {
-            "feature": "defensive_resistance_gap",
-            "label": "Defensive resistance edge",
-            "impact": round(defense_resistance_edge / 2.2, 2),
-            "direction": "home" if defense_resistance_edge >= 0 else "away",
-        },
-        {
-            "feature": "game_pace_environment",
-            "label": "Expected scoring environment",
-            "impact": round(pace_bias / 6.0, 2),
-            "direction": "home" if pace_bias >= 0 else "away",
-        },
     ]
+    if fundamentals:
+        h, a = fundamentals["home_strength"], fundamentals["away_strength"]
+        # Net matchup edge in EPA/play: my offense vs their defense, both ways.
+        epa_edge = (h["off"] + a["def"]) - (a["off"] + h["def"])
+        env = (fundamentals["pace_multiplier"] - 1.0) * 44.0 + fundamentals["proe_total_pts"]
+        contributors += [
+            {
+                "feature": "adjusted_epa_edge",
+                "label": "Opponent-adjusted efficiency edge (EPA/play)",
+                "impact": round(epa_edge / 0.08, 2),
+                "direction": "home" if epa_edge >= 0 else "away",
+            },
+            {
+                "feature": "defensive_resistance_gap",
+                "label": "Adjusted defensive edge",
+                "impact": round((a["def"] - h["def"]) / 0.06, 2),
+                "direction": "home" if (a["def"] - h["def"]) >= 0 else "away",
+            },
+            {
+                "feature": "game_pace_environment",
+                "label": "Pace + pass-rate environment (total)",
+                "impact": round(env / 3.0, 2),
+                "direction": "over" if env >= 0 else "under",
+            },
+        ]
+        method = "adjusted_epa_v2"
+        summary = ("Impacts from opponent-adjusted EPA/success rate (ridge), CPOE, "
+                   "and neutral-situation pace/PROE, with Elo as the prior.")
+    else:
+        home_matchup_edge = home_off_ppg - away_def_ppg_allowed
+        away_matchup_edge = away_off_ppg - home_def_ppg_allowed
+        scoring_edge = home_matchup_edge - away_matchup_edge
+        pace_bias = (home_off_ppg + away_off_ppg) - (2 * _league_avg())
+        defense_resistance_edge = away_def_ppg_allowed - home_def_ppg_allowed
+        contributors += [
+            {
+                "feature": "offense_vs_defense_gap",
+                "label": "Offense vs opposing defense",
+                "impact": round(scoring_edge / 2.8, 2),
+                "direction": "home" if scoring_edge >= 0 else "away",
+            },
+            {
+                "feature": "defensive_resistance_gap",
+                "label": "Defensive resistance edge",
+                "impact": round(defense_resistance_edge / 2.2, 2),
+                "direction": "home" if defense_resistance_edge >= 0 else "away",
+            },
+            {
+                "feature": "game_pace_environment",
+                "label": "Expected scoring environment",
+                "impact": round(pace_bias / 6.0, 2),
+                "direction": "home" if pace_bias >= 0 else "away",
+            },
+        ]
+        method = "heuristic_inputs_v1"
+        summary = "Directional feature impacts estimated from Elo and scoring tendency inputs."
     contributors.sort(key=lambda x: abs(float(x["impact"])), reverse=True)
     return {
-        "method": "heuristic_inputs_v1",
-        "summary": "Directional feature impacts estimated from Elo and scoring tendency inputs.",
+        "method": method,
+        "summary": summary,
         "top_contributors": contributors[:3],
     }
 
@@ -127,15 +292,22 @@ def predict_game(
     home_off_ppg: float | None = None, away_off_ppg: float | None = None,
     home_def_ppg_allowed: float | None = None, away_def_ppg_allowed: float | None = None,
     neutral_site: bool = False,
+    home_aggs: dict[str, Any] | None = None,
+    away_aggs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Single-game predictor from Elo + scoring tendencies.
+    """Single-game predictor: Elo prior × adjusted-EPA fundamentals.
 
-    Total = (home_off + away_def_allowed) / 2 + (away_off + home_def_allowed) / 2
-    This blends each team's offensive output with what their opponent typically
-    allows, instead of a fixed league average.
+    Margin: blend of the Elo-implied margin (market-anchored prior) and the
+    fundamentals margin from opponent-adjusted EPA/success rate/CPOE, weighted
+    by ``game.w_fundamentals``. Total: fundamentals expected points shaped by
+    neutral-situation pace and PROE. When either team lacks adjusted metrics
+    (cold start), everything degrades to the legacy Elo + PPG path.
     """
-    spread = elo_service.predicted_spread(home_rating, away_rating, neutral_site)
-    expected_margin = -spread  # home perspective: positive = home favored
+    elo_margin = -elo_service.predicted_spread(home_rating, away_rating, neutral_site)
+    fund = _fundamentals(home_aggs, away_aggs, neutral_site)
+    w_fund = _param("game.w_fundamentals") if fund else 0.0
+    expected_margin = (1 - w_fund) * elo_margin + w_fund * (fund["margin"] if fund else 0.0)
+    spread = -expected_margin  # negative = home favored (sportsbook convention)
     # Win probability is derived FROM the margin distribution (not the Elo
     # logistic) so spread, win prob, and score ranges are mutually consistent.
     game_sigma = _game_sigma()
@@ -146,12 +318,16 @@ def predict_game(
     a_off = away_off_ppg if away_off_ppg is not None else league_avg
     h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else league_avg
     a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else league_avg
-    # Matchup-adjusted scoring relative to the league baseline (replaces the
-    # midpoint average): a team's own pace, nudged by how much more/less than a
-    # league-average defense the opponent allows. Same correction as h2h_service.
-    expected_home_pts = h_off + (a_def - league_avg)
-    expected_away_pts = a_off + (h_def - league_avg)
-    total = expected_home_pts + expected_away_pts
+    if fund:
+        expected_home_pts = fund["expected_home_pts"]
+        expected_away_pts = fund["expected_away_pts"]
+        total = fund["total"]
+    else:
+        # Legacy PPG path: a team's own scoring, nudged by how much more/less
+        # than a league-average defense the opponent allows.
+        expected_home_pts = h_off + (a_def - league_avg)
+        expected_away_pts = a_off + (h_def - league_avg)
+        total = expected_home_pts + expected_away_pts
 
     # Reconcile the (well-calibrated) Elo margin with the total for displayed scores.
     predicted_home_score = (total + expected_margin) / 2
@@ -206,6 +382,25 @@ def predict_game(
             "league_avg_points": league_avg,
             "expected_home_pts": round(expected_home_pts, 1),
             "expected_away_pts": round(expected_away_pts, 1),
+            # Adjusted-EPA fundamentals layer (None = PPG fallback in effect)
+            "fundamentals": (
+                {
+                    "w_fundamentals": round(w_fund, 2),
+                    "elo_margin": round(elo_margin, 1),
+                    "fundamentals_margin": round(fund["margin"], 1),
+                    "home_adj_off_epa": fund["home_strength"]["off"],
+                    "home_adj_def_epa": fund["home_strength"]["def"],
+                    "away_adj_off_epa": fund["away_strength"]["off"],
+                    "away_adj_def_epa": fund["away_strength"]["def"],
+                    "home_cpoe": (home_aggs or {}).get("off_cpoe"),
+                    "away_cpoe": (away_aggs or {}).get("off_cpoe"),
+                    "home_proe": (home_aggs or {}).get("off_proe"),
+                    "away_proe": (away_aggs or {}).get("off_proe"),
+                    "pace_multiplier": fund["pace_multiplier"],
+                    "proe_total_pts": fund["proe_total_pts"],
+                }
+                if fund else None
+            ),
         },
         "explainability": _build_explainability(
             home_rating=home_rating,
@@ -215,6 +410,7 @@ def predict_game(
             away_off_ppg=a_off,
             home_def_ppg_allowed=h_def,
             away_def_ppg_allowed=a_def,
+            fundamentals=fund,
         ),
     }
 
@@ -337,7 +533,8 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
         h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
-                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def)
+                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
+                            home_aggs=aggs.get(h), away_aggs=aggs.get(a))
         pred = uncertainty_service.attach_uncertainty(
             pred,
             model_version=PREDICTION_MODEL_VERSION,
@@ -613,7 +810,8 @@ async def team_remaining_schedule_predictions(
         h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
-                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def)
+                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
+                            home_aggs=aggs.get(h), away_aggs=aggs.get(a))
         my_win_prob = pred["home_win_prob"] if is_home else pred["away_win_prob"]
 
         outcome: str | None = None

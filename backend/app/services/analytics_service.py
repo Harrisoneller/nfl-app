@@ -88,7 +88,14 @@ TEAM_METRICS: list[tuple[str, str, bool]] = [
     ("off_plays_per_game", "pbp_off", True),
     ("off_yards_per_play", "pbp_off", True),
     ("points_per_game", "pbp_off", True),
+    ("adj_off_epa_per_play", "pbp_off", True),
+    ("adj_off_success_rate", "pbp_off", True),
+    ("off_cpoe", "pbp_off", True),
+    ("off_proe", "pbp_off", True),
+    ("off_neutral_sec_per_play", "pbp_off", False),  # lower = faster
     ("def_epa_per_play", "pbp_def", False),
+    ("adj_def_epa_per_play", "pbp_def", False),
+    ("adj_def_success_rate", "pbp_def", False),
     ("def_success_rate", "pbp_def", False),
     ("def_explosive_play_rate", "pbp_def", False),
     ("def_red_zone_td_pct", "pbp_def", False),
@@ -210,6 +217,19 @@ async def compute_team_pbp_aggregates(season: int) -> dict[str, dict[str, float]
             f, c = row.get("turnovers_forced_per_game"), row.get("turnovers_committed_per_game")
             if f is not None and c is not None:
                 row["turnover_margin_per_game"] = round(f - c, 3)
+
+    # Opponent-adjusted EPA core (ridge pass) + CPOE / PROE / neutral pace.
+    # Prior season's materialized adjusted values stabilize weeks 1–4; the
+    # materialized-only load can't recurse into a live PBP compute.
+    try:
+        from . import epa_adjust_service
+
+        prior = await _team_pbp_aggregates(season - 1, allow_live_fallback=False)
+        adjusted = epa_adjust_service.compute_adjusted_metrics(pbp, prior=prior or None)
+        for tm, metrics in adjusted.items():
+            out.setdefault(tm, {}).update(metrics)
+    except Exception as e:  # noqa: BLE001 — adjusted layer must never sink base aggregates
+        log.warning("epa_adjust_failed", season=season, error=str(e)[:200])
 
     return out
 
