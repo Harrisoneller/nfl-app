@@ -216,92 +216,45 @@ async def get_or_compute(
     inflight_key = f"{kind}:{key}"
     async with _inflight_lock:
         existing = _inflight.get(inflight_key)
-        # A leader whose task was cancelled (request budget timeout, scheduler
-        # job cancellation, client disconnect) leaves a *cancelled* future in
-        # the map. Awaiting it raises CancelledError instantly, forever — so
-        # every later caller 500s until the process restarts. Evict it and
-        # elect ourselves instead.
-        if existing is not None and existing.done():
-            if existing.cancelled() or existing.exception() is not None:
-                log.warning(
-                    "artifact_singleflight_evict_poisoned",
-                    kind=kind,
-                    key=key,
-                    cancelled=existing.cancelled(),
-                )
-                _inflight.pop(inflight_key, None)
-                existing = None
         if existing is not None:
             # Another request is computing this. Wait for it.
             log.debug("artifact_singleflight_wait", kind=kind, key=key)
             future = existing
         else:
-            future = asyncio.get_running_loop().create_future()
-            # Nobody may ever await this future; pre-retrieving the exception in
-            # a done-callback keeps asyncio from logging "exception was never
-            # retrieved" for the fail-fast paths below.
-            future.add_done_callback(
-                lambda f: f.cancelled() or f.exception()  # noqa: B023
-            )
+            future = asyncio.get_event_loop().create_future()
             _inflight[inflight_key] = future
 
     if existing is not None:
-        try:
-            # shield: OUR cancellation (e.g. this request's budget expiring)
-            # must not cancel the shared future and poison it for everyone
-            # else. Without this, one slow request breaks the endpoint.
-            return await asyncio.shield(existing)
-        except asyncio.CancelledError:
-            if not existing.cancelled():
-                raise  # we were cancelled — propagate, that's correct
-            # The leader died. Recompute rather than inherit its failure.
-            log.warning("artifact_singleflight_leader_cancelled", kind=kind, key=key)
-        except Exception as e:  # noqa: BLE001
-            # Leader failed. Fail open: compute it ourselves.
-            log.warning(
-                "artifact_singleflight_leader_failed",
-                kind=kind, key=key, error=str(e)[:200],
-            )
-        async with _inflight_lock:
-            if _inflight.get(inflight_key) is existing:
-                _inflight.pop(inflight_key, None)
-        return await compute()
+        return await future  # type: ignore[possibly-unbound]
 
-    # We're the chosen one — actually compute.
-    # NOTE: `except BaseException`, not `except Exception`. asyncio.CancelledError
-    # derives from BaseException on py3.8+; catching only Exception is what let a
-    # cancelled leader leak its future into _inflight permanently.
+    # We're the chosen one — actually compute
     try:
-        try:
-            result = await compute()
-        except BaseException as e:
-            if not future.done():
-                if isinstance(e, asyncio.CancelledError):
-                    future.cancel()
-                else:
-                    future.set_exception(e)
-            raise
-
-        # Write-through both layers (best-effort)
-        if result is not None:
-            l1_cache.set(l1_key, result, l1_ttl_seconds)
-            try:
-                db = SessionLocal()
-                try:
-                    set_(db, kind, key, result, ttl_seconds=ttl_seconds)
-                finally:
-                    db.close()
-            except Exception as e:  # noqa: BLE001
-                log.warning("artifact_l2_write_failed", kind=kind, key=key, error=str(e)[:200])
-
-        if not future.done():
-            future.set_result(result)
-        return result
-    finally:
-        # Always clear the slot — including on cancellation — so the next
-        # caller computes fresh instead of awaiting a dead future.
-        if _inflight.get(inflight_key) is future:
+        result = await compute()
+    except Exception as e:
+        # Wake any waiters with the same exception so they don't hang forever
+        async with _inflight_lock:
             _inflight.pop(inflight_key, None)
+        future.set_exception(e)
+        raise
+
+    # Write-through both layers (best-effort)
+    if result is not None:
+        l1_cache.set(l1_key, result, l1_ttl_seconds)
+        try:
+            db = SessionLocal()
+            try:
+                set_(db, kind, key, result, ttl_seconds=ttl_seconds)
+            finally:
+                db.close()
+        except Exception as e:  # noqa: BLE001
+            log.warning("artifact_l2_write_failed", kind=kind, key=key, error=str(e)[:200])
+
+    # Resolve the future + clear the slot so future requests can compute fresh
+    async with _inflight_lock:
+        _inflight.pop(inflight_key, None)
+    if not future.done():
+        future.set_result(result)
+    return result
 
 
 # ============================================================================

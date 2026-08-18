@@ -17,8 +17,27 @@ import { PersonaGate } from "@/components/persona/PersonaGate";
 
 export const revalidate = 60;
 
-async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
-  try { return await p; } catch { return fallback; }
+/**
+ * Swallow a failed fetch so one dead endpoint can't blank the whole page.
+ *
+ * The bare `catch {}` this used to be made a backend 500 indistinguishable
+ * from "there is genuinely no data yet" — which is how a hard 500 on
+ * /predictions/games showed up as a polite "schedule coming soon" box for
+ * days. Always log, and let callers observe that it failed.
+ */
+async function safe<T>(
+  p: Promise<T>,
+  fallback: T,
+  label?: string,
+  onError?: (e: unknown) => void,
+): Promise<T> {
+  try {
+    return await p;
+  } catch (e) {
+    console.error(`[home] fetch failed${label ? `: ${label}` : ""}`, e);
+    onError?.(e);
+    return fallback;
+  }
 }
 
 function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePrediction | undefined {
@@ -42,13 +61,23 @@ const QUICK_LINKS = [
 ] as const;
 
 export default async function HomePage() {
+  // Tracks whether the Week 1 slate came back empty because there is no
+  // schedule yet, or because the request actually failed. The two render
+  // very differently and conflating them hides outages.
+  let week1Failed = false;
+
   const [scoreboard, predictions, week1Predictions, eloRatings, freshness] =
     await Promise.all([
-      safe(api.scoreboard(12, { revalidate: 15 }), []),
-      safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }),
-      safe(api.predictGames(undefined, 1, true, { revalidate: 1800 }), { season: 0, week: 1, games: [] }),
-      safe(api.currentElo({ revalidate: 300 }), { ratings: [] }),
-      safe(api.freshness({ revalidate: 60 }), null),
+      safe(api.scoreboard(12, { revalidate: 15 }), [], "scoreboard"),
+      safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }, "predictions"),
+      safe(
+        api.predictGames(undefined, 1, true, { revalidate: 1800 }),
+        { season: 0, week: 1, games: [] },
+        "week1-predictions",
+        () => { week1Failed = true; },
+      ),
+      safe(api.currentElo({ revalidate: 300 }), { ratings: [] }, "elo"),
+      safe(api.freshness({ revalidate: 60 }), null, "freshness"),
     ]);
 
   const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));
@@ -87,7 +116,7 @@ export default async function HomePage() {
           href={hasWeek1Games ? "/odds" : undefined}
           linkLabel={hasWeek1Games ? "Betting edges →" : undefined}
         />
-        <Week1Schedule season={week1Season} games={week1Predictions.games} />
+        <Week1Schedule season={week1Season} games={week1Predictions.games} failed={week1Failed} />
       </section>
 
       {featured && <FeaturedGame game={featured} weekLabel={weekLabel} />}

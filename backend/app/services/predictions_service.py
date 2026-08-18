@@ -7,6 +7,7 @@ playoff seed odds.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 from collections import Counter, defaultdict
@@ -580,13 +581,26 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
 
 
 async def _calibration_context(db: Session) -> tuple[float, float | None]:
-    """Load calibration metadata from backtest artifacts."""
+    """Load calibration metadata from backtest artifacts.
+
+    Calibration is decoration on top of a prediction, never a precondition for
+    one — this must degrade to defaults rather than fail the whole slate.
+    """
     try:
         backtest = await backtest_service.backtest_elo(db)
         overall = backtest.get("overall", {})
         ece = overall.get("expected_calibration_error")
         score = uncertainty_service.calibration_score_from_ece(ece)
         return score, ece
+    except asyncio.CancelledError:
+        # BaseException, so `except Exception` misses it. Honor a real
+        # cancellation of our own task; otherwise degrade (see artifact_cache
+        # single-flight notes) instead of taking down /predictions/games.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling() > 0:
+            raise
+        log.warning("prediction_calibration_lookup_cancelled")
+        return 0.5, None
     except Exception as e:  # noqa: BLE001
         log.warning("prediction_calibration_lookup_failed", error=str(e)[:200])
         return 0.5, None

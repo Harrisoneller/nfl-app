@@ -43,6 +43,25 @@ async def run_with_budget(
             stale_fallback=stale_fallback,
             summary_fallback=summary_fallback,
         )
+    except asyncio.CancelledError:
+        # CancelledError derives from BaseException, so the `except Exception`
+        # below never saw it. If OUR task is the one being cancelled (shutdown,
+        # client disconnect) we must honor that. Otherwise the inner work
+        # raised CancelledError on its own — e.g. awaiting a shared future that
+        # another caller cancelled — and letting it escape the handler yields
+        # "RuntimeError: No response returned" and a hard 500 instead of the
+        # degraded response this wrapper exists to provide.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling() > 0:
+            raise
+        return await _fallback(
+            budget_name=budget_name,
+            timeout_ms=timeout_ms,
+            started=started,
+            reason="cancelled",
+            stale_fallback=stale_fallback,
+            summary_fallback=summary_fallback,
+        )
     except Exception as e:  # noqa: BLE001
         return await _fallback(
             budget_name=budget_name,

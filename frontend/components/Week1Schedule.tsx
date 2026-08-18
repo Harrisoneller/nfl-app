@@ -6,17 +6,17 @@ import { WinProbBar } from "@/components/predictions/WinProbBar";
 type Props = {
   season: number;
   games: GamePrediction[];
+  /** True when the predictions request errored, as opposed to returning no games. */
+  failed?: boolean;
 };
 
 /**
  * Week 1 regular-season slate for the home page. Each row links to the
  * full H2H comparison at /h2h/[away]/[home].
  */
-export function Week1Schedule({ season, games }: Props) {
+export function Week1Schedule({ season, games, failed = false }: Props) {
   if (games.length === 0) {
-    return (
-      <EmptyState season={season} />
-    );
+    return failed ? <ErrorState /> : <EmptyState season={season} />;
   }
 
   const sorted = [...games].sort((a, b) => {
@@ -30,6 +30,22 @@ export function Week1Schedule({ season, games }: Props) {
       {sorted.map((game) => (
         <MatchupPreviewRow key={game.id || `${game.away_team_id}-${game.home_team_id}`} game={game} />
       ))}
+    </div>
+  );
+}
+
+/**
+ * Shown when /predictions/games errored. Deliberately distinct from
+ * EmptyState — an outage should never masquerade as "no data yet".
+ */
+function ErrorState() {
+  return (
+    <div className="panel p-8 text-center border border-dashed border-amber-500/40">
+      <p className="text-sm font-medium text-amber-500">Matchup previews are temporarily unavailable</p>
+      <p className="text-xs text-muted mt-2 max-w-md mx-auto">
+        The predictions service didn&apos;t respond. This page refreshes automatically — if it
+        persists, check the API logs for <code className="font-mono">/predictions/games</code>.
+      </p>
     </div>
   );
 }
