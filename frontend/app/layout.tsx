@@ -10,6 +10,8 @@ import { ExperimentProvider } from "@/context/ExperimentProvider";
 import { PersonaProvider } from "@/context/PersonaProvider";
 
 export const metadata: Metadata = {
+  // Required so OG/Twitter image URLs resolve absolutely for social scrapers.
+  metadataBase: new URL("https://statletics.io"),
   title: {
     default: "Statletics NFL",
     template: "%s · Statletics NFL",
@@ -22,10 +24,13 @@ export const metadata: Metadata = {
     type: "website",
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: "Statletics NFL",
     description: "News, scores, stats, fantasy, odds, and AI — all things NFL.",
   },
+  // Social preview image is served via the App Router file convention
+  // (app/opengraph-image.png, 1200x630). Next emits both og:image and
+  // twitter:image from it automatically.
   icons: {
     icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
   },
