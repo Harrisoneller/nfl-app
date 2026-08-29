@@ -1,31 +1,18 @@
 "use client";
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { SparkyValueBoard, SparkyValueDiagnostics, SparkyValuePick } from "@/lib/api";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HelpTip } from "./HelpTip";
 import { americanOdds, isNflMatchup, kickoff, pct } from "./format";
 
 /**
- * The Value Board — what is actually worth betting on this slate.
+ * The Value Board — every game on the slate, priced.
  *
- * Replaces the confidence-sorted prediction grid that used to be the Sparky
- * dashboard. That grid answered "who wins", ranked the answer by how sure it
- * was, and therefore put 25-point favourites at the top of a page whose entire
- * purpose is finding bets. This one asks a different question of every side of
- * every market — moneyline, spread and total — and ranks by expected bankroll
- * growth among the bets that clear the bar.
- *
- * Three things this component is deliberate about:
- *
- * 1. **Nothing is hidden.** Rejected bets are one click away in "Priced out",
- *    each showing the reason it failed. "-2000 needs 96% to break even" teaches
- *    more than a missing row, and a board that filters silently is
- *    indistinguishable from a broken one.
- * 2. **The arithmetic is on the card.** EV, fair vs model, cents of value,
- *    our probability vs the break-even bar. Nothing on the card is a call
- *    to action or a suggested stake.
- * 3. **An empty board is a legitimate result** and says so in full sentences,
- *    rather than looking like a loading failure.
+ * +EV sides are highlighted, not used as a gate. A week where the model and
+ * the market agree is still a week people want to look at; hiding those games
+ * behind "priced out" made the board look empty every time the bar wasn't
+ * cleared. Negative EV and model-vs-market stay on the card.
  */
 
 type MarketFilter = "all" | "moneyline" | "spread" | "total";
@@ -37,6 +24,8 @@ const MARKET_TABS: { id: MarketFilter; label: string }[] = [
   { id: "total", label: "Totals" },
 ];
 
+const MARKET_ORDER: SparkyValuePick["market"][] = ["moneyline", "spread", "total"];
+
 type Strictness = "strict" | "balanced" | "loose";
 
 const STRICTNESS: { id: Strictness; label: string; help: string }[] = [
@@ -44,6 +33,89 @@ const STRICTNESS: { id: Strictness; label: string; help: string }[] = [
   { id: "balanced", label: "Balanced", help: "1.5% EV, 55% confidence, 2+ books. The default." },
   { id: "loose", label: "Wide", help: "0.5% EV, 51% confidence, 1+ book. Shows nearly everything +EV." },
 ];
+
+type ViewMode = "slate" | "value";
+
+const FAULT_CODES = new Set(["no_model", "bad_quote", "model_fault"]);
+
+type GameGroup = {
+  eventId: string;
+  awayId: string;
+  homeId: string;
+  away: string;
+  home: string;
+  commenceTime: string | null;
+  legs: SparkyValuePick[];
+  bestEv: number;
+  valueCount: number;
+};
+
+function isNflPick(p: SparkyValuePick): boolean {
+  return isNflMatchup(p.matchup?.home_team_id, p.matchup?.away_team_id);
+}
+
+function isValueSide(p: SparkyValuePick): boolean {
+  return p.roi_pct > 0 && !FAULT_CODES.has(p.reason_code);
+}
+
+function uniqueLegs(board?: SparkyValueBoard): SparkyValuePick[] {
+  const seen = new Map<string, SparkyValuePick>();
+  for (const bucket of [
+    board?.picks ?? [],
+    board?.best_available ?? [],
+    board?.priced_out ?? [],
+  ]) {
+    for (const p of bucket) {
+      if (!seen.has(p.key) && isNflPick(p)) seen.set(p.key, p);
+    }
+  }
+  return [...seen.values()];
+}
+
+function sideRank(p: SparkyValuePick): number {
+  const s = (p.side ?? "").toLowerCase();
+  if (s === "away" || s === "over") return 0;
+  if (s === "home" || s === "under") return 1;
+  const label = p.label.toLowerCase();
+  if (label.startsWith("over")) return 0;
+  if (label.startsWith("under")) return 1;
+  return 2;
+}
+
+function groupGames(legs: SparkyValuePick[]): GameGroup[] {
+  const byEvent = new Map<string, SparkyValuePick[]>();
+  for (const p of legs) {
+    if (p.is_alt) continue;
+    const list = byEvent.get(p.event_id) ?? [];
+    list.push(p);
+    byEvent.set(p.event_id, list);
+  }
+
+  const games: GameGroup[] = [];
+  for (const [eventId, eventLegs] of byEvent) {
+    const sample = eventLegs[0];
+    const homeId = sample.matchup?.home_team_id ?? "";
+    const awayId = sample.matchup?.away_team_id ?? "";
+    games.push({
+      eventId,
+      awayId,
+      homeId,
+      away: sample.matchup?.away_team ?? awayId,
+      home: sample.matchup?.home_team ?? homeId,
+      commenceTime: sample.commence_time,
+      legs: eventLegs,
+      bestEv: Math.max(...eventLegs.map((p) => p.roi_pct)),
+      valueCount: eventLegs.filter(isValueSide).length,
+    });
+  }
+
+  games.sort((a, b) => {
+    if (b.valueCount !== a.valueCount) return b.valueCount - a.valueCount;
+    if (b.bestEv !== a.bestEv) return b.bestEv - a.bestEv;
+    return (a.commenceTime ?? "").localeCompare(b.commenceTime ?? "");
+  });
+  return games;
+}
 
 export function ValueBoard({
   board,
@@ -59,63 +131,44 @@ export function ValueBoard({
   onRebuild?: () => void;
 }) {
   const [market, setMarket] = useState<MarketFilter>("all");
-  const [showPricedOut, setShowPricedOut] = useState(false);
+  const [view, setView] = useState<ViewMode>("slate");
 
-  const meta = board?.meta ?? {};
+  const allLegs = useMemo(() => uniqueLegs(board), [board]);
 
-  // The `?? []` defaults live inside the memos on purpose: written outside,
-  // each render produces a fresh array literal, which changes the dependency
-  // identity every time and makes the memoization a no-op.
-  // Thin edges are shown by default now. They are genuinely +EV; hiding them
-  // behind a toggle was part of why the board could read as completely empty.
-  const fbsPicks = useMemo(
+  const consensus = useMemo(
+    () => allLegs.filter((p) => !p.is_alt && (market === "all" || p.market === market)),
+    [allLegs, market],
+  );
+
+  const valueLegs = useMemo(
     () =>
-      (board?.picks ?? []).filter((p) =>
-        isNflMatchup(p.matchup?.home_team_id, p.matchup?.away_team_id),
-      ),
-    [board?.picks],
-  );
-  const fbsBest = useMemo(
-    () =>
-      (board?.best_available ?? []).filter((p) =>
-        isNflMatchup(p.matchup?.home_team_id, p.matchup?.away_team_id),
-      ),
-    [board?.best_available],
-  );
-  const fbsPricedOut = useMemo(
-    () =>
-      (board?.priced_out ?? []).filter((p) =>
-        isNflMatchup(p.matchup?.home_team_id, p.matchup?.away_team_id),
-      ),
-    [board?.priced_out],
+      consensus
+        .filter(isValueSide)
+        .sort((a, b) => b.roi_pct - a.roi_pct),
+    [consensus],
   );
 
-  const visible = useMemo(
-    () => fbsPicks.filter((p) => market === "all" || p.market === market),
-    [fbsPicks, market],
-  );
+  const games = useMemo(() => groupGames(consensus), [consensus]);
 
-  const bestAvailable = useMemo(
-    () => fbsBest.filter((p) => market === "all" || p.market === market),
-    [fbsBest, market],
-  );
-
-  const visiblePricedOut = useMemo(
-    () => fbsPricedOut.filter((p) => market === "all" || p.market === market),
-    [fbsPricedOut, market],
-  );
+  const visibleGames = useMemo(() => {
+    if (view === "value" && valueLegs.length > 0) {
+      return games.filter((g) => g.valueCount > 0);
+    }
+    return games;
+  }, [view, games, valueLegs.length]);
 
   if (isLoading) {
     return <div className="sparky-card p-6 text-sm text-muted">Pricing the slate…</div>;
   }
 
+  const noGames = visibleGames.length === 0;
+
   return (
     <div className="space-y-5">
       <HealthBanner diagnostics={board?.diagnostics} onRebuild={onRebuild} />
 
-      <BoardHeader board={board} />
+      <BoardHeader board={board} games={games.length} valueSides={valueLegs.length} />
 
-      {/* Strictness */}
       <div className="flex items-center gap-2 flex-wrap text-[11px]">
         <span className="text-muted">How wide to cast the net</span>
         {STRICTNESS.map((s) => (
@@ -132,11 +185,10 @@ export function ValueBoard({
         ))}
         <HelpTip
           label="Strictness"
-          body="Widens the search gates only — minimum EV, minimum confidence, book count and the moneyline floor. It does not touch either safety check (the model/market sanity limit or the bad-quote limit), and even the widest setting still refuses heavy chalk. Widening a search and switching off a safety rail are different things and do not share a control."
+          body="Widens what counts as a highlighted value side — minimum EV, minimum confidence, book count and the moneyline floor. It does not hide the rest of the slate, and it does not touch either safety check (the model/market sanity limit or the bad-quote limit). Even the widest setting still refuses to recommend heavy chalk."
         />
       </div>
 
-      {/* Market filter */}
       <div className="flex items-center gap-2 flex-wrap">
         {MARKET_TABS.map((t) => {
           const summary = t.id === "all" ? null : board?.by_market?.[t.id];
@@ -155,107 +207,89 @@ export function ValueBoard({
             </button>
           );
         })}
+        <span className="hidden sm:inline mx-1 text-muted/40">·</span>
+        <button
+          onClick={() => setView("slate")}
+          className={`sparky-tab ${view === "slate" ? "sparky-tab--active" : ""}`}
+        >
+          All games
+        </button>
+        <button
+          onClick={() => setView("value")}
+          className={`sparky-tab ${view === "value" ? "sparky-tab--active" : ""}`}
+        >
+          Value only
+          {valueLegs.length > 0 && (
+            <span className="ml-1.5 text-[10px] tabular-nums">{valueLegs.length}</span>
+          )}
+        </button>
       </div>
 
-      {board?.message && visible.length === 0 && (
-        <EmptyBoard message={board.message} onRebuild={onRebuild} />
+      {noGames && (
+        <EmptyBoard message={board?.message ?? "No games have been priced on this slate yet."} onRebuild={onRebuild} />
       )}
 
-      {/* The picks */}
-      {visible.length > 0 && (
-        <div className="space-y-3">
-          {visible.map((p) => (
-            <ValueRow key={p.key} pick={p} />
-          ))}
-        </div>
-      )}
-
-      {/* Never a blank page: when nothing qualified, show what came closest. */}
-      {visible.length === 0 && bestAvailable.length > 0 && (
-        <div className="space-y-3">
-          <div>
-            <h3 className="home-section-title">Closest numbers</h3>
-            <p className="text-[11px] text-muted mt-0.5">
-              Nothing cleared the EV / confidence bar on this slate. These are the
-              best prices by EV, with what stopped each one — not a suggestion to
-              take them.
-            </p>
-          </div>
-          {bestAvailable.map((p) => (
-            <ValueRow key={p.key} pick={p} />
-          ))}
-        </div>
-      )}
-
-      {/* Priced out — the rejected bets and why. */}
-      {visiblePricedOut.length > 0 && (
+      {valueLegs.length === 0 && games.length > 0 && (
         <div className="sparky-card p-4">
-          <button
-            onClick={() => setShowPricedOut((v) => !v)}
-            className="flex items-center justify-between w-full text-left"
-          >
-            <div>
-              <div className="text-sm font-medium text-white">
-                Priced out · {visiblePricedOut.length}
-              </div>
-              <div className="text-[11px] text-muted mt-0.5">
-                Bets Sparky considered and rejected, each with the reason. This is where
-                heavy favorites live — along with quotes that looked too good to be a
-                real price.
-              </div>
-            </div>
-            <span className="text-cyan-300 text-xs shrink-0 ml-3">
-              {showPricedOut ? "Hide" : "Show"}
-            </span>
-          </button>
+          <div className="text-sm font-medium text-white">No +EV sides this week</div>
+          <p className="text-xs text-muted mt-1 leading-relaxed max-w-2xl">
+            After shrinking the model toward what settled history supports, nothing
+            clears the bar. Every game is still on the board below with EV, the
+            model price, and the market price — a pass is a number, not a missing
+            card.
+          </p>
+        </div>
+      )}
 
-          {showPricedOut && (
-            <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
-              {visiblePricedOut.map((p) => (
-                <div
-                  key={p.key}
-                  className="flex items-start justify-between gap-3 text-xs py-1.5"
-                >
-                  <div className="min-w-0 flex items-center gap-2">
-                    {p.team_id ? <TeamLogo teamId={p.team_id} size={20} /> : <div className="w-5" />}
-                    <span className="text-slate-300 shrink-0">{p.label}</span>
-                    <span className="text-muted tabular-nums shrink-0">
-                      {americanOdds(p.price_american)}
-                    </span>
-                  </div>
-                  <span className="text-muted/80 text-right min-w-0">{p.reasons[0]}</span>
-                </div>
-              ))}
-            </div>
-          )}
+      {view === "value" && valueLegs.length === 0 && games.length > 0 && (
+        <p className="text-[11px] text-muted">
+          Nothing is +EV at this strictness, so the full slate is showing instead.
+        </p>
+      )}
+
+      {visibleGames.length > 0 && (
+        <div className="space-y-3">
+          {visibleGames.map((g) => (
+            <GameCard key={g.eventId} game={g} market={market} />
+          ))}
         </div>
       )}
 
       <RejectionSummary diagnostics={board?.diagnostics} />
 
-      <TrustFooter meta={meta} />
+      <TrustFooter meta={board?.meta ?? {}} />
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Header: what the board found, at a glance.
- * ----------------------------------------------------------------------- */
-
-function BoardHeader({ board }: { board?: SparkyValueBoard }) {
+function BoardHeader({
+  board,
+  games,
+  valueSides,
+}: {
+  board?: SparkyValueBoard;
+  games: number;
+  valueSides: number;
+}) {
   const m = board?.meta ?? {};
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-3 gap-2 sm:gap-3">
+      <Stat
+        value={String(games || m.games_considered || 0)}
+        label="games"
+        help="NFL games on the slate with a usable model distribution and a book price. Every one of them is on a card below, whether or not it is +EV."
+      />
       <Stat
         value={String(m.legs_priced ?? 0)}
         label="sides priced"
-        help="Every side of every market on the slate — moneyline, spread and total, both ways — that had enough of a market to price at all."
+        help="Every side of every market — moneyline, spread and total, both ways — that had enough of a market to price at all."
       />
       <Stat
-        value={String(m.games_considered ?? 0)}
-        label="games"
-        help="NFL games on the slate with a usable model distribution and a book price."
+        value={String(valueSides)}
+        label="+EV sides"
+        accent={valueSides > 0 ? "text-emerald-300" : "text-white"}
+        help="Sides that stay positive after the model's edge is shrunk to what settled history supports. Zero is a legitimate week, not an empty board."
       />
     </div>
   );
@@ -283,107 +317,140 @@ function Stat({
   );
 }
 
-/* --------------------------------------------------------------------------
- * One bet.
- * ----------------------------------------------------------------------- */
+function GameCard({ game, market }: { game: GameGroup; market: MarketFilter }) {
+  const grouped = new Map<SparkyValuePick["market"], SparkyValuePick[]>();
+  for (const p of game.legs) {
+    const list = grouped.get(p.market) ?? [];
+    list.push(p);
+    grouped.set(p.market, list);
+  }
+  for (const list of grouped.values()) list.sort((a, b) => sideRank(a) - sideRank(b));
+  const byMarket = MARKET_ORDER.filter((m) => market === "all" || m === market)
+    .map((m) => ({ market: m, sides: grouped.get(m) ?? [] }))
+    .filter((block) => block.sides.length > 0);
 
-function ValueRow({ pick }: { pick: SparkyValuePick }) {
-  const away = pick.matchup?.away_team_id ?? pick.matchup?.away_team ?? "";
-  const home = pick.matchup?.home_team_id ?? pick.matchup?.home_team ?? "";
-  const tone = pick.roi_pct > 0 ? "playable" : "pass";
+  const tone =
+    game.valueCount > 0 ? "playable" : game.bestEv < 0 ? "pass" : "thin";
 
   return (
-    <div className={`sparky-card p-4 sparky-value sparky-value--${tone}`}>
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        {/* Left: the line */}
-        <div className="min-w-0 flex-1">
+    <div
+      className={`sparky-card p-4 border-l-[3px] ${
+        tone === "playable"
+          ? "border-l-emerald-400/70"
+          : tone === "pass"
+            ? "border-l-slate-400/30"
+            : "border-l-amber-400/45"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
           <div className="flex items-center gap-2 text-[11px] text-muted flex-wrap">
-            {pick.reason_code === "no_model" && (
-              <span className="sparky-chip sparky-tier--pass">No model view</span>
+            <span>{kickoff(game.commenceTime)}</span>
+            {game.valueCount > 0 ? (
+              <span className="sparky-chip text-emerald-300 bg-emerald-500/15">
+                {game.valueCount} value {game.valueCount === 1 ? "side" : "sides"}
+              </span>
+            ) : (
+              <span className="sparky-chip text-slate-300 bg-slate-400/15">no edge</span>
             )}
-            <span className="uppercase tracking-wide">{pick.market_label}</span>
-            <span>·</span>
-            <span>
-              {away} @ {home}
-            </span>
-            <span>·</span>
-            <span>{kickoff(pick.commence_time)}</span>
           </div>
-
-          <div className="mt-2 flex items-center gap-2.5">
-            {pick.team_id ? <TeamLogo teamId={pick.team_id} size={30} /> : null}
-            <span className="text-lg font-semibold text-white">{pick.label}</span>
-            <span className="text-lg tabular-nums text-emerald-300">
-              {americanOdds(pick.price_american)}
-            </span>
-            {pick.book && <span className="text-[11px] text-muted">at {pick.book}</span>}
-          </div>
-
-          {/* The arithmetic, on the card. */}
-          <div className="mt-2.5 flex items-center gap-x-4 gap-y-1 flex-wrap text-[11px] text-muted tabular-nums">
-            <Metric
-              label="EV"
-              value={`${pick.roi_pct >= 0 ? "+" : ""}${pick.roi_pct.toFixed(1)}%`}
-              accent={pick.roi_pct > 0 ? "text-emerald-300" : "text-red-400"}
-              help="Expected profit per unit staked, at the best major-book price we found and after our edge is shrunk to what settled history supports. +5% means a 1u bet returns 0.05u on average."
-            />
-            <Metric
-              label="fair"
-              value={americanOdds(pick.fair_price_american)}
-              help="What this side is worth with the book's vig removed, from the multi-book consensus of major US books. The gap between this and the offered price is the whole number."
-            />
-            <Metric
-              label="model"
-              value={americanOdds(pick.model_price_american)}
-              accent="text-cyan-300"
-              help="What our probability implies as a fair American price."
-            />
-            <Metric
-              label="value"
-              value={`${pick.cents_of_value >= 0 ? "+" : ""}${pick.cents_of_value}¢`}
-              accent={pick.cents_of_value > 0 ? "text-emerald-300" : undefined}
-              help="How many cents better than fair the offered price is. Ten cents of value at -110 is a serious number; a book that never gives it up is a book to stop using."
-            />
-            <Metric
-              label="need"
-              value={pct(pick.breakeven_vs_ours, 1)}
-              help="Win probability required just to break even at this price, stated on the same basis as our number beside it so the two are directly comparable. On a whole-number line, pushes refund the stake, which is why this differs slightly from the raw implied odds."
-            />
-            <Metric
-              label="ours"
-              value={pct(pick.prob, 1)}
-              accent="text-cyan-300"
-              help="Our probability after calibration and after shrinking the model's disagreement with the market down to what history says is real."
-            />
-            {pick.push_prob > 0.005 && (
-              <Metric
-                label="push"
-                value={pct(pick.push_prob, 1)}
-                help="Chance the game lands exactly on this number and the stake is refunded. Priced from the discrete margin distribution, not a lookup table."
-              />
-            )}
-            <Metric
-              label="books"
-              value={String(pick.n_books)}
-              help="How many major US books quoted this market (DraftKings, FanDuel, BetMGM, Caesars, and peers). Offshore and sharp books are excluded."
-            />
+          <div className="mt-2 flex items-center gap-2.5 min-w-0">
+            {game.awayId ? <TeamLogo teamId={game.awayId} size={28} /> : null}
+            <span className="text-base font-semibold text-white truncate">{game.awayId || game.away}</span>
+            <span className="text-muted text-sm">@</span>
+            {game.homeId ? <TeamLogo teamId={game.homeId} size={28} /> : null}
+            <span className="text-base font-semibold text-white truncate">{game.homeId || game.home}</span>
           </div>
         </div>
-
-        {/* Right: confidence the number is real, not a stake. */}
-        <div className="text-right shrink-0">
-          <div className="text-[11px] text-muted flex items-center justify-end">
-            <span className="tabular-nums text-slate-300">{pct(pick.p_edge_real, 0)}</span>
-            <span className="ml-1">edge is real</span>
-            <HelpTip
-              label="Confidence the edge is real"
-              body="Probability this number is genuinely +EV rather than our estimation noise pointing the right way by luck. It falls off toward the ends of the price curve, where the model has least resolution."
-            />
-          </div>
-        </div>
+        <Link
+          href={`/sparky/${encodeURIComponent(game.eventId)}`}
+          className="text-[11px] text-cyan-300 hover:underline shrink-0"
+        >
+          Open game →
+        </Link>
       </div>
 
-      <p className="mt-3 text-xs text-slate-300/80 leading-relaxed">{pick.explanation}</p>
+      <div className="mt-3 space-y-3">
+        {byMarket.map((block) => (
+          <div key={block.market}>
+            <div className="text-[10px] uppercase tracking-wide text-muted/80 mb-1">
+              {block.sides[0]?.market_label ?? block.market}
+            </div>
+            <div className="space-y-1">
+              {block.sides.map((p) => (
+                <SideRow key={p.key} pick={p} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SideRow({ pick }: { pick: SparkyValuePick }) {
+  const value = isValueSide(pick);
+  const evClass =
+    pick.roi_pct > 0 ? "text-emerald-300" : pick.roi_pct < 0 ? "text-red-400" : "text-slate-300";
+
+  return (
+    <div
+      className={`rounded-lg px-2 py-1.5 ${value ? "bg-emerald-500/10 shadow-[inset_2px_0_0_#34d399]" : ""}`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        {pick.team_id ? <TeamLogo teamId={pick.team_id} size={18} /> : <div className="w-[18px]" />}
+        <span className="text-sm text-slate-100 font-medium truncate min-w-0">{pick.label}</span>
+        <span className="text-sm tabular-nums text-slate-200 shrink-0">
+          {americanOdds(pick.price_american)}
+        </span>
+        {pick.book && <span className="text-[10px] text-muted shrink-0 hidden sm:inline">at {pick.book}</span>}
+        <span className={`ml-auto text-sm tabular-nums font-semibold shrink-0 ${evClass}`}>
+          {pick.roi_pct >= 0 ? "+" : ""}
+          {pick.roi_pct.toFixed(1)}% EV
+        </span>
+      </div>
+      <div className="mt-1 ml-7 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-[11px] text-muted tabular-nums">
+        <Metric
+          label="model"
+          value={americanOdds(pick.model_price_american)}
+          accent="text-cyan-300"
+          help="What our probability implies as a fair American price."
+        />
+        <Metric
+          label="market"
+          value={americanOdds(pick.fair_price_american)}
+          help="No-vig consensus from major US books. The gap between this and the offered price is cents of value."
+        />
+        <Metric
+          label="value"
+          value={`${pick.cents_of_value >= 0 ? "+" : ""}${pick.cents_of_value}¢`}
+          accent={pick.cents_of_value > 0 ? "text-emerald-300" : undefined}
+          help="How many cents better than fair the offered price is."
+        />
+        <Metric
+          label="ours"
+          value={pct(pick.prob, 1)}
+          accent="text-cyan-300"
+          help="Our probability after calibration and after shrinking the model's disagreement with the market down to what history says is real."
+        />
+        <Metric
+          label="need"
+          value={pct(pick.breakeven_vs_ours, 1)}
+          help="Win probability required just to break even at this price, on the same basis as our number."
+        />
+        {pick.push_prob > 0.005 && (
+          <Metric
+            label="push"
+            value={pct(pick.push_prob, 1)}
+            help="Chance the game lands exactly on this number and the stake is refunded. Priced from the discrete margin distribution — NFL ties and key numbers included."
+          />
+        )}
+        {pick.reason_code !== "ok" && pick.reason_code !== "no_edge" && (
+          <span className="text-muted/70 truncate max-w-[14rem]" title={pick.reasons[0]}>
+            {pick.reason_label}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -408,19 +475,11 @@ function Metric({
   );
 }
 
-/* --------------------------------------------------------------------------
- * Empty state and the trust footer.
- * ----------------------------------------------------------------------- */
-
 function EmptyBoard({ message, onRebuild }: { message: string; onRebuild?: () => void }) {
   return (
     <div className="sparky-card p-6">
-      <h3 className="text-base font-semibold text-white">No +EV sides on this slate</h3>
+      <h3 className="text-base font-semibold text-white">Nothing priced on this slate</h3>
       <p className="text-sm text-muted mt-2 max-w-2xl leading-relaxed">{message}</p>
-      <p className="text-xs text-muted/70 mt-3 max-w-2xl leading-relaxed">
-        An empty board is a legitimate result, not a bug. Open &ldquo;Priced out&rdquo;
-        below to see what was considered and why each one missed.
-      </p>
       {onRebuild && (
         <button onClick={onRebuild} className="sparky-btn mt-4 !py-1.5 !px-4 !text-xs">
           Rebuild from the latest odds
@@ -467,31 +526,17 @@ function TrustFooter({ meta }: { meta: SparkyValueBoard["meta"] }) {
         </p>
       )}
       <p className="mt-2 text-muted/60">
-        Display gates: {((rules.min_ev ?? 0) * 100).toFixed(0)}% EV ·{" "}
+        Highlight gates: {((rules.min_ev ?? 0) * 100).toFixed(0)}% EV ·{" "}
         {((rules.min_p_edge_real ?? 0) * 100).toFixed(0)}% confidence the edge is real ·{" "}
         {rules.min_books ?? 0}+ major books · moneylines shorter than{" "}
-        {americanOdds(rules.ml_price_floor ?? 0)} are shown as priced-out rather than
-        in the main list. Prices come from DraftKings, FanDuel, BetMGM, Caesars, and
+        {americanOdds(rules.ml_price_floor ?? 0)} are flagged, not recommended, but still
+        shown with the EV. Prices come from DraftKings, FanDuel, BetMGM, Caesars, and
         other major US books — not offshore or sharp shops.
       </p>
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Diagnostics: why the board looks the way it does.
- * ----------------------------------------------------------------------- */
-
-/**
- * Data-health banner.
- *
- * This exists because an empty Value Board has two completely different causes
- * that look identical from the outside: the market really is efficient today,
- * or our own pipeline gave the scorer nothing to work with. The second is far
- * more common and it used to be invisible — the board reported "no edge at this
- * price" on every row, which reads as a claim about the market rather than an
- * admission that the prediction store was cold. Each warning names the fix.
- */
 function HealthBanner({
   diagnostics,
   onRebuild,
@@ -537,13 +582,6 @@ function HealthBanner({
   );
 }
 
-/**
- * Where the board's sides went, as counts.
- *
- * Forty rows each carrying a sentence is not a summary. This is: one line per
- * rejection class, so "the model had no view on any of it" is legible at a
- * glance instead of requiring someone to read and tally the page by hand.
- */
 function RejectionSummary({ diagnostics }: { diagnostics?: SparkyValueDiagnostics }) {
   const [open, setOpen] = useState(false);
   const rejections = diagnostics?.rejections ?? [];
