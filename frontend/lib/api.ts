@@ -231,6 +231,51 @@ export type GamePrediction = {
   };
 };
 
+export type WeekSlateGame = {
+  id: string;
+  season: number;
+  week: number;
+  gameday?: string;
+  gametime?: string;
+  home_team_id: string;
+  away_team_id: string;
+  home_score: number | null;
+  away_score: number | null;
+  home_elo?: number;
+  away_elo?: number;
+  elo_gap?: number | null;
+  model_spread?: number | null;
+  model_total?: number | null;
+  model_home_score?: number | null;
+  model_away_score?: number | null;
+  model_home_win_prob?: number | null;
+  model_raw_spread?: number | null;
+  predicted_spread?: number | null;
+  predicted_total?: number | null;
+  predicted_home_score?: number | null;
+  predicted_away_score?: number | null;
+  home_win_prob?: number | null;
+  market_spread?: number | null;
+  market_total?: number | null;
+  spread_edge?: number | null;
+  total_edge?: number | null;
+  confidence_tier?: "low" | "medium" | "high";
+  game_script?: string | null;
+  distribution?: { margin_interval_80?: [number, number] } | null;
+  market?: { spread_home?: number | null; total?: number | null } | null;
+  model_only?: { predicted_spread?: number } | null;
+};
+
+export type WeekSlateResponse = {
+  season: number;
+  week: number | null;
+  n_games: number;
+  model_version: string;
+  weeks: Array<{ week: number; games: number }>;
+  partial?: boolean;
+  games: WeekSlateGame[];
+};
+
 export type PredictionInputs = {
   home_elo: number;
   away_elo: number;
@@ -1784,6 +1829,17 @@ export const api = {
     qs.set("include_ml", String(includeML));
     return req<{ season: number; week: number | null; games: GamePrediction[]; partial?: boolean }>(
       `/predictions/games?${qs.toString()}`,
+      undefined,
+      policy,
+    );
+  },
+  weekSlate: (season?: number, week?: number, policy?: FetchPolicy) => {
+    const qs = new URLSearchParams();
+    if (season) qs.set("season", String(season));
+    if (week != null) qs.set("week", String(week));
+    const q = qs.toString();
+    return req<WeekSlateResponse>(
+      `/predictions/week-slate${q ? `?${q}` : ""}`,
       undefined,
       policy,
     );

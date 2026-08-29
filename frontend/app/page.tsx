@@ -56,6 +56,7 @@ function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePredi
 
 // /fantasy and /ai hidden from quick links until ready — routes still work via direct URL
 const QUICK_LINKS = [
+  { href: "/week", label: "Week", Icon: WeekIcon },
   { href: "/teams", label: "Teams", Icon: TeamsIcon },
   { href: "/odds", label: "Odds", Icon: OddsIcon },
   { href: "/h2h/PHI/SF", label: "H2H", Icon: H2HIcon },
@@ -119,8 +120,8 @@ export default async function HomePage() {
       <section>
         <SectionHeader
           title={week1Season ? `Week 1 · ${week1Season} season` : "Week 1 schedule"}
-          href={hasWeek1Games ? "/odds" : undefined}
-          linkLabel={hasWeek1Games ? "Betting edges →" : undefined}
+          href={hasWeek1Games ? "/week" : undefined}
+          linkLabel={hasWeek1Games ? "Full week slate →" : undefined}
         />
         <Week1Schedule season={week1Season} games={week1Predictions.games} failed={week1Failed} />
       </section>
@@ -350,6 +351,7 @@ async function HomeDeferredSections({
         <Card title="New here? Start here">
           <ul className="space-y-2.5 text-sm">
             {[
+              { href: "/week", title: "This week's matchups", desc: "Model projections vs the market for every game" },
               { href: "/teams", title: "Browse all 32 teams", desc: "Rosters, stats, schedules, and recent form" },
               { href: "/odds", title: "See the odds board", desc: "Live lines from major books, in plain English" },
               { href: "/bets", title: "Track your bets", desc: "Log wagers and see if you beat the closing line" },
@@ -384,8 +386,8 @@ async function HomeDeferredSections({
               </div>
             ))}
           </dl>
-          <Link href="/odds" className="inline-block mt-3 text-xs text-team-primary hover:underline">
-            See this week&rsquo;s odds &rarr;
+          <Link href="/week" className="inline-block mt-3 text-xs text-team-primary hover:underline">
+            See this week&rsquo;s slate &rarr;
           </Link>
         </Card>
       </div>
@@ -562,6 +564,18 @@ function TeamsIcon() {
     <svg {...ICON_PROPS}>
       <path d="M12 3l7 3v5c0 4.4-3 7.7-7 9-4-1.3-7-4.6-7-9V6l7-3Z" />
       <path d="M9 11l2 2 4-4" />
+    </svg>
+  );
+}
+function WeekIcon() {
+  return (
+    <svg {...ICON_PROPS}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M8 3v4" />
+      <path d="M16 3v4" />
+      <path d="M8 14h3" />
+      <path d="M13 14h3" />
     </svg>
   );
 }

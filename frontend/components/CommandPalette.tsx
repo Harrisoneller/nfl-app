@@ -11,6 +11,7 @@ type Hit =
 // /players, /compare, and /performance are temporarily hidden — see Nav.tsx.
 const NAV_ITEMS: Hit[] = [
   { kind: "nav", id: "/", label: "Home", sub: "Scores + news + widgets", color: "#94a3b8" },
+  { kind: "nav", id: "/week", label: "Week", sub: "Model vs market for every matchup", color: "#94a3b8" },
   { kind: "nav", id: "/teams", label: "Teams", sub: "All 32, grouped by division", color: "#94a3b8" },
   { kind: "nav", id: "/odds", label: "Odds", sub: "Sportsbook markets", color: "#94a3b8" },
   { kind: "nav", id: "/bets", label: "My Bets", sub: "Your bet log + closing-line value", color: "#94a3b8" },

@@ -25,6 +25,7 @@ type NavLink = {
 
 const links: NavLink[] = [
   { href: "/", label: "Home", seg: "/", icon: <HomeIcon /> },
+  { href: "/week", label: "Week", seg: "/week", icon: <WeekIcon /> },
   { href: "/teams", label: "Teams", seg: "/teams", icon: <TeamsIcon /> },
   // Players and Fantasy both live in the /players hub; the ?tab= query decides
   // which pill is active. Players = the hub for anything other than the fantasy
@@ -187,6 +188,18 @@ function HomeIcon() {
       <path d="M3 10.5 12 3l9 7.5" />
       <path d="M5 9.5V21h14V9.5" />
       <path d="M9.5 21v-6h5v6" />
+    </svg>
+  );
+}
+function WeekIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18" />
+      <path d="M8 3v4" />
+      <path d="M16 3v4" />
+      <path d="M8 14h3" />
+      <path d="M13 14h3" />
     </svg>
   );
 }

@@ -91,6 +91,36 @@ async def games(
     return base
 
 
+@router.get("/week-slate")
+async def week_slate(
+    response: Response,
+    season: int | None = None,
+    week: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Full weekly slate: model projections vs market lines, every REG game.
+
+    Defaults to the next regular-season week with unplayed games.
+    """
+    payload, budget = await request_budget_service.run_with_budget(
+        budget_name="predictions.week_slate",
+        timeout_ms=20000,
+        execute=lambda: predictions_service.week_slate(db, season, week),
+        summary_fallback=lambda: {
+            "season": season or current_or_upcoming_season(),
+            "week": week,
+            "n_games": 0,
+            "model_version": predictions_service.PREDICTION_MODEL_VERSION,
+            "weeks": [],
+            "partial": True,
+            "games": [],
+        },
+    )
+    if budget.get("tier") != "primary" or not payload.get("games"):
+        response.headers["Cache-Control"] = "no-store"
+    return payload
+
+
 @router.get("/teams/{team_id}/season")
 async def team_season(
     team_id: str,
