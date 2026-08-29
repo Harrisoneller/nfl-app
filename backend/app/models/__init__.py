@@ -29,6 +29,7 @@ from .sparky import (  # noqa: F401
     SparkyParlayRanking,
     SparkyParlayResult,
 )
+from .team_context import PlayerAvailability, TeamContextSnapshot  # noqa: F401
 from .team_metric_value import TeamMetricValue  # noqa: F401
 from .team_season_aggregate import TeamSeasonAggregate  # noqa: F401
 from .team import Team  # noqa: F401

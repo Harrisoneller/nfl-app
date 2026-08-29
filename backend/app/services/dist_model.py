@@ -61,6 +61,23 @@ TOTAL_SIGMA_BASE = 10.0
 TOTAL_TOTAL_ELASTICITY = 0.50
 TOTAL_PACE_ELASTICITY = 0.45
 
+# Wind. The only weather variable with a large, reliable effect on an NFL game.
+# Above roughly 12 mph the deep passing game and the kicking game both degrade;
+# offenses get more run-heavy and drives stall earlier. That *compresses* both
+# distributions — a windy game is not a more random game, it is a lower-scoring
+# and structurally tighter one, which is the opposite of the intuition most
+# people (and most models) apply. Temperature and light precipitation are
+# deliberately absent: their measured effect is small enough that including
+# them mostly adds noise, and the public over-reacts to both.
+#
+# Effects are per-mph above the threshold, clamped — beyond ~30 mph the
+# relationship stops being linear and the forecast stops being trustworthy.
+WIND_THRESHOLD_MPH = 12.0
+WIND_MARGIN_SIGMA_PER_MPH = 0.006
+WIND_TOTAL_SIGMA_PER_MPH = 0.010
+WIND_TOTAL_PTS_PER_MPH = 0.22
+WIND_MAX_EFFECT_MPH = 30.0
+
 # Correlation between margin and total, signed by the favorite. |rho| grows with
 # the spread and saturates: a pick'em has no margin/total correlation, a 28-point
 # favorite has a strong one (their blowouts are the high-scoring outcomes).
@@ -93,6 +110,19 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _wind_excess(wind_mph: float | None) -> float:
+    """mph of wind above the threshold, capped. 0 when calm, indoors or unknown.
+
+    An unknown forecast returns 0 rather than an assumed average: a game we have
+    no wind reading for must price identically to the pre-weather model, not to
+    a guess.
+    """
+    if not wind_mph or wind_mph <= 0:
+        return 0.0
+    thresh = _p("dist.wind_threshold_mph", WIND_THRESHOLD_MPH)
+    return _clamp(float(wind_mph) - thresh, 0.0, WIND_MAX_EFFECT_MPH - thresh)
+
+
 # ============================================================================
 # Game-conditional sigma
 # ============================================================================
@@ -111,7 +141,10 @@ def margin_sigma_for_game(
     *,
     pace_multiplier: float = 1.0,
     variance_multiplier: float = 1.0,
+    context_sigma_mult: float = 1.0,
     rating_sd_pts: float = 0.0,
+    wind_mph: float | None = None,
+    indoor: bool = False,
     sample_scale: float = 1.0,
 ) -> float:
     """Margin SD conditioned on this specific game.
@@ -125,14 +158,25 @@ def margin_sigma_for_game(
     pace_multiplier
         The fundamentals layer's pace multiplier (>1 = faster than average).
     variance_multiplier
-        ``second_order_service.variance_profile`` — boom-bust teams widen.
+        Team style — boom-bust offenses widen the distribution.
+    context_sigma_mult
+        Product of the context layer's per-team sigma multipliers: a backup QB,
+        a first-year coordinator, or an unreported injury situation all widen
+        it. Kept separate from ``variance_multiplier`` on purpose — that one is
+        a property of how the teams play, this one is a property of how much we
+        know. Missing information should widen the distribution, not only shift
+        its center.
     rating_sd_pts
         Uncertainty about the *rating gap* itself, in points. Early season and
         post-roster-churn this is large; it belongs in the game distribution
         rather than being smeared into a flat constant.
+    wind_mph
+        Forecast wind speed at kickoff. Compresses both distributions.
+    indoor
+        Dome or closed roof — wind is ignored entirely.
     sample_scale
         0-1 evidence weight. Thin evidence widens the distribution rather than
-        pretending to a precision we do not have.
+        pretending to a precision we do not have. Week 1 is not Week 12.
     """
     base = _p("dist.margin_sigma_base", MARGIN_SIGMA_BASE)
     a = _p("dist.margin_total_elasticity", MARGIN_TOTAL_ELASTICITY)
@@ -154,8 +198,18 @@ def margin_sigma_for_game(
 
     sigma *= _clamp(float(variance_multiplier or 1.0), 0.85, 1.20)
 
+    # Bounded independently of variance_multiplier so a runaway context
+    # provider cannot blow up every probability on the board.
+    sigma *= _clamp(float(context_sigma_mult or 1.0), 0.90, 1.35)
+
     if rating_sd_pts and rating_sd_pts > 0:
         sigma *= 1.0 + ru * (float(rating_sd_pts) / 14.0)
+
+    if not indoor:
+        w = _wind_excess(wind_mph)
+        if w > 0:
+            sigma *= 1.0 - _p("dist.wind_margin_sigma_per_mph",
+                              WIND_MARGIN_SIGMA_PER_MPH) * w
 
     # Thin evidence: widen up to ~12% when we have almost nothing to go on.
     s = _clamp(float(sample_scale if sample_scale is not None else 1.0), 0.0, 1.0)
@@ -169,8 +223,11 @@ def total_sigma_for_game(
     *,
     pace_multiplier: float = 1.0,
     variance_multiplier: float = 1.0,
+    context_sigma_mult: float = 1.0,
+    wind_mph: float | None = None,
+    indoor: bool = False,
 ) -> float:
-    """Total SD conditioned on the game's scoring environment and pace."""
+    """Total SD conditioned on the game's scoring environment, pace and wind."""
     base = _p("dist.total_sigma_base", TOTAL_SIGMA_BASE)
     a = _p("dist.total_total_elasticity", TOTAL_TOTAL_ELASTICITY)
     pe = _p("dist.total_pace_elasticity", TOTAL_PACE_ELASTICITY)
@@ -182,7 +239,31 @@ def total_sigma_for_game(
     if pace_multiplier and pace_multiplier > 0:
         sigma *= float(pace_multiplier) ** pe
     sigma *= _clamp(float(variance_multiplier or 1.0), 0.85, 1.20)
+    sigma *= _clamp(float(context_sigma_mult or 1.0), 0.90, 1.35)
+
+    if not indoor:
+        w = _wind_excess(wind_mph)
+        if w > 0:
+            sigma *= 1.0 - _p("dist.wind_total_sigma_per_mph",
+                              WIND_TOTAL_SIGMA_PER_MPH) * w
+
     return _clamp(sigma, *_SIGMA_T_BOUNDS)
+
+
+def wind_total_points(wind_mph: float | None, indoor: bool = False) -> float:
+    """Points to subtract from the expected total for wind. Never positive.
+
+    Lives here rather than in the fundamentals layer because it shares the
+    threshold with the variance terms above — one place to tune, one place to
+    be wrong. This is the mean effect; the sigma terms are the spread effect,
+    and wind moves both.
+    """
+    if indoor:
+        return 0.0
+    w = _wind_excess(wind_mph)
+    if w <= 0:
+        return 0.0
+    return -_p("dist.wind_total_pts_per_mph", WIND_TOTAL_PTS_PER_MPH) * w
 
 
 def margin_total_rho(expected_margin: float) -> float:
@@ -394,7 +475,10 @@ def build_game_distribution(
     *,
     pace_multiplier: float = 1.0,
     variance_multiplier: float = 1.0,
+    context_sigma_mult: float = 1.0,
     rating_sd_pts: float = 0.0,
+    wind_mph: float | None = None,
+    indoor: bool = False,
     sample_scale: float = 1.0,
 ) -> GameDistribution:
     """Assemble the game-conditional joint distribution."""
@@ -402,13 +486,19 @@ def build_game_distribution(
         expected_margin, expected_total,
         pace_multiplier=pace_multiplier,
         variance_multiplier=variance_multiplier,
+        context_sigma_mult=context_sigma_mult,
         rating_sd_pts=rating_sd_pts,
+        wind_mph=wind_mph,
+        indoor=indoor,
         sample_scale=sample_scale,
     )
     st = total_sigma_for_game(
         expected_total,
         pace_multiplier=pace_multiplier,
         variance_multiplier=variance_multiplier,
+        context_sigma_mult=context_sigma_mult,
+        wind_mph=wind_mph,
+        indoor=indoor,
     )
     rho = margin_total_rho(expected_margin)
     meta = {
@@ -417,7 +507,10 @@ def build_game_distribution(
         "rho": round(rho, 3),
         "pace_multiplier": round(float(pace_multiplier or 1.0), 3),
         "variance_multiplier": round(float(variance_multiplier or 1.0), 3),
+        "context_sigma_mult": round(float(context_sigma_mult or 1.0), 3),
         "rating_sd_pts": round(float(rating_sd_pts or 0.0), 2),
+        "wind_mph": round(float(wind_mph), 1) if wind_mph else None,
+        "indoor": bool(indoor),
         "sample_scale": round(float(sample_scale if sample_scale is not None else 1.0), 3),
         "flat_sigma_would_be": round(_p("dist.margin_sigma", pd_.NFL_MARGIN_SIGMA), 2),
     }
@@ -615,3 +708,42 @@ def fit_margin_total_rho(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "n": len(pairs),
         "params": {"dist.margin_total_rho_max": round(_clamp(rho_max, -0.6, 0.6), 3)},
     }
+
+
+def fit_key_number_excess(
+    margins: list[int],
+    *,
+    sigma: float | None = None,
+) -> dict[int, float]:
+    """Measure per-side key-number excess mass from realized margins.
+
+    ``NFL_KEY_NUMBER_EXCESS`` is a considered guess, not a measurement. This
+    computes the real thing from our own graded games: for each candidate key
+    number, the observed frequency of that exact absolute margin minus what a
+    smooth Normal of the same SD would predict, halved because ``margin_pmf``
+    applies the excess at +k and -k.
+
+    Returns only positive excesses — a key number that is not actually spiky in
+    our sample earns no bonus rather than a negative correction, because a
+    negative "excess" is far more likely to be sampling noise than a real hole
+    in the margin distribution.
+    """
+    n = len(margins)
+    if n < 500:
+        return dict(NFL_KEY_NUMBER_EXCESS)
+
+    sd = sigma or _p("dist.margin_sigma_base", MARGIN_SIGMA_BASE)
+    mean = sum(margins) / n
+
+    out: dict[int, float] = {}
+    for k in sorted(NFL_KEY_NUMBER_EXCESS):
+        observed = sum(1 for m in margins if abs(m) == k) / n
+        expected = 0.0
+        for signed in (k, -k):
+            z_hi = (signed + 0.5 - mean) / sd
+            z_lo = (signed - 0.5 - mean) / sd
+            expected += pd_.norm_cdf(z_hi) - pd_.norm_cdf(z_lo)
+        excess = (observed - expected) / 2.0
+        if excess > 0:
+            out[k] = round(excess, 4)
+    return out

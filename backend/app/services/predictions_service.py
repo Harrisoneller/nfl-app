@@ -28,6 +28,8 @@ from . import (
     analytics_service,
     artifact_cache,
     backtest_service,
+    context_service,
+    dist_model,
     elo_service,
     prediction_dist,
     uncertainty_service,
@@ -37,7 +39,7 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
-PREDICTION_MODEL_VERSION = "epa-elo-v3"
+PREDICTION_MODEL_VERSION = "epa-elo-ctx-v4"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
@@ -56,6 +58,51 @@ def _league_avg() -> float:
 
 def _game_sigma() -> float:
     return prediction_dist.margin_sigma()
+
+
+def _conditional_sigma_enabled() -> bool:
+    """Whether to use the game-conditional sigma model.
+
+    Kept as a switch because turning it on changes every probability the
+    product quotes. If calibration regresses, this reverts the whole board from
+    the admin panel in seconds rather than needing a deploy.
+    """
+    from . import param_registry
+    try:
+        return float(param_registry.value("dist.conditional_sigma_enabled")) >= 0.5
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _clamp_sigma_mult(v: float) -> float:
+    return max(0.90, min(1.35, float(v or 1.0)))
+
+
+def _wind_inputs(weather: dict[str, Any] | None) -> tuple[float | None, bool]:
+    """(wind_mph, indoor) from a weather_service forecast payload.
+
+    Returns ``(None, False)`` for anything unusable. An unknown forecast must
+    price identically to the pre-weather model rather than to a guessed
+    average — a missing reading is not a calm day.
+    """
+    if not isinstance(weather, dict) or weather.get("available") is False:
+        return None, False
+    indoor = bool(
+        weather.get("indoor")
+        or weather.get("is_dome")
+        or weather.get("roof") in ("dome", "closed")
+    )
+    if indoor:
+        return None, True
+    for key in ("wind_mph", "wind_speed", "windspeed", "wind"):
+        v = weather.get(key)
+        if v is not None:
+            try:
+                w = float(v)
+            except (TypeError, ValueError):
+                continue
+            return (w if w > 0 else None), False
+    return None, False
 
 # Season-long latent-strength uncertainty per team (Elo points), drawn once per
 # Monte Carlo trial and held across that team's whole slate. This is what makes
@@ -206,6 +253,8 @@ def _build_explainability(
     home_def_ppg_allowed: float,
     away_def_ppg_allowed: float,
     fundamentals: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    wind_total_pts: float = 0.0,
 ) -> dict[str, Any]:
     """Feature-contribution heuristic for the prediction UI.
 
@@ -280,12 +329,93 @@ def _build_explainability(
         ]
         method = "heuristic_inputs_v1"
         summary = "Directional feature impacts estimated from Elo and scoring tendency inputs."
+    # Context enters as its own contributor, scaled so that ~2.5 points of
+    # context reads as comparably important to a 28-point Elo gap. It competes
+    # for a top-three slot on merit: when a starting QB is out, that IS the
+    # story of the game and it should outrank the efficiency edge.
+    ctx_pts = float((context or {}).get("points") or 0.0)
+    if context and abs(ctx_pts) >= 0.05:
+        contributors.append({
+            "feature": "context_layer",
+            "label": _context_label(context),
+            "impact": round(ctx_pts / 2.5, 2),
+            "direction": "home" if ctx_pts >= 0 else "away",
+        })
+    if wind_total_pts and abs(wind_total_pts) >= 0.25:
+        contributors.append({
+            "feature": "wind",
+            "label": "Wind (total)",
+            "impact": round(wind_total_pts / 3.0, 2),
+            "direction": "under",
+        })
+
     contributors.sort(key=lambda x: abs(float(x["impact"])), reverse=True)
-    return {
+    out = {
         "method": method,
         "summary": summary,
         "top_contributors": contributors[:3],
     }
+    # Per-component context breakdown, kept out of the top-three competition so
+    # a reader can always see every component that fired, not just the loudest.
+    # A number nobody can decompose is a number nobody can audit.
+    if context:
+        out["context"] = {
+            "net_points": round(ctx_pts, 2),
+            "sigma_mult": context.get("sigma_mult"),
+            "confidence": context.get("confidence"),
+            "capped": context.get("capped"),
+            "components": _context_components(context),
+        }
+    return out
+
+
+def _context_components(context: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten both sides' context components into one home-signed list."""
+    rows: list[dict[str, Any]] = []
+    for side, sign in (("home", 1.0), ("away", -1.0)):
+        entry = context.get(side) or {}
+        for c in entry.get("components") or []:
+            rows.append({
+                "side": side,
+                "team_id": entry.get("team_id"),
+                "component": c.get("component"),
+                "points_home_signed": round(float(c.get("points") or 0.0) * sign, 2),
+                "sigma_mult": c.get("sigma_mult"),
+                "confidence": c.get("confidence"),
+                "source": c.get("source"),
+                "detail": c.get("detail"),
+                "captured_at": c.get("captured_at"),
+            })
+    for c in context.get("matchup") or []:
+        rows.append({
+            "side": "matchup",
+            "component": c.get("component"),
+            "points_home_signed": round(float(c.get("points") or 0.0), 2),
+            "sigma_mult": c.get("sigma_mult"),
+            "confidence": c.get("confidence"),
+            "source": c.get("source"),
+            "detail": c.get("detail"),
+            "captured_at": c.get("captured_at"),
+        })
+    rows.sort(key=lambda r: abs(float(r["points_home_signed"])), reverse=True)
+    return rows
+
+
+def _context_label(context: dict[str, Any]) -> str:
+    """Name the dominant context component so the label says something real."""
+    comps = _context_components(context)
+    if not comps:
+        return "Game context"
+    top = comps[0].get("component") or "context"
+    return {
+        "availability": "Injuries / availability",
+        "qb": "Quarterback change",
+        "staff_change": "Coaching change",
+        "scheme_matchup": "Scheme matchup",
+        "situational": "Rest / travel / situation",
+        "weather": "Weather",
+        "manual": "Analyst adjustment",
+    }.get(top, "Game context")
 
 
 def predict_game(
@@ -295,24 +425,42 @@ def predict_game(
     neutral_site: bool = False,
     home_aggs: dict[str, Any] | None = None,
     away_aggs: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    weather: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Single-game predictor: Elo prior × adjusted-EPA fundamentals.
+    """Single-game predictor: Elo prior × adjusted-EPA fundamentals × context.
 
     Margin: blend of the Elo-implied margin (market-anchored prior) and the
     fundamentals margin from opponent-adjusted EPA/success rate/CPOE, weighted
-    by ``game.w_fundamentals``. Total: fundamentals expected points shaped by
-    neutral-situation pace and PROE. When either team lacks adjusted metrics
-    (cold start), everything degrades to the legacy Elo + PPG path.
+    by ``game.w_fundamentals``, then shifted by the context layer. Total:
+    fundamentals expected points shaped by neutral-situation pace and PROE,
+    then by wind. When either team lacks adjusted metrics (cold start),
+    everything degrades to the legacy Elo + PPG path.
+
+    ``context`` is the home-perspective payload from
+    ``context_service.game_context`` — what the historical inputs cannot see
+    (who is actually playing, who is coaching, the situation). It contributes a
+    signed point shift AND a sigma multiplier: missing information should widen
+    the distribution, not only move its center.
+
+    ``weather`` is the forecast dict from ``weather_service``. Only wind is
+    priced, and only into the total and the two sigmas — see ``dist_model``.
     """
     elo_margin = -elo_service.predicted_spread(home_rating, away_rating, neutral_site)
     fund = _fundamentals(home_aggs, away_aggs, neutral_site)
     w_fund = _param("game.w_fundamentals") if fund else 0.0
     expected_margin = (1 - w_fund) * elo_margin + w_fund * (fund["margin"] if fund else 0.0)
+
+    ctx = context if isinstance(context, dict) and context.get("applicable") else None
+    margin_before_context = expected_margin
+    if ctx:
+        expected_margin += float(ctx.get("points") or 0.0)
+
+    # Spread is quoted AFTER context: the number we publish has to be the
+    # number we actually believe, not the historical one with a footnote.
     spread = -expected_margin  # negative = home favored (sportsbook convention)
-    # Win probability is derived FROM the margin distribution (not the Elo
-    # logistic) so spread, win prob, and score ranges are mutually consistent.
-    game_sigma = _game_sigma()
-    win_p = prediction_dist.win_prob(expected_margin, game_sigma)
+
+    wind_mph, indoor = _wind_inputs(weather)
 
     league_avg = _league_avg()
     h_off = home_off_ppg if home_off_ppg is not None else league_avg
@@ -330,7 +478,43 @@ def predict_game(
         expected_away_pts = a_off + (h_def - league_avg)
         total = expected_home_pts + expected_away_pts
 
-    # Reconcile the (well-calibrated) Elo margin with the total for displayed scores.
+    # Wind is the one weather variable with a large, reliable effect. It comes
+    # off the total and out of both sigmas; temperature and precipitation are
+    # deliberately not priced (see dist_model).
+    wind_total_pts = dist_model.wind_total_points(wind_mph, indoor)
+    if wind_total_pts:
+        total += wind_total_pts
+        share = expected_home_pts / (expected_home_pts + expected_away_pts) \
+            if (expected_home_pts + expected_away_pts) > 0 else 0.5
+        expected_home_pts += wind_total_pts * share
+        expected_away_pts += wind_total_pts * (1.0 - share)
+
+    # The game-conditional joint distribution. Every probability below is
+    # derived from this one object, so spread, win prob, total and score ranges
+    # cannot disagree with each other. The flat-sigma path stays available as
+    # an instant admin revert because this changes every number on the board.
+    ctx_sigma = float((ctx or {}).get("sigma_mult") or 1.0)
+    if _conditional_sigma_enabled():
+        gd = dist_model.build_game_distribution(
+            expected_margin, total,
+            pace_multiplier=(fund or {}).get("pace_multiplier") or 1.0,
+            context_sigma_mult=ctx_sigma,
+            wind_mph=wind_mph,
+            indoor=indoor,
+        )
+        game_sigma = gd.sigma_m
+        total_sd = gd.sigma_t
+        rho = gd.rho
+        win_p = gd.win_prob()
+        sigma_model = gd.meta
+    else:
+        game_sigma = _game_sigma() * _clamp_sigma_mult(ctx_sigma)
+        total_sd = prediction_dist.total_sigma()
+        rho = math.tanh(expected_margin / 17.0) * 0.34
+        win_p = prediction_dist.win_prob(expected_margin, game_sigma)
+        sigma_model = {"mode": "flat", "margin_sigma": round(game_sigma, 2)}
+
+    # Reconcile the margin with the total for displayed scores.
     predicted_home_score = (total + expected_margin) / 2
     predicted_away_score = (total - expected_margin) / 2
 
@@ -359,16 +543,15 @@ def predict_game(
         "predicted_home_score": round(predicted_home_score, 1),
         "predicted_away_score": round(predicted_away_score, 1),
         "game_script": script,
-        "margin_sd": game_sigma,
+        "margin_sd": round(game_sigma, 2),
         # Full outcome distribution so the UI can show honest ranges, not just a point.
         "distribution": {
             "expected_margin": round(expected_margin, 1),
             "expected_total": round(total, 1),
-            "margin_sd": game_sigma,
-            "total_sd": round(prediction_dist.total_sigma(), 2),
-            "margin_total_rho": round(
-                math.tanh(expected_margin / 17.0) * 0.34, 3
-            ),
+            "margin_sd": round(game_sigma, 2),
+            "total_sd": round(total_sd, 2),
+            "margin_total_rho": round(rho, 3),
+            "sigma_model": sigma_model,
             "home_win_prob": round(win_p, 3),
             "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
             "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],
@@ -407,6 +590,29 @@ def predict_game(
                 }
                 if fund else None
             ),
+            # Context layer (None = no context available for this game)
+            "context": (
+                {
+                    "points": ctx.get("points"),
+                    "points_uncapped": ctx.get("points_uncapped"),
+                    "capped": ctx.get("capped"),
+                    "sigma_mult": ctx.get("sigma_mult"),
+                    "confidence": ctx.get("confidence"),
+                    "margin_before_context": round(margin_before_context, 1),
+                    "home": ctx.get("home"),
+                    "away": ctx.get("away"),
+                    "matchup": ctx.get("matchup"),
+                }
+                if ctx else None
+            ),
+            "weather": (
+                {
+                    "wind_mph": wind_mph,
+                    "indoor": indoor,
+                    "total_points_effect": round(wind_total_pts, 2),
+                }
+                if (wind_mph or indoor) else None
+            ),
         },
         "explainability": _build_explainability(
             home_rating=home_rating,
@@ -417,6 +623,8 @@ def predict_game(
             home_def_ppg_allowed=h_def,
             away_def_ppg_allowed=a_def,
             fundamentals=fund,
+            context=ctx,
+            wind_total_pts=wind_total_pts,
         ),
     }
 
@@ -550,6 +758,34 @@ async def _predict_week_uncached(
     except Exception as e:  # noqa: BLE001 — market context must never take down predictions
         log.warning("market_context_failed", error=str(e)[:200])
         market_ctx = {}
+
+    # Context layer: one bundle for the whole slate (what the historical inputs
+    # cannot see). Best-effort — an empty bundle leaves every game on the pure
+    # historical numbers, which is exactly the pre-context behavior.
+    try:
+        ctx_bundle = context_service.week_context(db, season, week)
+    except Exception as e:  # noqa: BLE001
+        log.warning("context_bundle_failed", season=season, week=week,
+                    error=str(e)[:200])
+        ctx_bundle = None
+
+    # Forecasts for the slate. Wind is the only variable the game model prices.
+    weather_by_game: dict[str, dict[str, Any]] = {}
+    try:
+        from . import weather_service
+
+        weather_by_game = await weather_service.forecasts_for_games([
+            {
+                "id": str(gg.get("game_id") or ""),
+                "home_team_id": gg.get("home_team"),
+                "gameday": gg.get("gameday"),
+            }
+            for _, gg in games.iterrows()
+        ])
+    except Exception as e:  # noqa: BLE001 — a forecast outage must not stop predictions
+        log.warning("weather_context_failed", error=str(e)[:200])
+        weather_by_game = {}
+
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
         if not h or not a:
@@ -562,7 +798,9 @@ async def _predict_week_uncached(
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
                             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
-                            home_aggs=aggs.get(h), away_aggs=aggs.get(a))
+                            home_aggs=aggs.get(h), away_aggs=aggs.get(a),
+                            context=context_service.game_context(ctx_bundle, h, a),
+                            weather=weather_by_game.get(str(g.get("game_id") or "")))
         pred = uncertainty_service.attach_uncertainty(
             pred,
             model_version=PREDICTION_MODEL_VERSION,
@@ -964,6 +1202,10 @@ async def team_remaining_schedule_predictions(
         a_off = (aggs.get(a) or {}).get("points_per_game")
         h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
+        # Deliberately uncontexted: this projects a team's whole remaining
+        # schedule, and this week's injury report says nothing about Week 14.
+        # Per-week context here needs a durability model (who is back by then),
+        # which is the season-context work, not this one.
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
                             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
                             home_aggs=aggs.get(h), away_aggs=aggs.get(a))
