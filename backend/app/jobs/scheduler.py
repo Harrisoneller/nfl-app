@@ -127,6 +127,23 @@ async def _refresh_news(db: Session) -> int:
     return await news_service.refresh_news(db)
 
 
+async def _refresh_context(db: Session) -> dict:
+    """Ingest the injury report and re-price the context layer for this week.
+
+    Runs often in season because availability news is the fastest-moving input
+    the model has — a Friday practice report can move a line by a touchdown,
+    and a context layer that refreshes nightly has already missed it.
+    """
+    from ..services import context_service, week_index
+
+    season = current_or_upcoming_season()
+    try:
+        week = week_index.build(db, season).current_week()
+    except Exception:  # noqa: BLE001 — week resolution must not block the refresh
+        week = None
+    return await context_service.refresh_context(db, season, week)
+
+
 async def _refresh_odds(db: Session) -> dict:
     result = await odds_service.refresh_odds(db)
     # After odds (and their snapshots) are refreshed, rebuild Sparky's slate so
@@ -240,6 +257,10 @@ async def _job_refresh_odds() -> None:
             )
 
 
+async def _job_refresh_context() -> None:
+    await sync_run_service.run_job("context", _refresh_context)
+
+
 async def _job_materialize_only() -> None:
     await sync_run_service.run_job("materialize", _materialize_nflverse)
 
@@ -316,6 +337,17 @@ def start_scheduler() -> None:
         )
     else:
         log.info("scheduler_scores_disabled", reason="offseason")
+
+    # Context: every 3h in season, daily out of it. Availability is the
+    # fastest-moving model input there is.
+    sched.add_job(
+        _job_refresh_context,
+        IntervalTrigger(hours=3 if live else 24),
+        next_run_time=_soon(75),
+        id="context",
+        coalesce=True,
+        max_instances=1,
+    )
 
     news_seconds = settings.schedule_news_seconds if live else 60 * 60 * 24
     sched.add_job(

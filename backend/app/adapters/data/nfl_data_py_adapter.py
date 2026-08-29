@@ -219,6 +219,32 @@ class NflDataPyAdapter:
         every other frame — None on failure."""
         return await _run_sync_safe(nfl.import_snap_counts, [season], fn_name="snap_counts")
 
+    async def injuries_df(self, season: int):
+        """Official NFL injury report, one row per player-week.
+
+        The columns that matter for the context layer are ``report_status``
+        (Out / Doubtful / Questionable — the game-status tag) and the practice
+        participation fields (``practice_status`` / the Wed-Thu-Fri sequence).
+        The participation *trajectory* is the more predictive of the two and is
+        why we store all three days rather than only the headline designation.
+
+        Best-effort like every other frame — None on failure, and the
+        availability provider treats None as "unreported", never as "healthy".
+        """
+        return await _run_sync_safe(nfl.import_injuries, [season], fn_name="injuries")
+
+    async def depth_charts_df(self, season: int):
+        """Weekly depth charts.
+
+        Used only as a *secondary* signal for the QB layer: nflverse depth
+        charts have been intermittently unavailable across seasons, and a
+        posted depth chart is in any case a weaker statement about who plays
+        than the snap and attempt counts. See ``qb_adjustment_service``, which
+        derives the pecking order from usage first and consults this second.
+        """
+        return await _run_sync_safe(
+            nfl.import_depth_charts, [season], fn_name="depth_charts")
+
     async def pbp_df(self, season: int):
         """Play-by-play, projected to PBP_COLUMNS to keep memory bounded.
 

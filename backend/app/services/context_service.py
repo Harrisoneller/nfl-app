@@ -352,6 +352,53 @@ def persist(
     return written
 
 
+async def refresh_context(
+    db: Session,
+    season: int,
+    week: int | None,
+    *,
+    teams: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run every provider for one slate and append what they produce.
+
+    This is the scheduler entry point. Each provider is isolated: one failing
+    feed costs its own component, never the others and never the predictions.
+    Returns a per-provider report so the admin panel can show what actually
+    ran rather than only what was supposed to.
+    """
+    report: dict[str, Any] = {"season": season, "week": week, "providers": {}}
+    if not enabled():
+        report["skipped"] = "context.enabled is off"
+        return report
+
+    # 1. Ingest the official injury report (append-only).
+    try:
+        from .context import availability
+
+        ingested = await availability.refresh_availability(db, season, week)
+        report["providers"]["availability_ingest"] = {"rows": ingested}
+    except Exception as e:  # noqa: BLE001
+        log.warning("context_refresh_ingest_failed", error=str(e)[:200])
+        report["providers"]["availability_ingest"] = {"error": str(e)[:200]}
+
+    # 2. Price it into components (availability + qb).
+    try:
+        from .context import availability
+
+        rows = await availability.availability_context(
+            db, season, week, teams=teams)
+        written = persist(db, season=season, week=week, rows=rows,
+                          model_version=availability.AVAILABILITY_MODEL_VERSION)
+        report["providers"]["availability_price"] = {
+            "components": len(rows), "written": written,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.warning("context_refresh_price_failed", error=str(e)[:200])
+        report["providers"]["availability_price"] = {"error": str(e)[:200]}
+
+    return report
+
+
 def record_manual(
     db: Session,
     *,

@@ -228,7 +228,7 @@ just the game-side number. That is where it converts into money.
 | Phase | Contents | Rationale |
 |---|---|---|
 | 1 | **DONE 2026-08-29** — Storage (append-only snapshots, `as_of`), context bundle plumbing into `predict_game`, game-conditional sigma wired + registered | Foundation; sigma pays off immediately across every market |
-| 2 | QB adjustment + availability layer | The two largest point-swings in the NFL |
+| 2 | **DONE 2026-08-29** — QB adjustment + availability layer | The two largest point-swings in the NFL |
 | 3 | Weather-into-model + situational layer | Cheap, well-established, currently zero |
 | 4 | CLV validation gate + walk-forward backtest with layer attribution | Proves phases 2–3 and prevents drift |
 | 5 | Coach/scheme priors + interaction terms | Highest-nuance, needs the gate from phase 4 to be safe |
@@ -288,3 +288,77 @@ under the SQLite fixture the suite is designed to use. The new context models
 use `JSONB().with_variant(JSON(), "sqlite")` and create cleanly; applying that
 same one-line change to the other JSONB models would restore the SQLite test
 path for the whole suite.
+
+---
+
+## 7. Phase 2 as built (2026-08-29)
+
+**New files**
+- `app/services/context/player_value.py` (`pv-nfl-v1`) — points/game above
+  positional replacement. Skill players measured from `epa_per_play` x
+  opportunities x snap share, against a per-position replacement percentile
+  drawn from this season's own pool. OL/defense/specialists get positional
+  priors marked `basis="prior"` so nothing downstream mistakes them for
+  measurements. Redistribution applied to everything.
+- `app/services/qb_adjustment_service.py` (`qb-nfl-v1`) — usage-derived depth
+  chart, EPA/dropback shrunk and blended across seasons, priced as
+  starter-minus-next-man-up.
+- `app/services/context/availability.py` (`avail-nfl-v1`) — ingest, resolve,
+  price; plus `fit_play_probability`.
+- `tests/test_context_phase2.py` — 34 tests.
+
+**Changed**
+- `nfl_data_py_adapter` — `injuries_df`, `depth_charts_df`.
+- `context_service.refresh_context()` — provider orchestration, per-provider
+  isolation, returns a report.
+- `jobs/scheduler.py` — `context` job, every 3h in season, daily out of it.
+- `param_registry` — 11 more `context.*` params (valuation, QB, play-probability
+  table). 26 in the category now.
+
+### Decisions worth not re-litigating
+
+**The QB shrinkage target slides with experience.** Regressing every
+quarterback toward the league mean is the obvious choice and it is wrong in a
+direction that matters: the league mean is starter-dominated, so a backup with
+25 attempts gets pulled up to roughly starter-average and the model concludes a
+team barely suffers when its starter goes down. `_shrink_target` interpolates
+between replacement level and the league mean by career volume. Before this
+fix, an average team's QB swing came out at 0.2 points; after, 4.2. The
+four-to-seven point band the market prices only falls out with the sliding
+target.
+
+**Sanity anchors from the current constants** (synthetic league, not a
+backtest): elite starter out ≈ 9 (hits the cap), good ≈ 6.7, average ≈ 4.2,
+poor ≈ 1.9, and a team with an experienced backup ≈ 2.9. That last case is the
+one a positional-average injury model structurally cannot express.
+
+**QB is its own component,** not folded into availability. "−4.1 quarterback"
+and "−0.6 availability" are two different sentences.
+
+**Play probability is recomputed on read,** while the value believed at capture
+stays on the row. A refit of the mapping applies to the live board immediately
+without rewriting history.
+
+**Practice trajectory over designation.** `dnp/dnp/dnp` caps a Questionable
+player at 0.35; `dnp/limited/full` lifts him above the base rate. Definitional
+absences (Out, IR, PUP, NFI, suspended) ignore the practice signal — a player
+on IR did not practise because he is on IR.
+
+### Still priors, not measurements
+`DEFAULT_PLAY_PROB`, `_TRAJECTORY_ADJUST`, the positional prior table, the
+0.55 redistribution factor, and `qb_replacement_epa`. `fit_play_probability`
+measures the first from our own snapshots joined to realized snap counts, and
+reports rather than writes. Redistribution is the one to fit first against
+closing-line movement — it scales every non-QB number in the layer.
+
+### Gaps left open on purpose
+- **Defensive player valuation is a positional prior**, not a measurement: the
+  nflverse seasonal frame is offense-shaped. A real upgrade needs
+  `import_pfr_data` (pressure rate, coverage snaps). Capped tight meanwhile.
+- **OL is a prior too**, and continuity (games with the same five starters) is
+  not modelled yet.
+- **Offseason QB de-attribution is not implemented** — prior-season Elo and
+  adjusted EPA still carry through a starter change. See
+  `qb_adjustment_service.carryover_note()`. It belongs with the preseason prior.
+- No provider writes `staff_change`, `scheme_matchup` or `situational` yet;
+  those components exist in the vocabulary and are Phase 3/5.
