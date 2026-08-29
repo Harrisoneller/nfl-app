@@ -26,6 +26,7 @@ _RULES = [
     (re.compile(r"^/players/[^/]+/(profile|gamelog|trend)$"), 300),
     (re.compile(r"^/players/[^/]+/news$"), 60),
     (re.compile(r"^/predictions/games$"), 60),
+    (re.compile(r"^/predictions/week-slate$"), 60),
     (re.compile(r"^/predictions/standings/projected$"), 900),
     (re.compile(r"^/predictions/elo/current$"), 300),
     (re.compile(r"^/predictions/teams/[A-Z]+/(season|elo-history|remaining-schedule)$"), 300),

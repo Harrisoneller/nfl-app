@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
@@ -605,6 +605,120 @@ async def _predict_week_uncached(
 
     overrides_service.apply_week_game_overrides(db, season, week, out)
     return {"season": season, "week": week, "games": out}
+
+
+def _reg_weeks_from_db(db: Session, season: int) -> list[dict[str, int]]:
+    """Regular-season weeks present on the games table, with game counts."""
+    rows = db.execute(
+        select(Game.week, func.count())
+        .where(Game.season == season, Game.season_type == 2, Game.week.is_not(None))
+        .group_by(Game.week)
+        .order_by(Game.week)
+    ).all()
+    return [{"week": int(w), "games": int(n)} for w, n in rows if w is not None]
+
+
+def _reg_weeks_from_sched(sched: pd.DataFrame | None) -> list[dict[str, int]]:
+    if sched is None or len(sched) == 0 or "week" not in sched.columns:
+        return []
+    games = sched
+    if "game_type" in games.columns:
+        games = games[games["game_type"].astype(str).str.upper() == "REG"]
+    if len(games) == 0:
+        return []
+    counts = games.groupby("week").size().sort_index()
+    return [{"week": int(w), "games": int(n)} for w, n in counts.items() if pd.notna(w)]
+
+
+def _next_unplayed_reg_week(sched: pd.DataFrame | None) -> int | None:
+    """Lowest REG week with an unplayed game; last REG week if the slate is final."""
+    if sched is None or len(sched) == 0 or "week" not in sched.columns:
+        return None
+    games = sched
+    if "game_type" in games.columns:
+        games = games[games["game_type"].astype(str).str.upper() == "REG"]
+    if len(games) == 0:
+        return None
+    unplayed = games[games["home_score"].isna() | games["away_score"].isna()]
+    if len(unplayed) == 0:
+        return int(games["week"].max())
+    return int(unplayed["week"].min())
+
+
+def _flatten_slate_game(g: dict[str, Any]) -> dict[str, Any]:
+    """Lift nested prediction/market/edge fields for the week-page UI."""
+    p = g.get("prediction") or {}
+    market = p.get("market") if isinstance(p.get("market"), dict) else {}
+    edge = p.get("edge") if isinstance(p.get("edge"), dict) else {}
+    model_only = p.get("model_only") if isinstance(p.get("model_only"), dict) else {}
+    dist = p.get("distribution") if isinstance(p.get("distribution"), dict) else {}
+    home_elo = g.get("home_elo")
+    away_elo = g.get("away_elo")
+    elo_gap = None
+    if isinstance(home_elo, (int, float)) and isinstance(away_elo, (int, float)):
+        elo_gap = round(float(home_elo) - float(away_elo), 1)
+    return {
+        "id": g.get("id"),
+        "season": g.get("season"),
+        "week": g.get("week"),
+        "gameday": g.get("gameday"),
+        "gametime": g.get("gametime"),
+        "home_team_id": g.get("home_team_id"),
+        "away_team_id": g.get("away_team_id"),
+        "home_score": g.get("home_score"),
+        "away_score": g.get("away_score"),
+        "home_elo": home_elo,
+        "away_elo": away_elo,
+        "elo_gap": elo_gap,
+        "model_spread": p.get("predicted_spread"),
+        "model_total": p.get("predicted_total"),
+        "model_home_score": p.get("predicted_home_score"),
+        "model_away_score": p.get("predicted_away_score"),
+        "model_home_win_prob": p.get("home_win_prob"),
+        "model_raw_spread": model_only.get("predicted_spread"),
+        "predicted_spread": p.get("predicted_spread"),
+        "predicted_total": p.get("predicted_total"),
+        "predicted_home_score": p.get("predicted_home_score"),
+        "predicted_away_score": p.get("predicted_away_score"),
+        "home_win_prob": p.get("home_win_prob"),
+        "market_spread": market.get("spread_home"),
+        "market_total": market.get("total"),
+        "spread_edge": edge.get("spread"),
+        "total_edge": edge.get("total"),
+        "confidence_tier": p.get("confidence_tier"),
+        "game_script": p.get("game_script"),
+        "distribution": dist,
+        "market": market,
+        "model_only": model_only,
+        "edge": edge,
+    }
+
+
+async def week_slate(
+    db: Session, season: int | None = None, week: int | None = None,
+) -> dict[str, Any]:
+    """Weekly rundown: model vs market for every REG game on the slate.
+
+    `week=None` resolves to the next regular-season week with unplayed games
+    (skips preseason / playoff weeks so the board is never an empty REG filter
+    of a POST week number).
+    """
+    season = season or current_or_upcoming_season()
+    sched = await _season_schedule(season, db=db)
+    weeks = _reg_weeks_from_db(db, season) or _reg_weeks_from_sched(sched)
+    resolved = week if week is not None else _next_unplayed_reg_week(sched)
+    payload = await predict_week(db, season, resolved)
+    games = [_flatten_slate_game(g) for g in (payload.get("games") or [])]
+    games.sort(key=lambda g: (str(g.get("gameday") or ""), str(g.get("away_team_id") or "")))
+    return {
+        "season": payload.get("season") or season,
+        "week": payload.get("week") if payload.get("week") is not None else resolved,
+        "n_games": len(games),
+        "model_version": PREDICTION_MODEL_VERSION,
+        "weeks": weeks,
+        "partial": bool(payload.get("partial")),
+        "games": games,
+    }
 
 
 async def _calibration_context(db: Session) -> tuple[float, float | None]:
