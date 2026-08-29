@@ -44,10 +44,11 @@ from ..models.sparky import (
 )
 from ..models.game import Game
 from ..utils.seasons import current_or_upcoming_season
-from ..utils.teams import canonical_team
-from . import predictions_service
+from ..utils.teams import canonical_team, is_nfl_matchup, nfl_team_ids
+from . import predictions_service, sparky_parlay_service, week_index
 from .sparky import accuracy as acc
 from .sparky import confidence, odds_math, parlay
+from .sparky.books import is_major_book
 from .sparky.parlay import GameForParlay
 from .sparky.signals import MovementPoint, Signal, SignalInput, detect_signals
 
@@ -231,9 +232,15 @@ def _is_duplicate_recent(
 
 
 def _latest_per_book(rows: list[OddsSnapshot]) -> list[OddsSnapshot]:
-    """Most-recent snapshot per book for a single event."""
+    """Most-recent snapshot per major book for a single event.
+
+    Offshore / sharp books are dropped here so consensus, movement and the
+    per-game book list never quote a number the user cannot actually bet.
+    """
     by_book: dict[str, OddsSnapshot] = {}
     for r in sorted(rows, key=lambda x: x.captured_at):
+        if not is_major_book(r.book):
+            continue
         by_book[r.book] = r  # later captured_at overwrites
     return list(by_book.values())
 
@@ -301,9 +308,16 @@ def _mode_label(labels: list[str]) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-async def _model_prob_map(db: Session) -> dict[tuple[str, str], float]:
-    """(home_id, away_id) -> Elo/ML ensemble home win prob for the upcoming week."""
-    out: dict[tuple[str, str], float] = {}
+async def _model_pred_map(db: Session) -> dict[tuple[str, str], dict[str, Any]]:
+    """(home_id, away_id) -> the model's full prediction for the upcoming week.
+
+    Previously this kept only ``home_win_prob`` and discarded the rest, which
+    is why Sparky could price moneylines and nothing else. The expected margin,
+    expected total and the distribution's sigmas are all right there in the
+    same payload, and they are what makes a spread or total leg priceable —
+    including its exact push probability.
+    """
+    out: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         season = current_or_upcoming_season()
         base = await predictions_service.predict_week(db, season, None)
@@ -312,55 +326,118 @@ async def _model_prob_map(db: Session) -> dict[tuple[str, str], float]:
             pred = g.get("prediction") or {}
             wp = pred.get("home_win_prob")
             if h and a and wp is not None:
-                out[(h, a)] = float(wp)
+                dist = pred.get("distribution") or {}
+                spread = pred.get("predicted_spread")
+                pred_total = pred.get("predicted_total")
+                expected_margin = dist.get("expected_margin")
+                if expected_margin is None and spread is not None:
+                    expected_margin = -float(spread)
+                expected_total = dist.get("expected_total")
+                if expected_total is None:
+                    expected_total = pred_total
+                out[(h, a)] = {
+                    "home_win_prob": float(wp),
+                    # Sign convention: predicted_spread is negative when home is
+                    # favoured, so the home-perspective expected margin is its
+                    # negation.
+                    "pred_margin": expected_margin,
+                    "pred_total": pred_total,
+                    "dist": {
+                        "expected_margin": expected_margin,
+                        "expected_total": expected_total,
+                        "margin_sd": dist.get("margin_sd"),
+                        "total_sd": dist.get("total_sd"),
+                        "margin_total_rho": dist.get("margin_total_rho"),
+                    },
+                }
     except Exception as e:  # noqa: BLE001 — model is optional; market-only still works
         log.warning("sparky_model_probs_failed", error=str(e)[:160])
     return out
 
 
-def _current_event_rows(db: Session) -> dict[str, list[OddsSnapshot]]:
-    """Snapshots grouped by event for the *current upcoming NFL week*.
+async def _model_prob_map(db: Session) -> dict[tuple[str, str], float]:
+    """Back-compat view of :func:`_model_pred_map` (win probability only)."""
+    return {k: v["home_win_prob"] for k, v in (await _model_pred_map(db)).items()}
 
-    The Odds API often returns more than one week of games once early lines
-    post (Week 1 + Week 2 in the preseason, current + next week mid-season).
-    The Sparky dashboard is a "this week's slate" view, so we anchor the
-    window on the earliest still-upcoming kickoff and cap it at 6 days 12
-    hours. That comfortably covers one NFL week (Thu/Sun/Mon, plus any
-    Saturday international game) while excluding the *next* week's Thursday
-    kickoff — without that cap, the dashboard would show every week the
-    book has posted.
 
-    Snapshots with a NULL commence_time (rare/defensive) are always
-    included, matching the prior behavior.
+def _current_event_rows(
+    db: Session,
+    *,
+    week: int | None = None,
+    season: int | None = None,
+    windex: "week_index.WeekIndex | None" = None,
+) -> dict[str, list[OddsSnapshot]]:
+    """Snapshots grouped by event, for one **NFL week**.
+
+    This used to be a rolling time window — anchor on the earliest still-upcoming
+    kickoff, keep everything within 6 days 12 hours. That silently dropped MNF
+    when TNF was the anchor, and slid the slate forward mid-week as games
+    finished. Weeks are discrete and the schedule already stores them.
+
+    With no schedule loaded (offseason, fresh DB, demo slate) it falls back to
+    the old time window rather than returning nothing.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
-    rows = (
-        db.query(OddsSnapshot)
-        .filter(
-            (OddsSnapshot.commence_time.is_(None))
-            | (OddsSnapshot.commence_time >= cutoff)
+    idx = windex if windex is not None else week_index.build(db, season)
+
+    if not idx.available:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
+        rows = (
+            db.query(OddsSnapshot)
+            .filter(
+                (OddsSnapshot.commence_time.is_(None))
+                | (OddsSnapshot.commence_time >= cutoff)
+            )
+            .all()
         )
-        .all()
-    )
+        return _group_by_event(_legacy_window(rows)) if rows else {}
+
+    target = week if week is not None else idx.current_week()
+    if target is None:
+        return {}
+
+    bounds = idx.bounds_for(target)
+    q = db.query(OddsSnapshot)
+    if bounds is not None:
+        q = q.filter(
+            (OddsSnapshot.commence_time.is_(None))
+            | (
+                (OddsSnapshot.commence_time >= bounds.start - timedelta(days=3))
+                & (OddsSnapshot.commence_time <= bounds.end + timedelta(days=3))
+            )
+        )
+    rows = q.all()
     if not rows:
         return {}
 
-    # Anchor on the earliest upcoming kickoff.
-    earliest = min(
-        (r.commence_time for r in rows if r.commence_time is not None),
-        default=None,
-    )
-    if earliest is not None:
-        upper = earliest + timedelta(days=6, hours=12)
-        rows = [
-            r for r in rows
-            if r.commence_time is None or r.commence_time <= upper
-        ]
+    kept = [
+        r for r in rows
+        if idx.assign(r.home_team_id, r.away_team_id, r.commence_time) == target
+    ]
+    return _group_by_event(kept)
 
+
+def _as_utc(value: datetime) -> datetime:
+    """Aware UTC. SQLite hands back naive datetimes where Postgres does not."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _group_by_event(rows: list[OddsSnapshot]) -> dict[str, list[OddsSnapshot]]:
     by_event: dict[str, list[OddsSnapshot]] = defaultdict(list)
     for r in rows:
         by_event[r.event_id].append(r)
     return by_event
+
+
+def _legacy_window(rows: list[OddsSnapshot]) -> list[OddsSnapshot]:
+    """The pre-week rolling window, kept only as an offseason fallback."""
+    earliest = min(
+        (r.commence_time for r in rows if r.commence_time is not None),
+        default=None,
+    )
+    if earliest is None:
+        return rows
+    upper = earliest + timedelta(days=6, hours=12)
+    return [r for r in rows if r.commence_time is None or r.commence_time <= upper]
 
 
 def _days_rest_for_team(db: Session, team_id: str, reference: datetime) -> float | None:
@@ -390,7 +467,9 @@ def _days_rest_for_team(db: Session, team_id: str, reference: datetime) -> float
     return max(0.0, delta.total_seconds() / 86400.0)  # convert to days (float)
 
 
-async def build_slate(db: Session, *, slate_date: date | None = None) -> dict[str, Any]:
+async def build_slate(
+    db: Session, *, slate_date: date | None = None, week: int | None = None,
+) -> dict[str, Any]:
     """Compute predictions + signals for the current slate and persist them.
 
     Idempotency: before writing anything, this wipes every existing
@@ -412,8 +491,12 @@ async def build_slate(db: Session, *, slate_date: date | None = None) -> dict[st
     ).delete(synchronize_session=False)
     db.flush()
 
-    by_event = _current_event_rows(db)
-    model_probs = await _model_prob_map(db)
+    season = current_or_upcoming_season()
+    windex = week_index.build(db, season)
+    target_week = week if week is not None else windex.current_week()
+    by_event = _current_event_rows(db, week=week, season=season, windex=windex)
+    model_preds = await _model_pred_map(db)
+    model_probs = {k: v["home_win_prob"] for k, v in model_preds.items()}
 
     games_out: list[dict[str, Any]] = []
     for event_id, rows in by_event.items():
@@ -458,20 +541,26 @@ async def build_slate(db: Session, *, slate_date: date | None = None) -> dict[st
             winner_id=winner_id or "?", loser_id=loser_id or "?", score=score, signals=sigs,
         )
 
+        mpred = model_preds.get((home_id, away_id)) if home_id and away_id else None
         market_blob = {
             **cons,
             "home_team_id": home_id,
             "away_team_id": away_id,
             "home_win_prob_ensemble": round(score.home_win_prob, 4),
+            "dist": (mpred or {}).get("dist") or {},
         }
         commence = next((r.commence_time for r in rows if r.commence_time), None)
+        game_week = windex.assign(home_id, away_id, commence) or target_week
 
         _upsert_prediction(
             db, slate_date=slate_date, event_id=event_id,
+            season=season, week=game_week,
             home_id=home_id, away_id=away_id,
             home_name=sample.home_team, away_name=sample.away_team,
             commence=commence, winner_id=winner_id, score=score, signals=sigs,
             explanation=explanation, market=market_blob,
+            pred_margin=(mpred or {}).get("pred_margin"),
+            pred_total=(mpred or {}).get("pred_total"),
         )
         games_out.append(_prediction_payload(
             event_id, home_id, away_id, sample.home_team, sample.away_team, commence,
@@ -490,6 +579,8 @@ async def build_slate(db: Session, *, slate_date: date | None = None) -> dict[st
     log.info("sparky_slate_built", games=len(games_out), slate=str(slate_date))
     return {
         "slate_date": slate_date.isoformat(),
+        "season": season,
+        "week": target_week,
         "games": games_out,
         "recommended_parlays": recommended,
         "count": len(games_out),
@@ -510,6 +601,8 @@ def _upsert_prediction(db: Session, **k) -> None:
     if row is None:
         row = SparkyGamePrediction(slate_date=k["slate_date"], event_id=k["event_id"])
         db.add(row)
+    row.season = k.get("season")
+    row.week = k.get("week")
     row.home_team_id = k["home_id"]
     row.away_team_id = k["away_id"]
     row.home_team = k["home_name"]
@@ -524,6 +617,8 @@ def _upsert_prediction(db: Session, **k) -> None:
     row.signals = [s.as_dict() for s in sigs]
     row.explanation = k["explanation"]
     row.market = k["market"]
+    row.pred_margin = k.get("pred_margin")
+    row.pred_total = k.get("pred_total")
 
 
 def _prediction_payload(event_id, home_id, away_id, home_name, away_name, commence,
@@ -595,7 +690,22 @@ def _game_for_parlay_from_prediction(p: SparkyGamePrediction) -> GameForParlay:
 def rank_parlay(
     db: Session, event_ids: list[str], *, slate_date: date | None = None, persist: bool = False,
 ) -> dict[str, Any]:
-    """Rank all 2**N winner combinations for the chosen N games (N in [2, 8])."""
+    """Rank the best tickets buildable from the chosen games.
+
+    Delegates to :mod:`sparky_parlay_service`. The search space is no longer
+    "which side wins each game" but "which market and side, across moneyline,
+    spread and total, in each game" — priced with correlation, push protection
+    and the selection penalty.
+    """
+    return sparky_parlay_service.rank_for_events(
+        db, event_ids, slate_date=slate_date, persist=persist,
+    )
+
+
+def _rank_parlay_legacy(
+    db: Session, event_ids: list[str], *, slate_date: date | None = None, persist: bool = False,
+) -> dict[str, Any]:
+    """Superseded moneyline-only path. Retained only for reference/backtests."""
     n = len(event_ids)
     if not parlay.MIN_LEGS <= n <= parlay.MAX_LEGS:
         raise ValueError(
@@ -670,15 +780,24 @@ def _persist_parlays(db: Session, slate_id: str, slate_date: date, ranked: list)
 def _persist_recommended_parlays(
     db: Session, slate_date: date, games_out: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Auto-rank the three most-confident games as the slate's recommended parlay."""
-    if len(games_out) < 3:
+    """Search the whole slate for the best available tickets.
+
+    This used to take the three highest-*confidence* games and parlay them.
+    That is close to the opposite of the right answer: confidence is highest
+    exactly where the model and the market agree, which is where there is no
+    edge left to bet. The recommendation is now the output of an EV-gated,
+    growth-ranked search over every priceable leg on the slate, and on many
+    slates it is legitimately empty.
+    """
+    if len(games_out) < 2:
         return []
-    top3 = games_out[:3]
-    event_ids = [g["event_id"] for g in top3]
     try:
-        result = rank_parlay(db, event_ids, slate_date=slate_date, persist=True)
-        return result["parlays"]
-    except ValueError:
+        result = sparky_parlay_service.recommend(
+            db, slate_date=slate_date, persist=True,
+        )
+        return result.get("parlays", [])
+    except Exception as e:  # noqa: BLE001 — a failed recommendation must not break the slate
+        log.warning("sparky_recommend_failed", error=str(e)[:200])
         return []
 
 
@@ -687,7 +806,14 @@ def _persist_recommended_parlays(
 # --------------------------------------------------------------------------- #
 
 
-def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool = False) -> dict[str, Any]:
+def get_slate(
+    db: Session,
+    slate_date: date | None = None,
+    *,
+    prefer_real: bool = False,
+    week: int | None = None,
+    include_started: bool = False,
+) -> dict[str, Any]:
     """Persisted predictions for a slate (most recent if no date given).
 
     If prefer_real=True, we will ignore purely synthetic demo slates
@@ -703,6 +829,8 @@ def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool 
 
         return {
             "slate_date": None,
+            "season": None,
+            "week": None,
             "games": [],
             "recommended_parlays": [],
             "count": 0,
@@ -718,6 +846,9 @@ def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool 
         preds_query = preds_query.filter(
             ~SparkyGamePrediction.event_id.like("demo-%")
         )
+
+    if week is not None:
+        preds_query = preds_query.filter(SparkyGamePrediction.week == week)
 
     preds = preds_query.all()
 
@@ -738,7 +869,17 @@ def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool 
             )
             slate_date = real_slate_date
 
-    games = [_persisted_prediction_payload(p) for p in preds]
+    preds = sparky_parlay_service.nfl_only(preds)
+
+    now = datetime.now(timezone.utc)
+    started = [
+        p for p in preds
+        if p.commence_time is not None
+        and _as_utc(p.commence_time) < now - timedelta(hours=4)
+    ]
+    shown = preds if include_started else [p for p in preds if p not in started]
+
+    games = [_persisted_prediction_payload(p) for p in shown]
     games.sort(key=lambda g: g["confidence_score"], reverse=True)
 
     rec_query = (
@@ -755,12 +896,70 @@ def get_slate(db: Session, slate_date: date | None = None, *, prefer_real: bool 
     rec_rows = rec_query.order_by(SparkyParlayRanking.rank.asc()).all()
     recommended = [_parlay_row_payload(r) for r in rec_rows]
 
+    seasons = {p.season for p in preds if p.season is not None}
+    weeks = {p.week for p in preds if p.week is not None}
     return {
         "slate_date": slate_date.isoformat(),
+        "season": next(iter(seasons), None) if len(seasons) == 1 else None,
+        "week": week if week is not None else (
+            next(iter(weeks), None) if len(weeks) == 1 else None
+        ),
         "games": games,
         "recommended_parlays": recommended,
         "count": len(games),
+        "week_game_count": len(preds),
+        "started_count": len(started),
+        "include_started": include_started,
         "real_data_available": False,
+    }
+
+
+def available_weeks(db: Session, season: int | None = None) -> dict[str, Any]:
+    """Weeks the user can switch between, with how much is on each.
+
+    Counts come from two places on purpose. ``games`` is what the schedule says
+    a week contains, so a week with no lines yet still appears and is not a
+    mystery; ``priced`` is how many Sparky has actually built a prediction for.
+    """
+    season = season or current_or_upcoming_season()
+    idx = week_index.build(db, season)
+
+    priced: dict[int, int] = {}
+    ids = nfl_team_ids()
+    rows = (
+        db.query(SparkyGamePrediction.week, func.count(SparkyGamePrediction.id))
+        .filter(SparkyGamePrediction.season == season)
+        .filter(SparkyGamePrediction.week.isnot(None))
+        .filter(SparkyGamePrediction.home_team_id.in_(ids))
+        .filter(SparkyGamePrediction.away_team_id.in_(ids))
+        .group_by(SparkyGamePrediction.week)
+        .all()
+    )
+    for wk, n in rows:
+        priced[int(wk)] = int(n)
+
+    scheduled: dict[int, int] = {}
+    for (home, away), wk in idx.by_pair.items():
+        if is_nfl_matchup(home, away):
+            scheduled[wk] = scheduled.get(wk, 0) + 1
+
+    weeks = []
+    for wk in idx.weeks:
+        b = idx.bounds_for(wk)
+        weeks.append({
+            "week": wk,
+            "label": f"Week {wk}",
+            "start": b.start.isoformat() if b else None,
+            "end": b.end.isoformat() if b else None,
+            "games": scheduled.get(wk, 0),
+            "priced": priced.get(wk, 0),
+        })
+
+    return {
+        "season": season,
+        "current_week": idx.current_week(),
+        "weeks": weeks,
+        "schedule_available": idx.available,
     }
 
 

@@ -6,12 +6,33 @@ tested without a database or network — the orchestration that reads/writes the
 DB and calls the existing Elo/ML predictor lives in ``app.services.sparky_service``.
 
 Modules:
-  - ``odds_math``  : american/decimal/implied conversions, de-vig, parlay odds
-  - ``signals``    : the market-signal taxonomy + detection framework
-  - ``confidence`` : ensemble (model + market + signals) -> 0-100 confidence
-  - ``parlay``     : 3-leg parlay generation (8 combos) + composite ranking
-  - ``accuracy``   : historical-accuracy formulas (rolling windows, hit rates)
+  - ``odds_math``    : american/decimal/implied conversions, de-vig (power and
+                       proportional), parlay odds, moment-based Kelly
+  - ``signals``      : the market-signal taxonomy + detection framework
+  - ``confidence``   : ensemble (model + market + signals) -> 0-100 confidence
+  - ``shrinkage``    : calibration, edge shrinkage toward the market, and the
+                       winner's-curse correction — the three things that decide
+                       whether a claimed edge is real
+  - ``correlation``  : push-aware, correlation-aware parlay pricing over a
+                       latent-factor model of *estimation* error
+  - ``legs``         : the candidate leg universe (moneyline / spread / total)
+  - ``parlay``       : slate-wide search, +EV gate, growth-rate ranking
+  - ``value``        : per-leg bet quality — EV at the offered price, how likely
+                       that EV is real rather than estimation noise, expected
+                       log-growth, fractional-Kelly stake, and the tiering the
+                       Value Board renders
+  - ``accuracy``     : historical-accuracy formulas (rolling windows, hit rates)
 """
 from __future__ import annotations
 
-from . import accuracy, confidence, odds_math, parlay, signals  # noqa: F401
+from . import (  # noqa: F401
+    accuracy,
+    confidence,
+    correlation,
+    legs,
+    odds_math,
+    parlay,
+    shrinkage,
+    signals,
+    value,
+)

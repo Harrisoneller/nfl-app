@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
 import useSWR from "swr";
-import { api, SparkyParlay } from "@/lib/api";
+import { api, SparkyGame, SparkyParlay } from "@/lib/api";
 import { useAuth } from "@/context/AuthProvider";
 import { TeamLogo } from "@/components/TeamLogo";
 import { PredictionCard } from "@/components/sparky/PredictionCard";
@@ -10,14 +10,21 @@ import { AccuracyPanel } from "@/components/sparky/AccuracyPanel";
 import { AdminPanel } from "@/components/sparky/AdminPanel";
 import { HowSparkyWorks } from "@/components/sparky/HowSparkyWorks";
 import { SparkyGlossary } from "@/components/sparky/SparkyGlossary";
+import { ValueBoard } from "@/components/sparky/ValueBoard";
+import { WeekSelector } from "@/components/sparky/WeekSelector";
 import { HelpTip, TERMS } from "@/components/sparky/HelpTip";
-import { americanOdds, pct } from "@/components/sparky/format";
+import { americanOdds, isNflMatchup, pct } from "@/components/sparky/format";
 
-type TabId = "dashboard" | "parlay" | "accuracy" | "admin";
+type TabId = "value" | "parlay" | "predictions" | "accuracy" | "admin";
 
+// Order is the argument. The board that says what is *worth betting* leads;
+// the grid that says who *wins* is a second-class tab, because that is what it
+// is. The old order — a confidence-sorted prediction grid on the landing view —
+// is what made 25-point favorites read as the product's top recommendation.
 const ALL_TABS: { id: TabId; label: string; adminOnly?: boolean }[] = [
-  { id: "dashboard", label: "Dashboard" },
+  { id: "value", label: "Value Board" },
   { id: "parlay", label: "Parlay Builder" },
+  { id: "predictions", label: "Game Predictions" },
   { id: "accuracy", label: "Historical Accuracy" },
   { id: "admin", label: "Admin / Debug", adminOnly: true },
 ];
@@ -33,17 +40,25 @@ export default function SparkyPage() {
     [isAdmin],
   );
 
-  const [tab, setTab] = useState<TabId>("dashboard");
+  const [tab, setTab] = useState<TabId>("value");
   // If a user lands on /sparky already on the admin tab (URL persistence,
   // back-button, etc.) and turns out not to be an admin, bounce them home.
   useEffect(() => {
-    if (tab === "admin" && !isAdmin) setTab("dashboard");
+    if (tab === "admin" && !isAdmin) setTab("value");
   }, [tab, isAdmin]);
 
-  const [forceReal, setForceReal] = useState(true); // Prefer real Week 1 data by default
+  const [forceReal, setForceReal] = useState(true); // Prefer real data by default
+
+  // Week is the board's primary structure. `null` means "whatever the backend
+  // calls the current week" — resolved server-side from the schedule, not from
+  // a rolling date window.
+  const [week, setWeek] = useState<number | null>(null);
+  const [includeStarted, setIncludeStarted] = useState(false);
+
+  const weeks = useSWR(["sparky-weeks"], () => api.sparkyWeeks());
   const slate = useSWR(
-    ["sparky-slate", forceReal],
-    () => api.sparkySlate(undefined, forceReal)
+    ["sparky-slate", forceReal, week, includeStarted],
+    () => api.sparkySlate(undefined, forceReal, undefined, week, includeStarted)
   );
 
   // On first load, strongly prefer real data
@@ -52,11 +67,24 @@ export default function SparkyPage() {
       setForceReal(true);
     }
   }, []);
+  // The value board is its own request: it prices every side of every market,
+  // which the /slate payload does not carry. Fetched alongside the slate rather
+  // than lazily because it is the landing tab.
+  const [strictness, setStrictness] = useState<"strict" | "balanced" | "loose">(
+    "balanced",
+  );
+  const valueBoard = useSWR(
+    ["sparky-value-board", strictness, week, includeStarted],
+    () => api.sparkyValueBoard({ strictness, week, includeStarted }),
+  );
+
   // Lazy: only fetch accuracy / admin status when those tabs are active.
   const accuracy = useSWR(tab === "accuracy" ? ["sparky-accuracy"] : null, () => api.sparkyAccuracy());
   const admin = useSWR(tab === "admin" && isAdmin ? ["sparky-admin"] : null, () => api.sparkyAdminStatus());
 
-  const games = slate.data?.games ?? [];
+  const games = (slate.data?.games ?? []).filter((g: SparkyGame) =>
+    isNflMatchup(g.home_team_id, g.away_team_id),
+  );
   const recommended = slate.data?.recommended_parlays ?? [];
   const isEmpty = !slate.isLoading && games.length === 0;
   const realDataAvailable = !!slate.data?.real_data_available;
@@ -88,10 +116,31 @@ export default function SparkyPage() {
         </div>
       )}
 
-      <Hero count={games.length} slateDate={slate.data?.slate_date ?? null} />
+      <Hero
+        count={games.length}
+        slateDate={slate.data?.slate_date ?? null}
+        weekLabel={
+          slate.data?.week != null
+            ? slate.data.week === 0
+              ? "Week 0"
+              : `Week ${slate.data.week}`
+            : null
+        }
+      />
+
+      {/* Week is the board's structure, so it sits above the tabs and applies
+          to every one of them. */}
+      <WeekSelector
+        weeks={weeks.data}
+        selected={week ?? slate.data?.week ?? null}
+        onSelect={setWeek}
+        startedCount={slate.data?.started_count ?? 0}
+        includeStarted={includeStarted}
+        onToggleStarted={setIncludeStarted}
+      />
 
       {/* First-visit orientation — dismissible, persisted in localStorage */}
-      {tab === "dashboard" && <HowSparkyWorks />}
+      {tab === "value" && <HowSparkyWorks />}
 
       {/* Tabs */}
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -110,13 +159,72 @@ export default function SparkyPage() {
         <div className="sparky-card p-6 text-sm text-muted">Loading today's slate…</div>
       )}
 
-      {tab === "dashboard" && !slate.isLoading && (
-        isEmpty ? (
-          <EmptyState 
+      {tab === "value" && (
+        isEmpty && !slate.isLoading ? (
+          <EmptyState
             onSeeded={() => {
               setForceReal(true);
               slate.mutate();
-            }} 
+              valueBoard.mutate();
+            }}
+            realDataAvailable={realDataAvailable}
+            onBuildReal={() => {
+              setForceReal(true);
+              slate.mutate();
+              valueBoard.mutate();
+            }}
+          />
+        ) : (
+          <div className="space-y-6">
+            {recommended.length > 0 ? (
+              <RecommendedParlay parlay={recommended[0]} />
+            ) : (
+              /* No parlay cleared the +EV gate, which is the usual outcome. That
+                 is a reason to point at the builder, not to remove the entry
+                 point — the builder prices any combination you ask for. */
+              <div className="sparky-card p-4 flex items-center justify-between gap-4 flex-wrap">
+                <div className="text-xs text-muted leading-relaxed max-w-2xl">
+                  <span className="text-slate-300 font-medium">
+                    No parlay on this slate is +EV.
+                  </span>{" "}
+                  Sparky won&apos;t manufacture one — but you can still build any
+                  combination you like and see exactly what it is worth, positive or
+                  negative.
+                </div>
+                <button
+                  onClick={() => setTab("parlay")}
+                  className="sparky-btn !py-1.5 !px-4 !text-xs shrink-0"
+                >
+                  Open Parlay Builder →
+                </button>
+              </div>
+            )}
+            <ValueBoard
+              board={valueBoard.data}
+              isLoading={valueBoard.isLoading}
+              strictness={strictness}
+              onStrictnessChange={setStrictness}
+              onRebuild={async () => {
+                try {
+                  await api.sparkyAdminRefresh();
+                } catch {
+                  /* non-admins can still re-fetch what is there */
+                }
+                slate.mutate();
+                valueBoard.mutate();
+              }}
+            />
+          </div>
+        )
+      )}
+
+      {tab === "predictions" && !slate.isLoading && (
+        isEmpty ? (
+          <EmptyState
+            onSeeded={() => {
+              setForceReal(true);
+              slate.mutate();
+            }}
             realDataAvailable={realDataAvailable}
             onBuildReal={() => {
               setForceReal(true);
@@ -124,21 +232,37 @@ export default function SparkyPage() {
             }}
           />
         ) : (
-          <div className="space-y-6">
-            {recommended.length > 0 && <RecommendedParlay parlay={recommended[0]} />}
-            <div>
-              <h2 className="home-section-title mb-3">Today&apos;s predictions</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {games.map((g) => (
-                  <PredictionCard key={g.event_id} game={g} />
-                ))}
-              </div>
+          <div className="space-y-4">
+            <div className="sparky-card p-4 text-xs text-muted leading-relaxed">
+              <span className="text-slate-300 font-medium">These are forecasts, not bets.</span>{" "}
+              The tier on each card says how confident Sparky is about who wins — and confidence
+              peaks exactly where the model and the market agree, which is where there is no
+              money left. A 95% pick and a good bet are close to opposites. For what is worth
+              staking, use the{" "}
+              <button
+                onClick={() => setTab("value")}
+                className="text-cyan-300 hover:underline"
+              >
+                Value Board
+              </button>
+              .
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {games.map((g) => (
+                <PredictionCard key={g.event_id} game={g} />
+              ))}
             </div>
           </div>
         )
       )}
 
-      {tab === "parlay" && !slate.isLoading && <ParlayBuilder games={games} />}
+      {tab === "parlay" && !slate.isLoading && (
+        <ParlayBuilder
+          games={games}
+          valueBoard={valueBoard.data}
+          valueBoardLoading={valueBoard.isLoading}
+        />
+      )}
 
       {tab === "accuracy" && (
         accuracy.isLoading ? (
@@ -170,7 +294,15 @@ export default function SparkyPage() {
   );
 }
 
-function Hero({ count, slateDate }: { count: number; slateDate: string | null }) {
+function Hero({
+  count,
+  slateDate,
+  weekLabel,
+}: {
+  count: number;
+  slateDate: string | null;
+  weekLabel?: string | null;
+}) {
   return (
     <div className="sparky-hero">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -178,8 +310,9 @@ function Hero({ count, slateDate }: { count: number; slateDate: string | null })
           <div className="sparky-tagline">Sharp NFL Predictions · Intelligent Parlays · Real Edge</div>
           <h1 className="sparky-hero__title mt-1">Sparky</h1>
           <p className="text-xs text-slate-300/80 mt-1 max-w-2xl">
-            Sparky reads the live sportsbook market, compares it to its own NFL model, and tells you
-            which games and parlays the combination actually favors. Hover any{" "}
+            Sparky prices every moneyline, spread and total on the board against its own NFL
+            model, then shows only the ones still worth betting after its edge is shrunk to what
+            settled results support — with the stake. Hover any{" "}
             <span
               className="sparky-help__btn"
               aria-hidden
@@ -193,8 +326,11 @@ function Hero({ count, slateDate }: { count: number; slateDate: string | null })
         <div className="text-right">
           <div className="text-2xl font-bold text-white tabular-nums">{count}</div>
           <div className="text-[11px] text-muted">
-            games on slate{slateDate ? ` · ${slateDate}` : ""}
+            {weekLabel ? `games · ${weekLabel}` : "games on slate"}
           </div>
+          {slateDate && (
+            <div className="text-[10px] text-muted/60">built {slateDate}</div>
+          )}
         </div>
       </div>
     </div>
