@@ -261,12 +261,18 @@ def _games(n: int = 3) -> list[GameForParlay]:
 
 
 def test_generate_three_leg_parlay_has_8_combos():
-    """The canonical 3-leg case from the spec — 2**3 = 8 ranked combinations."""
+    """The canonical 3-leg case — 2**3 = 8 ranked combinations.
+
+    The legacy ``generate_parlays`` shim still enumerates every winner
+    combination for the games it is handed; what changed underneath is how each
+    one is priced (correlation- and push-aware) and ordered (expected bankroll
+    growth, not the old four-factor composite).
+    """
     out = parlay.generate_parlays(_games(3))
     assert len(out) == 8
     assert [p.rank for p in out] == list(range(1, 9))
-    comps = [p.composite_score for p in out]
-    assert comps == sorted(comps, reverse=True)
+    growth = [p.growth_rate for p in out]
+    assert growth == sorted(growth, reverse=True)
     for p in out:
         assert p.n_legs == 3
         assert len(p.legs) == 3
@@ -280,11 +286,15 @@ def test_generate_variable_n_leg_parlays(n, expected_combos):
     out = parlay.generate_parlays(_games(n))
     assert len(out) == expected_combos
     assert [p.rank for p in out] == list(range(1, expected_combos + 1))
-    comps = [p.composite_score for p in out]
-    assert comps == sorted(comps, reverse=True)
+    growth = [p.growth_rate for p in out]
+    assert growth == sorted(growth, reverse=True)
     for p in out:
         assert p.n_legs == n
         assert len(p.legs) == n
+        # Exactly one leg per game — the engine may never double up on a game,
+        # because cross-game estimator correlation is not the right model for
+        # two legs whose outcomes share a scoreboard.
+        assert len({leg.event_id for leg in p.legs}) == n
 
 
 def test_parlay_rejects_outside_legal_range():
@@ -302,49 +312,81 @@ def test_underdog_count_matches_picks():
 
 
 def test_per_leg_value_fields_populated():
-    """Every leg carries market_implied, edge, and expected_value."""
+    """Every leg carries a fair price, an edge measured against it, and an EV.
+
+    Note the changed definition of ``edge``: it is now ``win_prob - fair_prob``,
+    where ``fair_prob`` is the **de-vigged** market number. Measuring against
+    the vig-included implied probability, as this test used to, counts the
+    book's hold as model edge and makes every favourite look sharp.
+    """
     out = parlay.generate_parlays(_games(3))
     for p in out:
         for leg in p.legs:
+            assert 0.0 <= leg.fair_prob <= 1.0
             assert 0.0 <= leg.market_implied <= 1.0
-            # edge is just win_prob - market_implied
-            assert abs(leg.edge - (leg.win_prob - leg.market_implied)) < 1e-6
+            assert leg.market_implied >= leg.fair_prob - 1e-9  # vig is never negative
+            assert abs(leg.edge - (leg.win_prob - leg.fair_prob)) < 1e-6
 
 
 def test_parlay_value_fields_consistent():
-    """Parlay-level EV/is_value/Kelly are internally consistent with the edge."""
+    """Parlay-level EV / is_value / Kelly stay internally consistent.
+
+    ``is_value`` now tracks ``ev_adjusted`` (expected value after the selection
+    penalty) rather than the raw EV, because the raw number is the one that has
+    not yet paid for having been chosen. The Kelly cap is also far tighter than
+    the old 25%: a parlay probability is a product of N uncertain numbers, and
+    quarter-Kelly on that point estimate over-bets badly.
+    """
     out = parlay.generate_parlays(_games(3))
     for p in out:
-        # is_value strictly reflects positive expected_value.
-        assert p.is_value == (p.expected_value > 0)
-        # Kelly is zero whenever the parlay is -EV.
+        assert p.is_value == (p.ev_adjusted > 0)
         if not p.is_value:
             assert p.kelly_fraction == 0.0
-        # Kelly cap (default 25%).
-        assert 0.0 <= p.kelly_fraction <= 0.25
+        assert 0.0 <= p.kelly_fraction <= 0.02
+        # The raw EV can never be smaller than the penalized one.
+        assert p.expected_value >= p.ev_adjusted - 1e-12
 
 
-def test_value_factor_rewards_plus_ev_more_than_punishes_neutral():
-    """The asymmetric curve gives +EV plays a bigger composite bump than 0 EV."""
-    f_plus = parlay._value_factor(0.05)
-    f_zero = parlay._value_factor(0.0)
-    f_minus = parlay._value_factor(-0.05)
-    assert f_plus > f_zero > f_minus
-    # Asymmetry: 0.05 above zero is rewarded more than 0.05 below is preserved.
-    assert (f_plus - f_zero) > 0
-    assert f_minus < f_zero
+def test_growth_rate_prefers_a_short_ticket_over_a_lottery_ticket():
+    """Replaces the old ``_value_factor`` composite component.
+
+    Ranking by expected value per dollar staked is maximized by variance, so it
+    reliably surfaces four-leg longshots over short tickets that a bankroll
+    should actually prefer. The engine ranks by Kelly growth rate instead, and
+    this pins that behaviour down: a modest edge on a low-variance ticket must
+    outrank a larger edge on a wildly volatile one.
+    """
+    modest_short = parlay.growth_rate(0.05, 1.6)      # +5% EV, small spread
+    big_longshot = parlay.growth_rate(0.40, 120.0)    # +40% EV, huge spread
+    assert big_longshot < modest_short
+    # Nothing that is not +EV can contribute growth.
+    assert parlay.growth_rate(0.0, 2.0) == 0.0
+    assert parlay.growth_rate(-0.1, 2.0) == 0.0
+    # Monotone in edge at fixed variance.
+    rates = [parlay.growth_rate(e, 3.0) for e in (0.01, 0.05, 0.10, 0.20)]
+    assert rates == sorted(rates)
 
 
-def test_underdog_balance_generalizes_for_any_n():
-    """All-chalk and all-dog get penalties; balanced mix peaks for every N."""
-    for n in (2, 3, 4, 5, 6, 8):
-        all_chalk = parlay._underdog_balance(0, n)
-        all_dog = parlay._underdog_balance(n, n)
-        mixed = parlay._underdog_balance(max(1, n // 3), n)
-        assert all_chalk < 1.0
-        assert all_dog < all_chalk  # all-dog is the wildest, biggest penalty
-        assert mixed >= all_chalk   # mixed is at least as good as all-chalk
-        assert mixed >= all_dog
+def test_favourite_dog_mix_is_an_output_not_a_hard_coded_preference():
+    """Replaces the old ``_underdog_balance`` composite component.
+
+    That function asserted a fixed ideal of roughly one-third underdogs, taken
+    from the original spec and never measured against anything in this
+    codebase. It has no successor by design: the favourite/dog mix of a
+    recommended ticket is now simply whatever maximizing growth produces, so
+    the engine can return all-chalk or all-dog when that is genuinely the best
+    bet available.
+    """
+    assert not hasattr(parlay, "_underdog_balance")
+    assert not hasattr(parlay, "_value_factor")
+
+    out = parlay.generate_parlays(_games(3))
+    # underdog_count remains reported (the UI shows it) and stays truthful...
+    for p in out:
+        assert p.underdog_count == sum(1 for leg in p.legs if leg.is_underdog)
+    # ...but it does not drive the ordering: the ranking is growth, full stop.
+    growth = [p.growth_rate for p in out]
+    assert growth == sorted(growth, reverse=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -116,7 +116,7 @@ def parlay_implied(prices_american: list[int | float]) -> float:
 def combined_true_prob(leg_probs: list[float]) -> float:
     """Model probability the parlay hits = product of independent leg probs.
 
-    NFL game outcomes are close enough to independent for a betting model; this
+    Football game outcomes are close enough to independent for a betting model; this
     deliberately ignores correlation (which mostly matters for same-game parlays).
     """
     out = 1.0
@@ -165,3 +165,83 @@ def logit(p: float) -> float:
 
 def inv_logit(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
+
+
+# --------------------------------------------------------------------------- #
+# Sizing from a payoff distribution (parlays are not binary bets)
+# --------------------------------------------------------------------------- #
+
+
+def kelly_from_moments(
+    expected_return: float,
+    return_sd: float,
+    *,
+    cap: float = 0.02,
+    fraction: float = 0.25,
+) -> float:
+    """Kelly stake for a wager whose gross return ``R`` is not binary.
+
+    :func:`kelly_fraction` assumes exactly two outcomes. A parlay leg can push,
+    which makes ``R`` a multi-valued random variable, and — more importantly —
+    the binary formula fed a long-shot probability produces stakes that are
+    wildly too large the moment that probability is even slightly optimistic.
+
+    Maximizing ``E[log(1 - f + f R)]`` and expanding to second order gives
+
+        f* = (E[R] - 1) / E[(R - 1)^2] = (E[R] - 1) / (Var[R] + (E[R] - 1)^2)
+
+    which uses exactly the two moments :func:`correlation.price_parlay`
+    already returns, and which automatically shrinks the stake as the payoff
+    gets more dispersed — the behaviour full Kelly on a point estimate fails to
+    produce.
+
+    Defaults are deliberately conservative: quarter-Kelly, hard-capped at 2% of
+    bankroll. A parlay's probability estimate is the product of N uncertain
+    numbers, so even quarter-Kelly on the point estimate over-bets; the cap is
+    what keeps a single optimistic slate from mattering.
+    """
+    excess = expected_return - 1.0
+    if excess <= 0:
+        return 0.0
+    denom = return_sd * return_sd + excess * excess
+    if denom <= 0:
+        return 0.0
+    return min(cap, max(0.0, fraction * excess / denom))
+
+
+def devig_power(prices_american: list[int | float], *, tol: float = 1e-10) -> list[float]:
+    """De-vig an n-way market by the **power** method rather than proportionally.
+
+    Proportional de-vig (:func:`devig_two_way`) removes the same *fraction* of
+    probability from every outcome, which systematically over-prices longshots:
+    books do not spread their hold evenly, they load it onto the underdog. The
+    power method solves for the exponent ``k`` with ``sum(p_i ** k) == 1``,
+    which takes proportionally more from the low-probability side and matches
+    observed closing lines noticeably better at long prices.
+
+    This matters here specifically because parlay legs are frequently priced at
+    long odds, where the two methods disagree by more than the edge we are
+    trying to detect.
+    """
+    raw = [american_to_implied(p) for p in prices_american]
+    total = sum(raw)
+    if total <= 0:
+        n = max(1, len(raw))
+        return [1.0 / n] * len(raw)
+    if abs(total - 1.0) < tol:
+        return raw
+
+    lo, hi = 0.05, 5.0
+    for _ in range(200):
+        k = 0.5 * (lo + hi)
+        s = sum(p ** k for p in raw)
+        if abs(s - 1.0) < tol:
+            break
+        if s > 1.0:
+            lo = k
+        else:
+            hi = k
+    k = 0.5 * (lo + hi)
+    out = [p ** k for p in raw]
+    z = sum(out)
+    return [v / z for v in out] if z > 0 else raw

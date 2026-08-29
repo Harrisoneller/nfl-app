@@ -143,6 +143,14 @@ CATEGORIES: dict[str, dict[str, str]] = {
         "label": "Injury Status Multipliers",
         "description": "How Sleeper injury designations scale weekly player projections (OUT always zeros).",
     },
+    "parlay": {
+        "label": "Parlay Engine",
+        "description": "How much of the model's claimed edge over the market is believed, how legs are assumed to move together, and how hard a ticket is penalized for having been chosen out of a slate rather than handed to us. `edge_lambda` is the single most consequential value here: it is the fraction of model-vs-market disagreement that history says is real signal rather than noise, it is fitted automatically once enough picks have settled, and setting it to 1.0 turns the strict +EV gate into a rubber stamp.",
+    },
+    "value": {
+        "label": "Value Board",
+        "description": "What makes a single bet worth placing, as opposed to a game worth predicting. These decide the two things the old confidence-ranked dashboard got wrong: heavy chalk is priced out rather than promoted (`ml_price_floor`), and a claimed edge has to survive both a minimum EV and a minimum confidence that the EV is real rather than estimation noise. `band_prior_chalk` is the most consequential value here — it is how much of the model's edge we believe on heavy favourites before that band has settled history of its own, and setting it to 1.0 puts 14-point favourites back at the top of the board.",
+    },
 }
 
 
@@ -155,6 +163,8 @@ def _spec(key: str, label: str, desc: str, default: float, lo: float, hi: float,
 
 
 _GAME = ("game predictions", "spreads", "totals", "win prob")
+_PARLAY = ("Sparky parlays", "parlay EV", "recommended tickets")
+_VALUE = ("Sparky value board", "single-bet EV", "recommended stakes")
 _PLAYER = ("player projections", "props", "start/sit", "fantasy")
 
 _SPECS: tuple[ParamSpec, ...] = (
@@ -437,6 +447,197 @@ _SPECS: tuple[ParamSpec, ...] = (
     _spec("injury.questionable_mult", "Questionable multiplier",
           "Weekly projection scale for players designated Questionable.",
           0.85, 0.0, 1.0, "injury", affects=_PLAYER),
+
+    # --- parlay engine -------------------------------------------------- #
+    _spec("parlay.edge_lambda", "Edge trust (lambda)",
+          "Fraction of the model's edge over the de-vigged market that is treated as "
+          "real. Used only until enough settled picks exist to fit it by maximum "
+          "likelihood, after which the fitted value wins. 1.0 means take the model at "
+          "face value; 0.0 means the model adds nothing to the closing line and no bet "
+          "should ever qualify. Below 0.5 is the historically defensible range for a "
+          "model competing with a sharp NFL market.",
+          0.45, 0.0, 1.0, "parlay", step=0.01, affects=_PARLAY),
+    _spec("parlay.selection_kappa", "Selection penalty weight",
+          "How much of the residual winner's-curse correction to charge. The per-leg "
+          "shrinkage above is the primary correction; this covers what it misses. "
+          "Charging a full order-statistic haircut on top (kappa = 1) double-counts and "
+          "makes the +EV gate impossible to pass at any edge size. Raise it if the "
+          "backtest shows realized parlay hit rate coming in under predicted.",
+          0.25, 0.0, 1.0, "parlay", step=0.05, affects=_PARLAY),
+    _spec("parlay.market_noise", "Market mispricing sd (logit)",
+          "How wrong the closing line itself is, on the log-odds scale. This is the "
+          "floor on how well any leg can be known — no model can be more certain than "
+          "the market is wrong. NFL books are the sharpest in football; keep this "
+          "tighter than a college-football setting would.",
+          0.10, 0.01, 0.40, "parlay", step=0.01, affects=_PARLAY),
+    _spec("parlay.rho_model", "Leg correlation: model error",
+          "How strongly legs share exposure to 'are our numbers right today'. Every leg "
+          "loads on this channel, which is what makes a parlay one correlated bet on the "
+          "model rather than N independent bets. Setting it to 0 reproduces the old "
+          "independence assumption exactly.",
+          0.55, 0.0, 0.95, "parlay", step=0.05, affects=_PARLAY),
+    _spec("parlay.rho_favorite", "Leg correlation: favourite regime",
+          "Shared exposure of moneyline and spread legs to whether chalk holds on this "
+          "slate. Signed by which side the leg takes.",
+          0.20, 0.0, 0.90, "parlay", step=0.05, affects=_PARLAY),
+    _spec("parlay.rho_scoring", "Leg correlation: scoring environment",
+          "Shared exposure of total legs to whether the slate runs high or low — weather "
+          "systems, officiating, rule regime. Signed by over/under, so stacking overs is "
+          "priced as the correlated bet it is.",
+          0.30, 0.0, 0.90, "parlay", step=0.05, affects=_PARLAY),
+    _spec("parlay.min_leg_edge", "Minimum leg edge",
+          "A leg must beat its own fair price by at least this much to enter the search "
+          "pool. For cross-game tickets there is no such thing as a leg that is bad "
+          "alone but good in a parlay, so every leg carries its own weight. The "
+          "exception is genuine same-game correlation, which the engine now prices "
+          "properly on the joint outcome distribution — and this filter is deliberately "
+          "not applied to hand-built tickets, where the user named the legs.",
+          0.01, 0.0, 0.10, "parlay", step=0.005, affects=_PARLAY),
+    _spec("parlay.min_books", "Minimum books per leg",
+          "A consensus drawn from one book is that book's opinion plus its hold, not a "
+          "market. Legs quoted by fewer books than this are excluded.",
+          3.0, 1.0, 12.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.max_leg_price", "Maximum leg price (American)",
+          "Longshot ceiling. Past roughly +800 the de-vig is dominated by how the book "
+          "loads its hold onto the longshot, so the fair probability — and therefore the "
+          "edge — is the least reliable number on the board.",
+          800.0, 150.0, 5000.0, "parlay", step=50.0, kind="int", affects=_PARLAY),
+    _spec("parlay.min_leg_price", "Minimum leg price (American)",
+          "Chalk floor. Below about -2500 a leg contributes essentially no payout while "
+          "remaining fully capable of losing the ticket, which is the most common way a "
+          "retail parlay dies.",
+          -2500.0, -20000.0, -150.0, "parlay", step=50.0, kind="int", affects=_PARLAY),
+    _spec("parlay.kelly_cap", "Kelly stake cap",
+          "Hard ceiling on a single ticket's suggested stake, as a fraction of bankroll. "
+          "A parlay's probability is a product of N uncertain numbers, so even fractional "
+          "Kelly on the point estimate over-bets; this cap is what stops one optimistic "
+          "slate from mattering.",
+          0.02, 0.001, 0.10, "parlay", step=0.001, affects=_PARLAY),
+    _spec("parlay.kelly_fraction", "Kelly fraction",
+          "Fraction of full Kelly to stake before the cap applies.",
+          0.25, 0.05, 1.0, "parlay", step=0.05, affects=_PARLAY),
+    _spec("parlay.max_leg_reuse", "Max tickets sharing a leg",
+          "Caps how many recommended tickets may contain the same leg. Without it the "
+          "board fills with near-identical tickets built on one anchor, which looks like "
+          "diversification while being a single concentrated bet.",
+          3.0, 1.0, 10.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.sgp_enabled", "Same-game legs",
+          "Allow more than one leg from a single game in a hand-built ticket. Those legs "
+          "are priced on the joint (margin, total) distribution — never by multiplying "
+          "their prices, which misvalues a favourite-cover-plus-over pair by several "
+          "points of probability. Turn off to restore one-leg-per-game everywhere.",
+          1.0, 0.0, 1.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.sgp_max_legs", "Max legs from one game",
+          "Ceiling on how many legs a single game may contribute. Each extra leg is "
+          "another marginal the lattice fit has to satisfy, and past four the constraints "
+          "start fighting each other while the payout is doing almost nothing.",
+          4.0, 2.0, 5.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.alt_lines_enabled", "Alternate lines",
+          "Build a leg at every number a book actually hangs, not only the one the most "
+          "books agree on. Key-number value — a lone -2.5 against a -3.5 consensus, an "
+          "over at 44.5 when the market is 45.5 — is the most repeatable edge in the NFL, "
+          "and collapsing to the modal line throws it away for free. Costs no extra "
+          "odds-feed credits: the quotes are already stored.",
+          1.0, 0.0, 1.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.alt_line_max_offset", "Alternate line reach (points)",
+          "How far from the consensus number an alternate line may sit and still be "
+          "built. Far from the consensus the market-implied fair curve is being "
+          "extrapolated on our sigma rather than read off a quote, and the further it "
+          "goes the more the answer is the model's rather than the market's.",
+          3.5, 0.5, 14.0, "parlay", step=0.5, affects=_PARLAY),
+    _spec("parlay.alt_line_min_books_devig", "Books needed to de-vig an alt line",
+          "An alternate line is de-vigged from its own two-way quote only when at least "
+          "this many books hang both sides there; otherwise its fair price is read off "
+          "the market-implied distribution. One book's two-way price at an off number is "
+          "that book's hold, not a market, and de-vigging it manufactures edge.",
+          2.0, 1.0, 8.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    _spec("parlay.alt_lines_per_market", "Alternate lines kept per market",
+          "Cap on how many alternate numbers are built per market per game, nearest the "
+          "consensus first. Keeps the leg pool — and the combinatorial search over it — "
+          "from growing with the number of books rather than the number of bets.",
+          4.0, 0.0, 12.0, "parlay", step=1.0, kind="int", affects=_PARLAY),
+    # ---- Value board (single-bet edge finding) ---------------------------
+    _spec("value.min_ev", "Minimum EV to recommend",
+          "Expected value per unit staked a bet must clear to be called playable. Not "
+          "arbitrary: the standard error on the fitted edge-trust lambda itself moves a "
+          "leg's edge by roughly a point of probability, which at typical -110 pricing is "
+          "about 2% of EV. Below that we cannot tell a real edge from the error bar on "
+          "our estimate of how real our edges are.",
+          0.02, 0.0, 0.20, "value", step=0.005, affects=_VALUE),
+    _spec("value.min_p_edge_real", "Minimum confidence edge is real",
+          "Required probability that the bet is genuinely +EV rather than estimation "
+          "noise, computed from the residual uncertainty in a shrunk leg estimate. This "
+          "is what separates a 4% edge on a number we know well from a 4% edge on a "
+          "number we do not.",
+          0.58, 0.50, 0.95, "value", step=0.01, affects=_VALUE),
+    _spec("value.ml_price_floor", "Moneyline price floor",
+          "Moneylines shorter than this are never recommended — they appear in the "
+          "priced-out list with the reason instead. A product decision, not a model "
+          "output: at -250 a bet must win 71% to break even, books cut limits hard on "
+          "that side, and one bad estimate costs several times what a good one wins. "
+          "This is the setting that stops heavy chalk being labelled an edge.",
+          -250.0, -2000.0, -105.0, "value", step=5.0, kind="int", affects=_VALUE),
+    _spec("value.max_price", "Longshot ceiling",
+          "Prices longer than this are not recommended. Past here the de-vig is dominated "
+          "by how the book distributes its hold onto the longshot rather than by what it "
+          "thinks will happen, so the fair probability is the least reliable number on "
+          "the board.",
+          600.0, 150.0, 3000.0, "value", step=25.0, kind="int", affects=_VALUE),
+    _spec("value.min_books", "Minimum books quoting",
+          "A consensus drawn from fewer books than this is that book's opinion plus its "
+          "hold. Legs below the threshold are priced and shown, but never recommended.",
+          3.0, 1.0, 12.0, "value", step=1.0, kind="int", affects=_VALUE),
+    _spec("value.min_stake_units", "Minimum stake to bother",
+          "Picks that size below this many units (1 unit = 1% of bankroll) are demoted to "
+          "'thin'. A bet that Kelly sizes at 0.05u is telling you not to place it.",
+          0.15, 0.0, 2.0, "value", step=0.05, unit="u", affects=_VALUE),
+    _spec("value.kelly_fraction", "Kelly fraction (single bets)",
+          "Fraction of full Kelly staked on a single bet before the cap applies. Quarter "
+          "Kelly is the standard concession to the fact that the probability being sized "
+          "on is itself an estimate.",
+          0.25, 0.05, 1.0, "value", step=0.05, affects=_VALUE),
+    _spec("value.kelly_cap", "Kelly cap (single bets)",
+          "Hard ceiling on a single bet's suggested stake as a fraction of bankroll. "
+          "Higher than the parlay cap because a straight bet's probability is one "
+          "estimate rather than a product of several.",
+          0.03, 0.002, 0.10, "value", step=0.002, affects=_VALUE),
+    _spec("value.tail_tau_inflation", "Tail uncertainty inflation",
+          "How much to widen residual uncertainty toward the ends of the price curve. A "
+          "single logit-scale tau fitted across the whole board asserts we know a 95% "
+          "number as precisely as a 55% one; out there the deciding factors — starters "
+          "pulled, garbage time, backdoor covers — are not in the model at all. Set to 0 "
+          "to reproduce flat-tau behaviour exactly.",
+          1.5, 0.0, 6.0, "value", step=0.1, affects=_VALUE),
+    _spec("value.max_disagreement", "Model/market sanity limit",
+          "Largest raw disagreement between the model and a multi-book consensus, on the "
+          "log-odds scale, that is treated as an opinion rather than a broken input. A "
+          "circuit breaker, not a tuning knob: 1.0 is roughly 52% to 74%, about seven "
+          "points of spread, and nobody beats a consensus by seven points. A gap that big "
+          "is a stale distribution, a mismatched line, or a team the model cannot rate — "
+          "and without this gate it surfaces as a maximum-stake recommendation at 100% "
+          "confidence. Raise it only if you have verified the inputs.",
+          1.0, 0.2, 3.0, "value", step=0.05, affects=_VALUE),
+    _spec("value.max_price_edge", "Bad-quote limit",
+          "How much free money a single book quote may show against the market's own fair "
+          "number before it is treated as a stale or mistyped row rather than a good "
+          "price. EV and stake are computed from the best price across books — the input "
+          "most sensitive to one bad row, while the consensus that prices it is a median "
+          "and shrugs that row off. Shopping seven books buys a point or two; a quote "
+          "showing double-digit free money at the consensus probability is wrong, and "
+          "without this gate it becomes a maximum-stake recommendation.",
+          0.12, 0.02, 1.0, "value", step=0.01, affects=_VALUE),
+    _spec("value.band_prior_chalk", "Chalk edge-trust prior",
+          "Multiplier on the global edge-trust lambda for legs the market prices at 80% "
+          "or better, used until that band has enough settled picks to fit its own. Low "
+          "on purpose: we have not demonstrated edge on heavy favourites, and this is "
+          "labelled a prior rather than a finding. It rises on its own the moment the "
+          "history shows the model beating closing lines out there.",
+          0.35, 0.0, 1.0, "value", step=0.05, affects=_VALUE),
+    _spec("value.band_prior_dog", "Longshot edge-trust prior",
+          "Same, for legs the market prices below 35%. Discounted less than chalk but "
+          "still below 1: the power de-vig corrects most of the book's hold-loading on "
+          "the longshot, but the correction is itself an estimate.",
+          0.65, 0.0, 1.0, "value", step=0.05, affects=_VALUE),
 )
 
 REGISTRY: dict[str, ParamSpec] = {s.key: s for s in _SPECS}

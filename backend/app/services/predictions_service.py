@@ -363,7 +363,12 @@ def predict_game(
         # Full outcome distribution so the UI can show honest ranges, not just a point.
         "distribution": {
             "expected_margin": round(expected_margin, 1),
+            "expected_total": round(total, 1),
             "margin_sd": game_sigma,
+            "total_sd": round(prediction_dist.total_sigma(), 2),
+            "margin_total_rho": round(
+                math.tanh(expected_margin / 17.0) * 0.34, 3
+            ),
             "home_win_prob": round(win_p, 3),
             "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
             "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],

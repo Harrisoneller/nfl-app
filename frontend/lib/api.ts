@@ -1063,9 +1063,89 @@ export type SparkyParlayLeg = {
   is_value?: boolean;          // expected_value > 0
 };
 
+/**
+ * A leg from the rebuilt engine. Unlike SparkyParlayLeg this is not necessarily
+ * a moneyline: `market` says which board it came from, `line` is the number,
+ * and `push_prob` is the chance the leg lands exactly on it and voids out of
+ * the ticket.
+ */
+export type SparkyLeg = {
+  key?: string;
+  event_id: string;
+  market?: "moneyline" | "spread" | "total";
+  side?: string;
+  label?: string;
+  team_id: string | null;
+  opponent_id?: string | null;
+  line?: number | null;
+  price_american: number;
+  decimal_odds?: number;
+  book?: string | null;
+  fair_prob?: number;          // de-vigged market probability for this side
+  model_prob?: number;         // calibrated model probability, before shrinkage
+  prob?: number;               // after shrinkage — the number actually bet on
+  push_prob?: number;
+  edge?: number;
+  expected_value?: number;
+  is_underdog?: boolean;
+  is_favorite?: boolean;
+  n_books?: number;
+  /** True when this is not the number the market settled on. */
+  is_alt?: boolean;
+  /** "quoted" when the fair price came from a two-way market at this exact
+   *  number; "derived" when it was read off the market-implied distribution. */
+  fair_source?: "quoted" | "derived";
+  notes?: string[];
+};
+
+/**
+ * One game's same-game combination, priced on the joint (margin, total)
+ * distribution rather than by multiplying its legs.
+ *
+ * Read `fair_american` first, not the EV. Books reprice correlated legs instead
+ * of multiplying them and we cannot see their number, so an EV computed against
+ * the multiplied price is the value of a bet nobody is offering.
+ * `shade_room` is the usable output: how far below the multiplied price a book
+ * can quote before this stops being worth taking.
+ */
+export type SparkySameGame = {
+  event_id: string;
+  leg_keys: string[];
+  survive_prob: number;
+  all_win_prob: number;
+  push_any_prob: number;
+  multiplied_decimal: number;
+  expected_return_at_multiplied: number;
+  independent_expected_return: number;
+  /** Joint minus naive-independent. Positive = the legs help each other. */
+  correlation_effect: number;
+  fair_decimal: number;
+  fair_american: number;
+  shade_room: number;
+  ipf_converged: boolean | null;
+  ipf_max_error: number | null;
+  notes: string[];
+};
+
+/** The correlation / push receipts behind a ticket's price. */
+export type SparkyParlayPricing = {
+  expected_return?: number;
+  expected_value?: number;
+  survive_prob?: number;
+  all_win_prob?: number;
+  return_sd?: number;
+  ev_estimation_sd?: number;
+  independent_expected_return?: number;
+  independent_all_win_prob?: number;
+  correlation_effect?: number;   // vs the book's independence assumption
+  push_effect?: number;          // vs treating a push as a loss
+  mean_pairwise_corr?: number;
+  rank1_residual?: number;
+};
+
 export type SparkyParlay = {
   rank: number;
-  legs: SparkyParlayLeg[];
+  legs: SparkyLeg[];
   n_legs?: number;             // 2..8 (back-compat: pre-0010 rows imply 3)
   parlay_odds_american: number;
   parlay_odds_decimal: number;
@@ -1080,10 +1160,216 @@ export type SparkyParlay = {
   is_value?: boolean;
   kelly_fraction?: number;     // capped Kelly stake fraction (0 when -EV)
   explanation: string;
+  // --- parlay engine v2 --------------------------------------------------
+  hit_prob?: number;             // P(ticket does not lose) — push-aware
+  all_win_prob?: number;         // P(every leg wins outright)
+  selection_penalty?: number;    // charged for picking these legs out of the slate
+  ev_adjusted?: number;          // expected_value - selection_penalty (what is gated on)
+  growth_rate?: number;          // expected log-bankroll growth (what is ranked on)
+  exact_priced?: boolean;
+  pricing?: SparkyParlayPricing;
+  warnings?: string[];
+};
+
+/** How the engine was configured for a search, and how much it trusts itself. */
+export type SparkyParlayMeta = {
+  games_considered?: number;
+  pool_size?: number;
+  pool_by_market?: Record<string, number>;
+  unfiltered?: boolean;
+  trust?: {
+    edge_shrink?: {
+      lambda?: number;       // share of model-vs-market edge treated as real
+      n_rows?: number;
+      fitted?: boolean;      // false => still on the prior, not on evidence
+      ll_gain_per_pick?: number;
+    };
+    calibration?: { a?: number; b?: number; n_rows?: number; fitted?: boolean };
+    leg_tau?: number;
+  };
+  filters?: {
+    min_leg_edge?: number;
+    min_books?: number;
+    price_range?: [number, number];
+  };
+};
+
+/**
+ * One side of one market, scored as a standalone bet by the Value Board.
+ *
+ * This is the type the dashboard renders. It differs from SparkyGame in the
+ * question it answers: SparkyGame says who wins, this says whether there is
+ * money in it. A 25-point favourite scores high on the first and is a `pass`
+ * on the second, which is the entire reason this type exists.
+ */
+export type SparkyValuePick = {
+  key: string;
+  event_id: string;
+  market: "moneyline" | "spread" | "total";
+  market_label: string;
+  side: string;
+  label: string;                 // "KC -3.5", "Over 47.5", "BUF ML"
+  team_id: string | null;
+  opponent_id: string | null;
+  line: number | null;
+
+  // Price
+  price_american: number;
+  decimal_odds: number;
+  book: string | null;           // the book offering the best number
+  n_books: number;
+  fair_price_american: number;   // no-vig consensus price for this side
+  model_price_american: number;  // what our probability implies
+  cents_of_value: number;        // offered vs fair, on the continuous cents ladder
+  hold: number;                  // the book's overround on this market
+  /** True when this is not the number the market settled on. Alternate lines
+   *  are where key-number value lives; they are also thinner, hence the flag. */
+  is_alt: boolean;
+  /** "quoted" = de-vigged from a two-way market at this exact number.
+   *  "derived" = read off the market-implied distribution, because no book
+   *  quotes both sides here and de-vigging one book's pair would just be
+   *  measuring that book's hold. */
+  fair_source: "quoted" | "derived";
+  notes: string[];
+
+  // Probability
+  fair_prob: number;
+  model_prob: number;            // calibrated, before shrinkage
+  prob: number;                  // after shrinkage — what we bet on
+  push_prob: number;
+  /** Unconditional break-even: the bar EV is defined against. */
+  breakeven_prob: number;
+  /**
+   * The same bar stated conditional on no push — the only version comparable to
+   * `prob` and `fair_prob`, which are themselves conditional. Show this one
+   * next to our probability; showing the unconditional bar there overstates the
+   * edge by push x breakeven on every whole-number line.
+   */
+  breakeven_vs_ours: number;
+  edge: number;
+
+  // Quality
+  expected_value: number;        // per unit staked, push-aware
+  roi_pct: number;
+  p_edge_real: number;           // P(this is genuinely +EV, not estimation noise)
+  tau_effective: number;
+  growth_rate: number;           // expected log-bankroll growth — the ranking
+
+  // Sizing (1 unit = 1% of bankroll)
+  stake_fraction: number;
+  stake_units: number;
+
+  // Verdict
+  tier: "strong" | "playable" | "thin" | "pass";
+  band: "dog" | "mid" | "chalk";
+  /** Machine-readable verdict. `no_model` is the important one: it means we had
+   *  no distribution for this game, which is NOT the same claim as `no_edge`. */
+  reason_code: string;
+  reason_label: string;
+  /** False => market-only row. We are not saying the price is fair, we are
+   *  saying we have nothing to compare it to. */
+  model_available: boolean;
+  is_recommended: boolean;
+  is_favorite: boolean;
+  reasons: string[];             // why it landed in that tier — always populated
+  explanation: string;
+  commence_time: string | null;
+  matchup: {
+    home_team_id?: string | null;
+    away_team_id?: string | null;
+    home_team?: string | null;
+    away_team?: string | null;
+  };
+};
+
+export type SparkyValueHealth = {
+  level: "error" | "warn";
+  title: string;
+  detail: string;
+  fix: string;
+};
+
+export type SparkyValueDiagnostics = {
+  games_on_slate: number;
+  games_with_model: number;
+  games_without_model: number;
+  /** Legs actually built — needs a book price AND a model distribution. */
+  markets_found: { moneyline: number; spread: number; total: number };
+  /** Book prices present, independent of the model. quoted > 0 with found == 0
+   *  means the odds feed is fine and the model is the problem. */
+  markets_quoted: { spread: number; total: number };
+  legs_by_market: Record<string, number>;
+  rejections: { code: string; label: string; count: number }[];
+  health: SparkyValueHealth[];
+};
+
+export type SparkyValueBoard = {
+  slate_date: string | null;
+  week?: number | null;
+  picks: SparkyValuePick[];       // survived pricing, recommended first
+  /** Top rows by EV regardless of tier — the page is never blank. */
+  best_available: SparkyValuePick[];
+  priced_out: SparkyValuePick[];  // rejected, each carrying its reason
+  diagnostics: SparkyValueDiagnostics;
+  by_market: Record<
+    string,
+    { label: string; priced: number; recommended: number; best_ev: number; total_stake_units: number }
+  >;
+  meta: {
+    games_considered?: number;
+    legs_priced?: number;
+    recommended?: number;
+    priced_out_total?: number;
+    total_stake_units?: number;
+    markets?: string[];
+    strictness?: string;
+    strictness_options?: string[];
+    unit_definition?: string;
+    rules?: Record<string, number>;
+    band_tau?: Record<string, number>;
+    trust?: {
+      global?: { lambda?: number; n_rows?: number; fitted?: boolean };
+      cuts?: number[];
+      bands?: Record<
+        string,
+        { lambda?: number; n_rows?: number; fitted?: boolean; prior_multiplier?: number }
+      >;
+    };
+  };
+  message: string | null;
+};
+
+export type SparkyWeek = {
+  week: number;
+  label: string;
+  start: string | null;
+  end: string | null;
+  /** Games the schedule says this week contains. */
+  games: number;
+  /** Games Sparky has actually built a prediction for. High `games` with zero
+   *  `priced` is an unbuilt slate, not a quiet week. */
+  priced: number;
+};
+
+export type SparkyWeeks = {
+  season: number;
+  current_week: number | null;
+  weeks: SparkyWeek[];
+  /** False in the offseason or on a fresh DB — the board falls back to a time
+   *  window rather than showing nothing. */
+  schedule_available: boolean;
 };
 
 export type SparkySlate = {
   slate_date: string | null;
+  season?: number | null;
+  week?: number | null;
+  /** Games in the selected week, including ones already kicked off. */
+  week_game_count?: number;
+  /** How many are hidden because they have started — reported so a board that
+   *  shrinks through the week explains itself instead of looking like data loss. */
+  started_count?: number;
+  include_started?: boolean;
   count: number;
   games: SparkyGame[];
   recommended_parlays: SparkyParlay[];
@@ -1117,10 +1403,43 @@ export type SparkyGameDetail = {
   book_count: number;
 };
 
+/** A game the user picked that produced no priceable side, and why. */
+export type SparkyUnavailableEvent = { event_id: string; reason: string };
+
+/** Headline EV for whatever was built — reported whether or not it is positive. */
+export type SparkyEvSummary = {
+  count: number;
+  best_ev?: number | null;
+  best_ev_pct?: number;
+  best_rank?: number;
+  worst_ev_pct?: number;
+  any_positive: boolean;
+  positive_count?: number;
+};
+
+/** One game's full menu of priceable sides, for the builder's leg picker. */
+export type SparkyLegMenuGame = {
+  event_id: string;
+  home_team_id: string | null;
+  away_team_id: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  commence_time: string | null;
+  legs: SparkyLeg[];
+  /** Set when the game produced no legs — an unpriceable game is reported,
+   *  not omitted. */
+  reason: string | null;
+};
+
+export type SparkyLegMenu = {
+  games: SparkyLegMenuGame[];
+  meta?: SparkyParlayMeta;
+};
+
 export type SparkyParlayResponse = {
-  slate_id: string;
+  slate_id?: string;
   slate_date: string;
-  games: {
+  games?: {
     event_id: string;
     home_team_id: string | null;
     away_team_id: string | null;
@@ -1130,6 +1449,21 @@ export type SparkyParlayResponse = {
     home_prob: number;
   }[];
   parlays: SparkyParlay[];
+  /**
+   * What the board actually offers when nothing clears the +EV gate — priced
+   * honestly, usually negative. Deliberately a separate field from `parlays`:
+   * merging them would turn a refusal into a recommendation.
+   */
+  best_available?: SparkyParlay[];
+  /** Picked games that could not be priced, with the reason for each. */
+  unavailable_events?: SparkyUnavailableEvent[];
+  ev_summary?: SparkyEvSummary;
+  legs?: SparkyLeg[];
+  /** One entry per game that contributed more than one leg. */
+  same_game?: SparkySameGame[];
+  meta?: SparkyParlayMeta;
+  // Present (and worth showing) when the strict gate returned nothing.
+  message?: string | null;
 };
 
 export type AccuracyWindow = { n: number; correct?: number; accuracy_pct: number | null };
@@ -1611,20 +1945,93 @@ export const api = {
   deleteWidget: (id: string) => req<{ ok: boolean }>(`/widgets/${id}`, { method: "DELETE" }),
 
   // sparky — betting prediction & parlay intelligence
-  sparkySlate: (date?: string, preferReal: boolean = false, policy?: FetchPolicy) => {
+  sparkySlate: (
+    date?: string,
+    preferReal: boolean = false,
+    policy?: FetchPolicy,
+    week?: number | null,
+    includeStarted: boolean = false,
+  ) => {
     const params = new URLSearchParams();
     if (date) params.set("date", date);
     if (preferReal) params.set("prefer_real", "true");
+    if (week !== undefined && week !== null) params.set("week", String(week));
+    if (includeStarted) params.set("include_started", "true");
     const qs = params.toString() ? `?${params}` : "";
     return req<SparkySlate>(`/sparky/slate${qs}`, undefined, policy);
   },
+  /** The season's weeks, for the board's week selector. */
+  sparkyWeeks: (season?: number, policy?: FetchPolicy) =>
+    req<SparkyWeeks>(`/sparky/weeks${season ? `?season=${season}` : ""}`, undefined, policy),
   sparkyGame: (eventId: string) =>
     req<SparkyGameDetail>(`/sparky/games/${encodeURIComponent(eventId)}`),
+  /** Every priceable side of the named games, grouped by game. */
+  sparkyParlayLegs: (eventIds: string[]) =>
+    req<SparkyLegMenu>(
+      `/sparky/parlay/legs?event_ids=${encodeURIComponent(eventIds.join(","))}`,
+    ),
+  /**
+   * Price one ticket the user assembled leg by leg. No selection penalty is
+   * charged — nobody searched, so there is no winner's curse to correct for.
+   */
+  sparkyParlayPrice: (leg_keys: string[]) =>
+    req<SparkyParlayResponse>("/sparky/parlay/price", {
+      method: "POST",
+      body: JSON.stringify({ leg_keys }),
+    }),
   sparkyParlay: (event_ids: string[], persist = false) =>
     req<SparkyParlayResponse>("/sparky/parlay", {
       method: "POST",
       body: JSON.stringify({ event_ids, persist }),
     }),
+  /**
+   * Slate-wide search for the best available tickets. `strict` keeps only
+   * tickets that stay +EV after edge shrinkage and the selection penalty —
+   * an empty `parlays` array with a `message` is a normal, correct response.
+   */
+  sparkyParlayBoard: (
+    opts: { slateDate?: string; legs?: number[]; topN?: number; strict?: boolean } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.slateDate) p.set("slate_date", opts.slateDate);
+    if (opts.legs?.length) p.set("legs", opts.legs.join(","));
+    if (opts.topN) p.set("top_n", String(opts.topN));
+    if (opts.strict !== undefined) p.set("strict", String(opts.strict));
+    const qs = p.toString();
+    return req<SparkyParlayResponse>(`/sparky/parlay/board${qs ? `?${qs}` : ""}`);
+  },
+  /**
+   * The Value Board: every priceable side of every game, scored as a bet.
+   *
+   * Empty `picks` with a `message` is a normal response, not a failure — on
+   * many slates nothing clears the bar once the model's edge is shrunk to what
+   * settled history supports. `priced_out` always carries the reasons.
+   */
+  sparkyValueBoard: (
+    opts: {
+      slateDate?: string;
+      markets?: string[];
+      includePricedOut?: boolean;
+      strictness?: "strict" | "balanced" | "loose";
+      week?: number | null;
+      includeStarted?: boolean;
+    } = {},
+    policy?: FetchPolicy,
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.slateDate) p.set("slate_date", opts.slateDate);
+    if (opts.markets?.length) p.set("markets", opts.markets.join(","));
+    if (opts.strictness) p.set("strictness", opts.strictness);
+    if (opts.week !== undefined && opts.week !== null) p.set("week", String(opts.week));
+    if (opts.includeStarted) p.set("include_started", "true");
+    if (opts.includePricedOut !== undefined) {
+      p.set("include_priced_out", String(opts.includePricedOut));
+    }
+    const qs = p.toString();
+    return req<SparkyValueBoard>(`/sparky/value-board${qs ? `?${qs}` : ""}`, undefined, policy);
+  },
+  sparkyGameValue: (eventId: string) =>
+    req<SparkyValueBoard>(`/sparky/games/${encodeURIComponent(eventId)}/value`),
   sparkyAccuracy: (asOf?: string, policy?: FetchPolicy) =>
     req<SparkyAccuracy>(`/sparky/accuracy${asOf ? `?as_of=${asOf}` : ""}`, undefined, policy),
   sparkyGlossary: () => req<{ signals: SparkyGlossaryEntry[] }>("/sparky/signals/glossary"),

@@ -37,11 +37,18 @@ class SparkyGamePrediction(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("slate_date", "event_id", name="uq_sparky_pred_slate_event"),
         Index("ix_sparky_pred_slate", "slate_date"),
+        Index("ix_sparky_pred_season_week", "season", "week"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     slate_date: Mapped[date] = mapped_column(Date, nullable=False)
     event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Official NFL week this game belongs to (0018_sparky_v2). Nullable:
+    # pre-migration rows and the offseason demo slate have no schedule to match
+    # against, and read paths treat NULL as "unbucketed" rather than excluding
+    # it — dropping unmatched rows is the bug the week filter exists to fix.
+    season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    week: Mapped[int | None] = mapped_column(Integer, nullable=True)
     game_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ESPN id when matched
 
     home_team_id: Mapped[str | None] = mapped_column(String(8), nullable=True)
@@ -64,8 +71,35 @@ class SparkyGamePrediction(Base, TimestampMixin):
     # list[{key,label,side,severity,magnitude,weight,explanation}]
     signals: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # Snapshot of the consensus market line used (best ml each side, books, etc.)
+    # Snapshot of the consensus market line used (best ml each side, books, etc.).
+    # Also carries a ``dist`` sub-blob (expected margin/total + sigmas + rho) so
+    # the parlay engine can rebuild this game's outcome distribution without
+    # recomputing the model or recomputing the model.
     market: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # Sharp-money summary. Migration 0012_sparky_sharp created this column as
+    # NOT NULL and then explicitly dropped its server_default, on the stated
+    # assumption that "the ORM supplies the value on every future insert" -- but
+    # the ORM never mapped it, and `app/services/sparky/sharp.py` (the
+    # SharpSummary producer the migration's docstring points at) has never
+    # existed in any commit. The result was a NOT NULL column with no default
+    # and no writer: every INSERT into this table raised NotNullViolation.
+    #
+    # That went unnoticed because it needs a *successful* slate build to fire,
+    # and Sparky had not managed one since 0012 shipped -- a stale snapshot
+    # truncation upstream meant there were never any snapshots to build from.
+    # Fixing that unmasked this.
+    #
+    # Mapped with default=dict so inserts work and the column stays available
+    # if the sharp-money read is built later. It will be `{}` until something
+    # actually computes it; drop the column instead if that feature is dead.
+    sharp: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # Model line (migration 0014 created these columns; the ORM never mapped
+    # them, so they sat unused and NULL). Home-perspective expected margin —
+    # positive = home favoured — and expected total.
+    pred_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pred_total: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SparkyParlayRanking(Base, TimestampMixin):
@@ -110,6 +144,20 @@ class SparkyParlayRanking(Base, TimestampMixin):
     explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
     legs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # full per-leg detail
 
+    # --- parlay engine v2 (migration 0023) ------------------------------- #
+    # ``expected_value`` above is the headline EV; ``ev_adjusted`` is what the
+    # product actually gates and ranks on, after the selection penalty. The
+    # rest are the receipts: how much of the price came from correlation, how
+    # much from push protection, and whether the exact integrator was used.
+    ev_adjusted: Mapped[float | None] = mapped_column(Float, nullable=True)
+    selection_penalty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    growth_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hit_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    correlation_effect: Mapped[float | None] = mapped_column(Float, nullable=True)
+    push_effect: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exact_priced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pricing: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
 
 class SparkyHistoricalResult(Base, TimestampMixin):
     """Settled individual-pick outcome for accuracy reporting."""
@@ -134,6 +182,16 @@ class SparkyHistoricalResult(Base, TimestampMixin):
     # Signal keys present on this pick (for accuracy-by-signal breakdowns).
     signal_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Ensemble probability for the pick (migration 0013 created win_prob but the
+    # ORM never mapped it). model_prob/market_prob are new in 0023 and are what
+    # make the edge-shrinkage factor fittable: without both sides of the
+    # disagreement there is no way to ask how much of our edge was real.
+    win_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    model_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_prob: Mapped[float | None] = mapped_column(Float, nullable=True)
+    clv_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    beat_close: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class SparkyParlayResult(Base, TimestampMixin):
