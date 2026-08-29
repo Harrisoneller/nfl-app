@@ -97,8 +97,8 @@ export function WelcomeHero({
         </div>
 
         <div className="welcome-hero__actions">
-          <Link href="/teams" className="welcome-hero__btn welcome-hero__btn--primary">
-            Explore teams
+          <Link href="/week" className="welcome-hero__btn welcome-hero__btn--primary">
+            Explore slate
           </Link>
         </div>
 
