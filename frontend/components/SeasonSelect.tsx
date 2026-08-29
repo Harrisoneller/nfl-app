@@ -15,7 +15,7 @@ export function SeasonSelect({
 }) {
   const { data } = useSWR("/meta/seasons", fetcher);
   const opts = data?.available ?? [];
-  const current = value ?? data?.default;
+  const current = value ?? data?.default ?? data?.current_or_upcoming;
 
   return (
     <label className={`flex items-center gap-2 text-sm ${className}`}>

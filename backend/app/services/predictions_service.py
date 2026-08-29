@@ -490,7 +490,29 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
     """Predictions for every game in the given week.
 
     If `week` is None, picks the next upcoming week (lowest week with unplayed games).
+    Cached so the home-page hero isn't racing an 8–20s cold compute.
     """
+    cache_key = f"{season}:{week if week is not None else 'next'}:{PREDICTION_MODEL_VERSION}"
+
+    async def _compute() -> dict[str, Any]:
+        return await _predict_week_uncached(db, season, week)
+
+    payload = await artifact_cache.get_or_compute(
+        kind="week_predictions",
+        key=cache_key,
+        compute=_compute,
+        ttl_seconds=CACHE_TTL,
+        l1_ttl_seconds=60,
+    )
+    if isinstance(payload, dict):
+        return payload
+    return await _predict_week_uncached(db, season, week)
+
+
+async def _predict_week_uncached(
+    db: Session, season: int, week: int | None = None,
+) -> dict[str, Any]:
+    """Predictions for every game in the given week (uncached)."""
     sched = await _season_schedule(season, db=db)
     if sched is None:
         return {"season": season, "week": None, "games": []}
