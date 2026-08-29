@@ -36,7 +36,10 @@ async def games(
     season = season or current_or_upcoming_season()
     base, base_budget = await request_budget_service.run_with_budget(
         budget_name="predictions.games.base",
-        timeout_ms=8000,
+        # Cold compute is ~7s (PBP + market + calibration). Vercel → Railway
+        # adds enough RTT that an 8s budget consistently cancelled the work
+        # and the home page cached an empty "Week 1 coming soon" payload.
+        timeout_ms=20000,
         execute=lambda: predictions_service.predict_week(db, season, week),
         summary_fallback=lambda: {
             "season": season,
@@ -82,6 +85,9 @@ async def games(
         else (ml_budget or {}).get("tier", "primary")
     )
     response.headers["X-Cache-Status"] = "miss"
+    # Never let CDNs / Next ISR cache an empty timeout fallback as "no slate".
+    if base_budget.get("tier") != "primary" or not base.get("games"):
+        response.headers["Cache-Control"] = "no-store"
     return base
 
 

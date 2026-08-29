@@ -38,3 +38,20 @@ def test_is_season_upcoming():
     today = date(2026, 5, 1)
     assert is_season_upcoming(2026, today)
     assert not is_season_upcoming(2024, today)
+
+
+def test_meta_default_is_current_or_upcoming(monkeypatch):
+    """Team/player SeasonSelect reads /meta/seasons.default — that must be 2026
+    once the upcoming season is the product surface, not last year's book."""
+    from app.routers import meta as meta_router
+
+    monkeypatch.setattr(meta_router, "available_seasons", lambda: [2026, 2025, 2024])
+    monkeypatch.setattr(meta_router, "current_or_upcoming_season", lambda: 2026)
+    monkeypatch.setattr(meta_router, "latest_completed_season", lambda: 2025)
+    monkeypatch.setattr(meta_router, "season_info", lambda s: {"season": s})
+
+    payload = meta_router.get_seasons()
+    assert payload["default"] == 2026
+    assert payload["current_or_upcoming"] == 2026
+    assert payload["latest_completed"] == 2025
+    assert payload["available"][0] == 2026

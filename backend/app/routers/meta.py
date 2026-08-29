@@ -20,10 +20,14 @@ router = APIRouter()
 @router.get("/seasons")
 def get_seasons():
     seasons = available_seasons()
+    # Kickoff weekend onward, fans land on the season that's actually being
+    # played (or about to be) — not last year's completed book.
+    upcoming = current_or_upcoming_season()
     return {
         "available": seasons,
-        "default": latest_completed_season(),
-        "current_or_upcoming": current_or_upcoming_season(),
+        "default": upcoming,
+        "current_or_upcoming": upcoming,
+        "latest_completed": latest_completed_season(),
         "info": {s: season_info(s) for s in seasons},
     }
 

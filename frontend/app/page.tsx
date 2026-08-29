@@ -16,6 +16,7 @@ import { ExperimentedInsightCards } from "@/components/home/ExperimentedInsightC
 import { PersonaGate } from "@/components/persona/PersonaGate";
 
 export const revalidate = 60;
+export const maxDuration = 30;
 
 /**
  * Swallow a failed fetch so one dead endpoint can't blank the whole page.
@@ -71,8 +72,8 @@ export default async function HomePage() {
       safe(api.scoreboard(12, { revalidate: 15 }), [], "scoreboard"),
       safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }, "predictions"),
       safe(
-        api.predictGames(undefined, 1, true, { revalidate: 1800 }),
-        { season: 0, week: 1, games: [] },
+        api.predictGames(undefined, 1, true, { revalidate: 60 }),
+        { season: 0, week: 1, games: [], partial: true },
         "week1-predictions",
         () => { week1Failed = true; },
       ),
@@ -84,6 +85,11 @@ export default async function HomePage() {
   const featured = pickFeatured(predictions.games, topTeamIds);
   const week1Season = week1Predictions.season || predictions.season;
   const hasWeek1Games = week1Predictions.games.length > 0;
+  // Budget timeout returns HTTP 200 with games=[] and partial=true. That must
+  // never look like "schedule not released yet".
+  if (week1Predictions.partial && !hasWeek1Games) {
+    week1Failed = true;
+  }
   const otherGames = (featured
     ? predictions.games.filter((g) => g.id !== featured.id)
     : predictions.games

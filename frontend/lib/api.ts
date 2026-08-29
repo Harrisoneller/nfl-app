@@ -943,6 +943,7 @@ export type SeasonInfo = {
   available: number[];
   default: number;
   current_or_upcoming: number;
+  latest_completed?: number;
   info: Record<number, { season: number; is_upcoming: boolean; is_latest_completed: boolean }>;
 };
 
@@ -1781,7 +1782,7 @@ export const api = {
     if (season) qs.set("season", String(season));
     if (week) qs.set("week", String(week));
     qs.set("include_ml", String(includeML));
-    return req<{ season: number; week: number | null; games: GamePrediction[] }>(
+    return req<{ season: number; week: number | null; games: GamePrediction[]; partial?: boolean }>(
       `/predictions/games?${qs.toString()}`,
       undefined,
       policy,
