@@ -80,8 +80,12 @@ async def _sync_schedules_current(db: Session) -> int:
 
 
 async def _rebuild_elo(db: Session) -> int:
+    # Through the CURRENT season: stopping at latest_completed_season() meant
+    # in-season results never reached Elo (2026 ran all of September on
+    # end-of-2025 ratings).
     latest = latest_completed_season()
-    return await elo_service.rebuild_history(db, list(range(latest - 5, latest + 1)))
+    return await elo_service.rebuild_history(
+        db, list(range(latest - 5, current_or_upcoming_season() + 1)))
 
 
 async def _vacuum_cache(_db: Session) -> int:

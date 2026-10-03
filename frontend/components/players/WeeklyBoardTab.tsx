@@ -251,7 +251,9 @@ function WeeklyRow({
       <td className="pr-3 text-muted text-[10px]">{p.game_env?.game_script ?? "—"}</td>
       {previewStats.map(([k]) => (
         <td key={k} className="pr-3 tabular-nums">
-          {p.predicted?.[k] ? p.predicted[k].mean.toFixed(1) : "—"}
+          {p.predicted?.[k]
+            ? (p.predicted[k].median ?? p.predicted[k].mean).toFixed(1)
+            : "—"}
         </td>
       ))}
       <td className="pr-3 tabular-nums font-semibold">{f ? f.mean.toFixed(1) : "—"}</td>

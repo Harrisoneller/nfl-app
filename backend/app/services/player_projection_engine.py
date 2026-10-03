@@ -467,6 +467,23 @@ def stat_over_prob(mean: float, sd: float, line: float) -> float:
     return min(1.0, p_above_line / p_above_zero)
 
 
+def projection_over_prob(projected: dict, line: float) -> float:
+    """P(stat > line) for one shipped projection dict.
+
+    Uses the fitted quantile function when the projection carries one (the
+    opportunity model's skew-aware distribution — see player_opportunity_model)
+    and the truncated Normal otherwise. Every prop surface should call this
+    rather than ``stat_over_prob`` directly, so the number on the board and the
+    number on the prop card come from the same distribution.
+    """
+    q = projected.get("quantiles") if isinstance(projected, dict) else None
+    if q:
+        from . import player_opportunity_model as opp
+
+        return opp.over_prob({float(k): float(v) for k, v in q.items()}, float(line))
+    return stat_over_prob(float(projected["mean"]), float(projected["sd"]), float(line))
+
+
 def stat_interval(mean: float, sd: float, level: float = 0.8) -> tuple[float, float]:
     """Central credible interval, floored at 0."""
     z = dist.norm_ppf(0.5 + level / 2.0)

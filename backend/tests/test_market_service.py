@@ -66,9 +66,11 @@ class TestConsensusFromLines:
 class TestBlendMath:
     def test_weight_grows_with_sources_and_caps(self):
         assert ms.market_weight(0) == 0.0
-        assert ms.market_weight(1) == pytest.approx(0.40)
-        assert ms.market_weight(5) == pytest.approx(0.80)
-        assert ms.market_weight(50) == pytest.approx(0.85)  # cap
+        # v5 defaults: the market carries ~80–92% (walk-forward optimal model
+        # share vs closing lines was ~10%; see docs/MODEL_V5.md).
+        assert ms.market_weight(1) == pytest.approx(0.82)
+        assert ms.market_weight(5) == pytest.approx(0.90)
+        assert ms.market_weight(50) == pytest.approx(0.92)  # cap
 
     def test_blend_prob_between_inputs_and_monotone(self):
         p = ms.blend_prob(0.60, 0.70, 0.5)

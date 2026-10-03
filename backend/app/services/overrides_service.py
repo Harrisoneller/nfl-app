@@ -356,6 +356,11 @@ def apply_stat_projection(
     projected["interval_80"] = [_round_like(stat, lo80), _round_like(stat, hi80)]
     if "anytime_prob" in projected:
         projected["anytime_prob"] = round(engine.anytime_td_prob(mean), 3)
+    # A hand-set number replaces the model's skewed quantile function; over-probs
+    # fall back to the symmetric distribution around the admin's center.
+    if "quantiles" in projected:
+        projected.pop("quantiles", None)
+        projected["basis"] = "override"
 
 
 def apply_player_game_overrides(

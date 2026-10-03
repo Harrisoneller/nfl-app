@@ -223,6 +223,11 @@ export type GamePrediction = {
       home_win_prob: number;
       spread: number | null;
       total: number | null;
+      // Disagreement × the share that historically showed up in results
+      // (walk-forward vs closing lines). Raw disagreement is not edge.
+      spread_expected_pts?: number;
+      total_expected_pts?: number;
+      realization?: { spread: number; total: number };
     };
   };
   ml_prediction?: {
@@ -296,7 +301,9 @@ export type PredictionExplainability = {
     feature: string;
     label: string;
     impact: number;
-    direction: "home" | "away";
+    // v5: exact points contributed to the margin (impact === points).
+    points?: number;
+    direction: "home" | "away" | "over" | "under";
   }>;
   confidence_context?: {
     tier?: "low" | "medium" | "high" | string;
@@ -558,7 +565,12 @@ export type TeamRemainingSchedule = {
 };
 
 export type StatDistribution = {
+  // player-opp-v1: `predicted` is the MEDIAN (yardage is right-skewed, and prop
+  // lines sit near the median); `mean` feeds fantasy totals.
   predicted: number;
+  median?: number;
+  quantiles?: Record<string, number>;
+  basis?: string;
   low: number;
   high: number;
   mean: number;
@@ -773,7 +785,7 @@ export type WeeklyBoardPlayer = {
   };
   weather?: { summary: string | null; is_indoor: boolean; available: boolean };
   injury_multiplier?: number;
-  predicted?: Record<string, { predicted: number; low: number; high: number; mean: number; sd: number; anytime_prob?: number }>;
+  predicted?: Record<string, { predicted: number; median?: number; low: number; high: number; mean: number; sd: number; anytime_prob?: number }>;
   fantasy?: Record<string, WeeklyFantasyBand>;
   // Fantasy market momentum (waiver-wire signal).
   market?: {

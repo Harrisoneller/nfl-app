@@ -29,13 +29,15 @@ import time
 from collections import defaultdict
 from typing import Any
 
+import pandas as pd
+
 from ...logging_config import get_logger
+from . import nflverse_stats
 
 log = get_logger(__name__)
 
 try:
     import nfl_data_py as nfl  # type: ignore
-    import pandas as pd  # noqa: F401
 
     # Patch the upstream NameError bug — see module docstring.
     if not hasattr(nfl, "Error"):
@@ -64,21 +66,46 @@ PBP_COLUMNS: list[str] = [
     # Adjusted-EPA core (epa_adjust_service): QB accuracy over expectation,
     # pass-rate over expected, and clock context for neutral-situation pace.
     "cpoe", "pass_oe", "game_seconds_remaining",
+    # v5 team ratings (team_ratings_v5): scrimmage flags, kneel/spike filter,
+    # garbage-time state, special teams, and the primary passer for the QB layer.
+    "pass", "rush", "qb_kneel", "qb_spike", "qb_dropback", "passer_player_id",
+    "score_differential", "special_teams_play",
 ]
 
 
 def _import_pbp_lean(season: int):
     """Load play-by-play with only the columns we use + float downcast.
 
-    Falls back to a full load only if a projected column is missing for a given
-    season (rare/old seasons) so we degrade to "works but heavier" rather than
-    "no data".
+    Reads the nflverse release parquet directly. ``nfl_data_py.import_pbp_data``
+    defaults to ``include_participation=True`` and treats a missing
+    participation file as "season unavailable" — nflverse publishes
+    participation late (2026: not at all by October), so every in-season PBP
+    load returned nothing and the live season silently ran on last year's
+    efficiency numbers. The library path stays as a fallback, with
+    participation off.
     """
     try:
-        return nfl.import_pbp_data([season], columns=PBP_COLUMNS, downcast=True)
+        url = f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
+        try:
+            df = pd.read_parquet(url, columns=PBP_COLUMNS)
+        except Exception:  # noqa: BLE001 — a column missing in an old season
+            df = pd.read_parquet(url)
+            df = df[[c for c in PBP_COLUMNS if c in df.columns]]
+        df = df.copy()
+        df["season"] = season
+        f64 = df.select_dtypes(include=["float64"]).columns
+        df[f64] = df[f64].astype("float32")
+        if len(df):
+            return df
+    except Exception as e:  # noqa: BLE001
+        log.debug("pbp_direct_failed", season=season, error=str(e)[:160])
+    try:
+        return nfl.import_pbp_data(
+            [season], columns=PBP_COLUMNS, downcast=True, include_participation=False)
     except Exception:  # noqa: BLE001 — column set mismatch on an odd season
         log.debug("pbp_columns_fallback", season=season)
-        return nfl.import_pbp_data([season], downcast=True)
+        return nfl.import_pbp_data([season], downcast=True, include_participation=False)
+
 
 # Circuit breaker: if a given (fn, args-key) fails this many times within the
 # window, subsequent calls fast-fail for the cooldown duration.
@@ -187,16 +214,74 @@ def circuit_breaker_status() -> dict[str, Any]:
     }
 
 
+def _current_season() -> int:
+    from ...utils.seasons import current_or_upcoming_season
+
+    return current_or_upcoming_season()
+
+
+async def _run_direct(fn, *args, timeout: float = 90.0, fn_name: str = "", **kwargs):
+    """Thread + timeout + circuit breaker for direct nflverse reads.
+
+    Independent of nfl_data_py being importable — these loaders only need pandas.
+    """
+    key = _cb_key(fn_name or getattr(fn, "__name__", "?"), args)
+    if _cb_should_fast_fail(key):
+        return None
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, functools.partial(fn, *args, **kwargs)),
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("nflverse_direct_failed", fn=fn_name, error=str(e)[:200])
+        _cb_record_failure(key)
+        return None
+    if result is None:
+        _cb_record_failure(key)
+    else:
+        _cb_record_success(key)
+    return result
+
+
 class NflDataPyAdapter:
     available = _AVAILABLE
 
     # ---- raw frame accessors -------------------------------------------------
 
     async def weekly_df(self, season: int):
+        """Weekly player stats (legacy nfl_data_py schema).
+
+        Reads nflverse's ``stats_player`` release first: nfl_data_py still
+        points at ``player_stats/``, which nflverse stopped publishing after
+        2024 (2025+ → 404). See ``nflverse_stats`` for the full story.
+        """
+        df = await _run_direct(
+            nflverse_stats.load_weekly, season,
+            current=season >= _current_season(), fn_name="weekly_direct",
+        )
+        if df is not None and len(df):
+            return df
         return await _run_sync_safe(nfl.import_weekly_data, [season], fn_name="weekly")
 
     async def seasonal_df(self, season: int):
+        """Seasonal player stats, rebuilt from the weekly release (same columns
+        as ``nfl_data_py.import_seasonal_data``), legacy loader as fallback."""
+        wk = await self.weekly_df(season)
+        if wk is not None and len(wk) and "player_id" in wk.columns:
+            try:
+                out = nflverse_stats.seasonal_from_weekly(wk, "REG")
+                if out is not None and len(out):
+                    return out
+            except Exception as e:  # noqa: BLE001
+                log.warning("seasonal_from_weekly_failed", season=season, error=str(e)[:160])
         return await _run_sync_safe(nfl.import_seasonal_data, [season], fn_name="seasonal")
+
+    async def schedules_all_df(self):
+        """Every season's schedule from nflverse games.csv (closing lines,
+        scores, starting QB ids, roof/location). None on failure."""
+        return await _run_direct(nflverse_stats.load_schedules, fn_name="schedules_all")
 
     async def rosters_df(self, season: int):
         return await _run_sync_safe(nfl.import_seasonal_rosters, [season], fn_name="rosters")

@@ -147,7 +147,7 @@ def test_list_params_shape(client, admin_headers):
     assert "weather" in cats and "injury" in cats
     p = next(p for c in body["categories"] for p in c["params"]
              if p["key"] == "market.w_base")
-    assert p["default"] == 0.30 and "min" in p and "description" in p
+    assert p["default"] == 0.80 and "min" in p and "description" in p
     # New prior/weather/injury keys are present and bounds-validated.
     keys = {p["key"] for c in body["categories"] for p in c["params"]}
     for k in (

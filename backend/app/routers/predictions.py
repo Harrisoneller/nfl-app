@@ -272,8 +272,10 @@ async def rebuild_elo(seasons: str | None = None, db: Session = Depends(get_db))
     if seasons:
         season_list = [int(s) for s in seasons.split(",") if s.strip()]
     else:
+        from ..utils.seasons import current_or_upcoming_season
+
         latest = latest_completed_season()
-        season_list = list(range(latest - 5, latest + 1))
+        season_list = list(range(latest - 5, current_or_upcoming_season() + 1))
     rows = await elo_service.rebuild_history(db, season_list)
     return {"seasons": season_list, "rows_written": rows}
 

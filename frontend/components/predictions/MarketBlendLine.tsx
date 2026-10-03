@@ -64,9 +64,20 @@ export function EdgeChip({
     // edge.spread = model − market (home line). Negative = model likes HOME
     // more than the market (model's home line is more negative).
     const side = edge.spread < 0 ? game.home_team_id : game.away_team_id;
+    const exp = edge.spread_expected_pts;
     return (
-      <span className="whitespace-nowrap rounded px-1 py-px bg-emerald-500/10 text-emerald-300">
-        Edge: {side} +{Math.abs(edge.spread).toFixed(1)}
+      <span
+        className="whitespace-nowrap rounded px-1 py-px bg-emerald-500/10 text-emerald-300"
+        title={
+          exp != null
+            ? `Model disagrees with the market by ${Math.abs(edge.spread).toFixed(1)} pts. ` +
+              `Historically ~${Math.round((edge.realization?.spread ?? 0) * 100)}% of that ` +
+              `showed up in results, so the expected edge is ~${Math.abs(exp).toFixed(1)} pts.`
+            : undefined
+        }
+      >
+        Model: {side} +{Math.abs(edge.spread).toFixed(1)}
+        {exp != null && <span className="text-muted"> (exp {Math.abs(exp).toFixed(1)})</span>}
       </span>
     );
   }

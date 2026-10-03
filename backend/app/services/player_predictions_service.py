@@ -43,13 +43,14 @@ from . import (
     prediction_dist,
     predictions_service,
 )
+from . import player_opportunity_model as opp_model
 from . import player_projection_engine as engine
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 min
-MODEL_VERSION = engine.MODEL_VERSION
+MODEL_VERSION = f"{engine.MODEL_VERSION}+{opp_model.MODEL_VERSION}"
 
 # Per-position stat kits to project (fantasy points are derived, not modeled).
 POSITION_STATS: dict[str, list[str]] = {
@@ -88,6 +89,80 @@ async def _player_weekly_frame(season: int) -> pd.DataFrame | None:
             df[col] = df[col].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
     cache.set(key, df, CACHE_TTL)
     return df
+
+
+async def _season_has_weekly(season: int) -> bool:
+    """True when nflverse has published weekly rows for ``season``.
+
+    Replaces ``season <= latest_completed_season()`` as the gate for "use this
+    season's games". That predicate is False for the whole live season, so
+    every in-season game was thrown away until the Super Bowl.
+    """
+    if season > current_or_upcoming_season():
+        return False
+    df = await _player_weekly_frame(season)
+    return df is not None and len(df) > 0
+
+
+async def _defense_season(season: int) -> int:
+    """Season to read defense factors from: this one once it has 3+ weeks."""
+    df = await _player_weekly_frame(season) if season <= current_or_upcoming_season() else None
+    if df is not None and len(df) and "week" in df.columns and df["week"].nunique() >= 3:
+        return season
+    return season - 1
+
+
+async def opportunity_context(season: int) -> dict[str, Any]:
+    """Profiles + team-volume EWMAs for the opportunity model (cached).
+
+    Built from this season's games plus the two before it — every game in the
+    frames has already been played, so the profile IS the pre-game state for
+    the next slate.
+    """
+    key = f"opp_ctx:{season}"
+    if (v := cache.get(key)) is not None:
+        return v
+    frames = []
+    for s in (season - 2, season - 1, season):
+        if s > current_or_upcoming_season():
+            continue
+        df = await _player_weekly_frame(s)
+        if df is not None and len(df):
+            frames.append(df)
+    try:
+        w = opp_model.prepare_weekly(frames, team_map=canonical_team)
+        ctx = {
+            "profiles": opp_model.player_profiles(w, season) if len(w) else {},
+            "team_ewm": opp_model.team_volume_ewm(w) if len(w) else {},
+        }
+    except Exception as e:  # noqa: BLE001 — fall back to posterior path
+        log.warning("opportunity_context_failed", season=season, error=str(e)[:200])
+        ctx = {"profiles": {}, "team_ewm": {}}
+    cache.set(key, ctx, CACHE_TTL)
+    return ctx
+
+
+def _opp_inputs(
+    ctx: dict[str, Any] | None,
+    gsis_id: str | None,
+    team_id: str | None,
+    role_mult: float,
+    input_levers: Any,
+) -> dict[str, Any] | None:
+    """The opportunity-model inputs for one player, or None to use the
+    posterior path. An admin input lever on the player means the admin is
+    steering usage/efficiency by hand — honour it via the posterior path."""
+    if not ctx or not gsis_id or input_levers:
+        return None
+    prof = (ctx.get("profiles") or {}).get(str(gsis_id))
+    if not prof:
+        return None
+    team = team_id or prof.get("team")
+    return {
+        "profile": prof,
+        "team_ewm": (ctx.get("team_ewm") or {}).get(team, {}),
+        "role_mult": float(role_mult or 1.0),
+    }
 
 
 _ALL_STATS = sorted({s for kit in POSITION_STATS.values() for s in kit} | {"fantasy_points_ppr"})
@@ -383,6 +458,17 @@ async def league_game_environments(
     aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
 
     remaining = sched[sched["home_score"].isna() | sched["away_score"].isna()]
+    # Same v5 ratings the game board uses (as of the next slate) so player
+    # environments and the headline spreads/totals can't disagree.
+    wm = None
+    try:
+        from . import game_model_v5_service as v5s
+
+        if len(remaining):
+            wm = await v5s.week_model(season, int(remaining["week"].min()))
+    except Exception as e:  # noqa: BLE001
+        log.warning("v5_envs_failed", season=season, error=str(e)[:200])
+        wm = None
     for _, g in remaining.sort_values("week").iterrows():
         h, a = g.get("home_team"), g.get("away_team")
         if not h or not a:
@@ -396,6 +482,7 @@ async def league_game_environments(
             home_def_ppg_allowed=(aggs.get(h) or {}).get("points_allowed_per_game"),
             away_def_ppg_allowed=(aggs.get(a) or {}).get("points_allowed_per_game"),
             home_aggs=aggs.get(h), away_aggs=aggs.get(a),
+            v5=(v5s.predict_any(wm, h, a) if wm is not None else None),
         )
         base = {
             "week": _safe_int(g.get("week")),
@@ -430,7 +517,7 @@ async def _stat_posteriors(
     latest_done = latest_completed_season()
     prior_first = min(season - 1, latest_done)
     prior_seasons = [prior_first - i for i in range(PRIOR_LOOKBACK)]
-    obs_season = season if season <= latest_done else None
+    obs_season = season if await _season_has_weekly(season) else None
 
     tables = await _rate_tables(prior_seasons + ([obs_season] if obs_season else []))
     pos_means = (await _position_prior_means(prior_seasons)).get(
@@ -622,8 +709,20 @@ def _project_stat_for_game(
     weather: dict | None,
     inj_mult: float,
     anchor: dict[str, Any] | None = None,
+    opp: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One stat × one game → distribution + product-facing fields."""
+    """One stat × one game → distribution + product-facing fields.
+
+    When ``opp`` (opportunity-model inputs, see ``_opp_inputs``) covers this
+    stat, the opportunity × efficiency model with its fitted quantile function
+    is used and the headline ``predicted`` is the **median**. Otherwise the
+    posterior × environment path below runs (TDs, INTs, thin histories, and
+    players with admin input levers).
+    """
+    if opp is not None and stat in opp_model.SUPPORTED_STATS:
+        out = _project_stat_opportunity(stat, env, weather, inj_mult, anchor, opp)
+        if out is not None:
+            return out
     env_mult = engine.game_environment_multiplier(
         stat,
         team_expected_pts=float(env["exp_pts_for"]),
@@ -667,6 +766,75 @@ def _project_stat_for_game(
         out["market_anchor"] = market_anchor
     if stat in engine.TD_STATS:
         out["anytime_prob"] = round(engine.anytime_td_prob(mean), 3)
+    return out
+
+
+def _project_stat_opportunity(
+    stat: str,
+    env: dict[str, Any],
+    weather: dict | None,
+    inj_mult: float,
+    anchor: dict[str, Any] | None,
+    opp: dict[str, Any],
+) -> dict[str, Any] | None:
+    exp_for = float(env.get("exp_pts_for") or 0.0)
+    exp_against = float(env.get("exp_pts_against") or 0.0)
+    scale = weather_multiplier(weather, stat) * inj_mult * float(opp.get("role_mult") or 1.0)
+    proj = opp_model.project(
+        opp["profile"], stat, opp.get("team_ewm") or {},
+        imp_pts=exp_for, spread_team=exp_for - exp_against, scale=scale,
+    )
+    if proj is None:
+        return None
+    q = dict(proj["quantiles"])
+    mean = float(proj["mean"])
+    sd = float(proj["sd"])
+
+    market_anchor: dict[str, Any] | None = None
+    if anchor is not None and mean > 0:
+        target = _anchor_target(stat, anchor, sd)
+        if target is not None:
+            target_mean, cap = target
+            from . import param_registry as _pr
+            k = min(cap, _pr.value("props.anchor_weight_per_book") * anchor["books"])
+            shift = k * (target_mean - mean)
+            # Shift the whole quantile function: the market moves the center,
+            # the skew stays ours.
+            q = {lvl: max(0.0, v + shift) for lvl, v in q.items()}
+            market_anchor = {
+                "line": anchor["line"],
+                "target_mean": round(target_mean, 2),
+                "over_prob": anchor.get("over_prob"),
+                "books": anchor["books"],
+                "weight": round(k, 2),
+                "raw_mean": round(mean, 2),
+            }
+            mean = max(0.0, mean + shift)
+
+    med = q[0.5]
+    out = {
+        "predicted": _round_for_stat(stat, med),
+        "median": round(med, 2),
+        "low": _round_for_stat(stat, q[0.3] + (q[0.2] - q[0.3]) * 0.5),
+        "high": _round_for_stat(stat, q[0.7] + (q[0.8] - q[0.7]) * 0.5),
+        "mean": round(mean, 2),
+        "sd": round(sd, 2),
+        "interval_80": [_round_for_stat(stat, q[0.1]), _round_for_stat(stat, q[0.9])],
+        # Matchup effect on volume vs a neutral game (22 implied pts, pick'em),
+        # times weather/injury/role scaling — same meaning as the v2 field.
+        "env_multiplier": round(scale * float(proj["hat"]) / max(1e-6, opp_model.structural(
+            opp["profile"], stat, opp.get("team_ewm") or {}, imp_pts=22.0, spread_team=0.0)), 3),
+        "quantiles": {str(k): round(v, 2) for k, v in q.items()},
+        "basis": opp_model.MODEL_VERSION,
+        "opportunity": {
+            "share": round(float(opp["profile"].get(
+                {"rec": "tgt_sh_e", "rush": "car_sh_e", "qb": "att_sh_e"}[
+                    opp_model._STAT_GROUP[stat]]) or 0.0), 3),  # noqa: SLF001
+            "structural": round(float(proj["hat"]), 2),
+        },
+    }
+    if market_anchor is not None:
+        out["market_anchor"] = market_anchor
     return out
 
 
@@ -725,8 +893,11 @@ async def player_game_predictions(
         posteriors, player=player, gsis_id=gsis, ctx=input_ctx,
     )
 
+    opp = _opp_inputs(
+        await opportunity_context(season), gsis, team_id, role_mult, input_levers,
+    )
     envs = (await league_game_environments(db, season)).get(team_id, [])[:8]
-    def_season = season if season <= latest_completed_season() else season - 1
+    def_season = await _defense_season(season)
     def_factors = await positional_defense_factors(def_season)
 
     injury_status = (player.metadata_json or {}).get("injury_status")
@@ -770,6 +941,7 @@ async def player_game_predictions(
             predicted[stat] = _project_stat_for_game(
                 post, stat, env, d_factor, weather, inj_mult,
                 anchor=anchors.get(stat) if gi == 0 else None,
+                opp=opp,
             )
             stat_means[stat] = float(predicted[stat]["mean"])
             stat_sds[stat] = float(predicted[stat]["sd"])
@@ -819,6 +991,7 @@ async def player_game_predictions(
         "team": team_id,
         "season": season,
         "model_version": MODEL_VERSION,
+        "projection_basis": opp_model.MODEL_VERSION if opp else engine.MODEL_VERSION,
         "evidence": evidence,
         "role": {"depth_chart_order": depth, "multiplier": round(role_mult, 2)},
         "input_levers": input_levers,
@@ -886,7 +1059,7 @@ async def player_season_projection(
     # YTD totals in the target season (0 in the offseason).
     ytd: dict[str, float] = {s: 0.0 for s in stats}
     games_played = 0
-    if season <= latest_completed_season() and gsis:
+    if gsis and await _season_has_weekly(season):
         df = await _player_weekly_frame(season)
         if df is not None and "player_id" in df.columns:
             sub = df[df["player_id"] == gsis]
@@ -898,7 +1071,7 @@ async def player_season_projection(
 
     envs = (await league_game_environments(db, season)).get(player.team_id or "", [])
     games_remaining = len(envs) if envs else max(0, 17 - games_played)
-    def_season = season if season <= latest_completed_season() else season - 1
+    def_season = await _defense_season(season)
     def_factors = await positional_defense_factors(def_season)
 
     out_stats: dict[str, dict[str, Any]] = {}
@@ -1017,11 +1190,12 @@ async def stat_over_probability(
     if not s:
         return {"player_id": player_id, "stat": stat, "line": line,
                 "error": "stat not projected for this position"}
-    p = engine.stat_over_prob(float(s["mean"]), float(s["sd"]), line)
+    p = engine.projection_over_prob(s, line)
     return {
         "player_id": player_id, "stat": stat, "line": line,
         "week": nxt["week"], "opponent": nxt["opponent"],
-        "mean": s["mean"], "sd": s["sd"],
+        "mean": s["mean"], "sd": s["sd"], "median": s.get("median"),
+        "basis": s.get("basis", engine.MODEL_VERSION),
         "over_prob": round(p, 4), "under_prob": round(1 - p, 4),
         "model_version": MODEL_VERSION,
     }
@@ -1213,7 +1387,7 @@ async def _collect_candidates(db: Session, season: int) -> dict[str, Any]:
     latest_done = latest_completed_season()
     prior_first = min(season - 1, latest_done)
     prior_seasons = [prior_first - i for i in range(PRIOR_LOOKBACK)]
-    obs_season = season if season <= latest_done else None
+    obs_season = season if await _season_has_weekly(season) else None
     all_seasons = ([obs_season] if obs_season else []) + prior_seasons
     tables = await _rate_tables(all_seasons)
     if not tables:
@@ -1294,7 +1468,7 @@ async def _collect_candidates(db: Session, season: int) -> dict[str, Any]:
         return None
 
     envs_by_team = await league_game_environments(db, season)
-    def_season = season if season <= latest_done else season - 1
+    def_season = await _defense_season(season)
     def_factors = await positional_defense_factors(def_season)
     pos_means_all = await _position_prior_means(prior_seasons)
 
@@ -1618,6 +1792,7 @@ async def weekly_projection_board(
     if board is None:
         ctx = await _collect_candidates(db, season)
         candidates, def_factors = ctx["candidates"], ctx["def_factors"]
+        opp_ctx = await opportunity_context(season)
         envs_by_team = ctx["envs_by_team"]
         if not candidates:
             return {"season": season, "week": week, "scoring": scoring,
@@ -1681,6 +1856,9 @@ async def weekly_projection_board(
             weather = forecasts.get(env["game_id"], {"available": False})
             anchors = anchors_by_name.get(player.full_name.strip().lower(), {})
 
+            opp = _opp_inputs(
+                opp_ctx, c.get("gsis_id"), player.team_id, role_mult, c.get("input_levers"),
+            )
             predicted: dict[str, dict[str, Any]] = {}
             stat_means: dict[str, float] = {}
             stat_sds: dict[str, float] = {}
@@ -1688,7 +1866,7 @@ async def weekly_projection_board(
                 d_factor = _defense_factor(def_factors, env["opponent"], stat, pos)
                 predicted[stat] = _project_stat_for_game(
                     post, stat, env, d_factor, weather, inj_mult,
-                    anchor=anchors.get(stat),
+                    anchor=anchors.get(stat), opp=opp,
                 )
                 stat_means[stat] = float(predicted[stat]["mean"])
                 stat_sds[stat] = float(predicted[stat]["sd"])

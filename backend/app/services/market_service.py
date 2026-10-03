@@ -425,4 +425,15 @@ def apply_market_blend(pred: dict[str, Any], market: dict[str, Any] | None) -> N
             if mkt_total is not None else None
         ),
     }
+    # Raw disagreement is not edge. Walk-forward against closing lines only a
+    # fraction of a spread disagreement showed up in results (and none of a
+    # totals disagreement), so the number we'd actually bet on is the
+    # disagreement times that realization rate. Shown next to the raw gap so
+    # nothing downstream mistakes a 4-point opinion for a 4-point edge.
+    beta, beta_t = _p("market.edge_beta"), _p("market.edge_beta_total")
+    if pred["edge"]["spread"] is not None:
+        pred["edge"]["spread_expected_pts"] = round(pred["edge"]["spread"] * beta, 2)
+    if pred["edge"]["total"] is not None:
+        pred["edge"]["total_expected_pts"] = round(pred["edge"]["total"] * beta_t, 2)
+    pred["edge"]["realization"] = {"spread": beta, "total": beta_t}
     pred["prediction_basis"] = BLEND_VERSION

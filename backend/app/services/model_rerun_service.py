@@ -113,7 +113,9 @@ async def _rebuild_elo_and_profiles(db, season: int) -> str:
     from . import analytics_service, elo_service
 
     latest = latest_completed_season()
-    elo_rows = await elo_service.rebuild_history(db, list(range(latest - 5, latest + 1)))
+    # Include the in-progress season — see jobs.scheduler._rebuild_elo.
+    elo_rows = await elo_service.rebuild_history(
+        db, list(range(latest - 5, current_or_upcoming_season() + 1)))
 
     upcoming = current_or_upcoming_season()
     prof_seasons = [latest] if latest == upcoming else [latest, upcoming]

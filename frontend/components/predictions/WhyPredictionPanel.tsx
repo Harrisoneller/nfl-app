@@ -25,12 +25,23 @@ export function WhyPredictionPanel({
           const favorsHome = c.direction === "home";
           const team = favorsHome ? game.home_team_id : game.away_team_id;
           const tone = c.impact >= 0 ? "text-emerald-300" : "text-orange-300";
+          // v5 contributors are exact points of margin: show "+3.4 pts BAL".
+          const isPoints = c.points != null;
           return (
             <li key={c.feature} className="text-[11px] flex items-center justify-between gap-2">
               <span className="text-muted truncate">{c.label}</span>
               <span className={`tabular-nums whitespace-nowrap ${tone}`}>
-                {c.impact >= 0 ? "+" : ""}
-                {c.impact.toFixed(2)} {team}
+                {isPoints ? (
+                  <>
+                    +{Math.abs(c.points as number).toFixed(1)} pts{" "}
+                    {c.direction === "over" || c.direction === "under" ? c.direction : team}
+                  </>
+                ) : (
+                  <>
+                    {c.impact >= 0 ? "+" : ""}
+                    {c.impact.toFixed(2)} {team}
+                  </>
+                )}
               </span>
             </li>
           );

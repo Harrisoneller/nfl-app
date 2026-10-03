@@ -30,7 +30,7 @@ from ..logging_config import get_logger
 from ..models.player import Player
 from ..models.player_prop_snapshot import PlayerPropSnapshot
 from . import player_predictions_service as proj
-from .player_projection_engine import anytime_td_prob, stat_over_prob
+from .player_projection_engine import anytime_td_prob, projection_over_prob, stat_over_prob
 from .sparky import odds_math
 
 log = get_logger(__name__)
@@ -293,7 +293,7 @@ async def _attach_model(
         model_over = anytime_td_prob(lam)
     elif item.get("line") is not None and stat in nxt["predicted"]:
         s = nxt["predicted"][stat]
-        model_over = stat_over_prob(float(s["mean"]), float(s["sd"]), float(item["line"]))
+        model_over = projection_over_prob(s, float(item["line"]))
         item["model_mean"] = s["mean"]
         item["model_sd"] = s["sd"]
 
@@ -427,6 +427,7 @@ async def prop_board(
             player = _match_player(db, player_name)
             stat = proj.PROP_MARKET_TO_STAT.get(mkt)
             model_mean = model_sd = None
+            model_proj: dict[str, Any] | None = None
             anytime_lambda = None
             if player is not None and stat is not None:
                 nxt = await _next_game(player)
@@ -440,12 +441,15 @@ async def prop_board(
                     elif stat in (nxt.get("predicted") or {}):
                         s = nxt["predicted"][stat]
                         model_mean, model_sd = float(s["mean"]), float(s["sd"])
+                        model_proj = s
 
             def _model_over(line: float | None) -> float | None:
                 if anytime_lambda is not None:
                     return round(anytime_td_prob(anytime_lambda), 4)
                 if model_mean is None or model_sd is None or line is None:
                     return None
+                if model_proj is not None:
+                    return round(projection_over_prob(model_proj, float(line)), 4)
                 return round(stat_over_prob(model_mean, model_sd, float(line)), 4)
 
             books_out: list[dict[str, Any]] = []

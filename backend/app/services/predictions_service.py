@@ -39,7 +39,9 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
-PREDICTION_MODEL_VERSION = "epa-elo-ctx-v4"
+PREDICTION_MODEL_VERSION = "qb-ridge-v5"
+# Fallback path (Elo × adjusted EPA) when the v5 inputs are unavailable.
+LEGACY_MODEL_VERSION = "epa-elo-ctx-v4"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
@@ -255,6 +257,7 @@ def _build_explainability(
     fundamentals: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     wind_total_pts: float = 0.0,
+    v5: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Feature-contribution heuristic for the prediction UI.
 
@@ -262,6 +265,8 @@ def _build_explainability(
     terms (opponent-adjusted efficiency, pace/PROE environment); otherwise the
     legacy PPG heuristic applies.
     """
+    if v5:
+        return _build_explainability_v5(v5, context=context, wind_total_pts=wind_total_pts)
     hfa = 0.0 if neutral_site else elo_service.HOME_FIELD_ADVANTAGE
     rating_edge = home_rating + hfa - away_rating
 
@@ -369,6 +374,119 @@ def _build_explainability(
     return out
 
 
+_V5_LABELS = {
+    "mkt_d": "Market power rating (past closing lines)",
+    "epa_d": "Opponent-adjusted efficiency (EPA/play)",
+    "pts_d": "Opponent-adjusted scoring",
+    "st_d": "Special teams",
+    "qb_d": "Starting QB vs. team's recent QB play",
+    "hfa": "Home field",
+}
+
+
+def _build_explainability_v5(
+    v5: dict[str, Any],
+    *,
+    context: dict[str, Any] | None,
+    wind_total_pts: float,
+) -> dict[str, Any]:
+    """Exact additive decomposition: the v5 margin IS the sum of these parts."""
+    parts = v5.get("margin_parts") or {}
+    contributors = [
+        {
+            "feature": f"v5_{k}",
+            "label": _V5_LABELS.get(k, k),
+            "impact": round(float(v), 2),
+            "points": round(float(v), 2),
+            "direction": "home" if float(v) >= 0 else "away",
+        }
+        for k, v in parts.items() if abs(float(v)) >= 0.05
+    ]
+    ctx_pts = float((context or {}).get("points") or 0.0)
+    if context and abs(ctx_pts) >= 0.05:
+        contributors.append({
+            "feature": "context_layer",
+            "label": _context_label(context),
+            "impact": round(ctx_pts, 2),
+            "points": round(ctx_pts, 2),
+            "direction": "home" if ctx_pts >= 0 else "away",
+        })
+    if wind_total_pts and abs(wind_total_pts) >= 0.25:
+        contributors.append({
+            "feature": "wind",
+            "label": "Wind (total)",
+            "impact": round(wind_total_pts, 2),
+            "points": round(wind_total_pts, 2),
+            "direction": "under",
+        })
+    contributors.sort(key=lambda x: abs(float(x["impact"])), reverse=True)
+    out = {
+        "method": "qb_ridge_v5",
+        "summary": ("Spread = sum of the parts below, in points: recency-weighted "
+                    "opponent-adjusted team ratings, the starting QB against the QB "
+                    "play the team's numbers were built on, a prior from past closing "
+                    "lines, and home field; then the context layer."),
+        "top_contributors": contributors[:3],
+        "components": contributors,
+    }
+    if context:
+        out["context"] = {
+            "net_points": round(ctx_pts, 2),
+            "sigma_mult": context.get("sigma_mult"),
+            "confidence": context.get("confidence"),
+            "capped": context.get("capped"),
+            "components": _context_components(context),
+        }
+    return out
+
+
+def _strip_v5_qb_context(ctx: dict[str, Any] | None, v5: dict[str, Any]) -> dict[str, Any] | None:
+    """Drop the context layer's QB component where v5 already priced the starter.
+
+    Both layers price "the starter is not the usual QB". When the schedule's
+    starter differs from the team's recent QB mix the v5 QB term has it, and
+    keeping the context ``qb`` component too would charge the change twice.
+    When v5 sees no change (e.g. the schedule still lists the injured
+    starter), the context component — fed by the injury report — stays.
+    """
+    if not ctx:
+        return ctx
+    changed = v5.get("qb_change") or {}
+    drop_home = bool(changed.get("home"))
+    drop_away = bool(changed.get("away"))
+    if not (drop_home or drop_away):
+        return ctx
+    out = dict(ctx)
+    raw = float(ctx.get("points_uncapped", ctx.get("points")) or 0.0)
+    removed = []
+    for side, sign, drop in (("home", 1.0, drop_home), ("away", -1.0, drop_away)):
+        slot = ctx.get(side)
+        if not drop or not isinstance(slot, dict):
+            continue
+        comps = slot.get("components") or []
+        qb_pts = sum(float(c.get("points") or 0.0) for c in comps if c.get("component") == "qb")
+        if not qb_pts:
+            continue
+        new_slot = dict(slot)
+        new_slot["components"] = [c for c in comps if c.get("component") != "qb"]
+        new_slot["points"] = round(float(slot.get("points") or 0.0) - qb_pts, 3)
+        out[side] = new_slot
+        raw -= sign * qb_pts
+        removed.append({"side": side, "points": round(qb_pts, 2)})
+    if not removed:
+        return ctx
+    from . import param_registry
+    try:
+        cap = float(param_registry.value("context.game_cap_pts"))
+    except Exception:  # noqa: BLE001
+        cap = 7.0
+    out["points_uncapped"] = round(raw, 2)
+    out["points"] = round(max(-cap, min(cap, raw)), 2)
+    out["capped"] = abs(raw) > cap + 1e-9
+    out["qb_priced_by_v5"] = removed
+    return out
+
+
 def _context_components(context: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten both sides' context components into one home-signed list."""
     rows: list[dict[str, Any]] = []
@@ -427,8 +545,16 @@ def predict_game(
     away_aggs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     weather: dict[str, Any] | None = None,
+    v5: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Single-game predictor: Elo prior × adjusted-EPA fundamentals × context.
+    """Single-game predictor.
+
+    **v5 (default):** when ``v5`` (a ``team_ratings_v5.WeekModel.predict``
+    payload) is supplied, the margin and total come from the QB-aware ratings
+    model; Elo and the season-to-date fundamentals are reported but not used.
+    Without it, the legacy v4 path below runs unchanged:
+
+    Elo prior × adjusted-EPA fundamentals × context.
 
     Margin: blend of the Elo-implied margin (market-anchored prior) and the
     fundamentals margin from opponent-adjusted EPA/success rate/CPOE, weighted
@@ -446,12 +572,18 @@ def predict_game(
     ``weather`` is the forecast dict from ``weather_service``. Only wind is
     priced, and only into the total and the two sigmas — see ``dist_model``.
     """
+    use_v5 = isinstance(v5, dict) and v5.get("margin") is not None and v5.get("total") is not None
     elo_margin = -elo_service.predicted_spread(home_rating, away_rating, neutral_site)
-    fund = _fundamentals(home_aggs, away_aggs, neutral_site)
+    fund = None if use_v5 else _fundamentals(home_aggs, away_aggs, neutral_site)
     w_fund = _param("game.w_fundamentals") if fund else 0.0
-    expected_margin = (1 - w_fund) * elo_margin + w_fund * (fund["margin"] if fund else 0.0)
+    if use_v5:
+        expected_margin = float(v5["margin"])
+    else:
+        expected_margin = (1 - w_fund) * elo_margin + w_fund * (fund["margin"] if fund else 0.0)
 
     ctx = context if isinstance(context, dict) and context.get("applicable") else None
+    if use_v5 and ctx:
+        ctx = _strip_v5_qb_context(ctx, v5)
     margin_before_context = expected_margin
     if ctx:
         expected_margin += float(ctx.get("points") or 0.0)
@@ -467,7 +599,11 @@ def predict_game(
     a_off = away_off_ppg if away_off_ppg is not None else league_avg
     h_def = home_def_ppg_allowed if home_def_ppg_allowed is not None else league_avg
     a_def = away_def_ppg_allowed if away_def_ppg_allowed is not None else league_avg
-    if fund:
+    if use_v5:
+        total = float(v5["total"])
+        expected_home_pts = (total + expected_margin) / 2
+        expected_away_pts = (total - expected_margin) / 2
+    elif fund:
         expected_home_pts = fund["expected_home_pts"]
         expected_away_pts = fund["expected_away_pts"]
         total = fund["total"]
@@ -590,6 +726,28 @@ def predict_game(
                 }
                 if fund else None
             ),
+            # v5 ratings model (None = legacy v4 path in effect)
+            "v5": (
+                {
+                    "model_version": v5.get("model_version"),
+                    "margin": round(float(v5["margin"]), 2),
+                    "total": round(float(v5["total"]), 2),
+                    "margin_parts": v5.get("margin_parts"),
+                    "total_parts": v5.get("total_parts"),
+                    "uses_market_prior": v5.get("uses_market_prior"),
+                    "qb": {
+                        "home_qb_id": v5.get("home_qb_id"),
+                        "away_qb_id": v5.get("away_qb_id"),
+                        "home_qb_name": v5.get("home_qb_name"),
+                        "away_qb_name": v5.get("away_qb_name"),
+                        "home_delta_epa": (v5.get("features") or {}).get("qb_h"),
+                        "away_delta_epa": (v5.get("features") or {}).get("qb_a"),
+                        "change": v5.get("qb_change"),
+                    },
+                    "elo_margin_reference": round(elo_margin, 1),
+                }
+                if use_v5 else None
+            ),
             # Context layer (None = no context available for this game)
             "context": (
                 {
@@ -625,7 +783,9 @@ def predict_game(
             fundamentals=fund,
             context=ctx,
             wind_total_pts=wind_total_pts,
+            v5=v5 if use_v5 else None,
         ),
+        "model_version": PREDICTION_MODEL_VERSION if use_v5 else LEGACY_MODEL_VERSION,
     }
 
 
@@ -786,6 +946,15 @@ async def _predict_week_uncached(
         log.warning("weather_context_failed", error=str(e)[:200])
         weather_by_game = {}
 
+    # v5 ratings model for the whole slate (best-effort; {} → v4 path).
+    try:
+        from . import game_model_v5_service
+
+        v5_slate = await game_model_v5_service.slate_predictions(season, int(week))
+    except Exception as e:  # noqa: BLE001 — never take the board down
+        log.warning("v5_slate_failed", season=season, week=week, error=str(e)[:200])
+        v5_slate = {}
+
     for _, g in games.iterrows():
         h, a = g["home_team"], g["away_team"]
         if not h or not a:
@@ -800,10 +969,11 @@ async def _predict_week_uncached(
                             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
                             home_aggs=aggs.get(h), away_aggs=aggs.get(a),
                             context=context_service.game_context(ctx_bundle, h, a),
-                            weather=weather_by_game.get(str(g.get("game_id") or "")))
+                            weather=weather_by_game.get(str(g.get("game_id") or "")),
+                            v5=v5_slate.get((h, a)))
         pred = uncertainty_service.attach_uncertainty(
             pred,
-            model_version=PREDICTION_MODEL_VERSION,
+            model_version=pred.get("model_version") or PREDICTION_MODEL_VERSION,
             expected_calibration_error=expected_calibration_error,
         )
         # Headline numbers become the market blend when consensus exists;
