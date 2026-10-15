@@ -11,10 +11,11 @@ type Props = {
 };
 
 /**
- * Week 1 regular-season slate for the home page. Each row links to the
- * full H2H comparison at /h2h/[away]/[home].
+ * Matchup previews for the current/upcoming week on the home page. The caller
+ * picks which games to show; this renders them in kickoff order. Each row
+ * links to the full H2H comparison at /h2h/[away]/[home].
  */
-export function Week1Schedule({ season, games, failed = false }: Props) {
+export function WeekSchedule({ season, games, failed = false }: Props) {
   if (games.length === 0) {
     return failed ? <ErrorState /> : <EmptyState season={season} />;
   }
@@ -53,7 +54,7 @@ function ErrorState() {
 function EmptyState({ season }: { season: number }) {
   return (
     <div className="panel p-8 text-center border border-dashed divider">
-      <p className="text-sm font-medium">Week 1 schedule coming soon</p>
+      <p className="text-sm font-medium">No upcoming games on the board</p>
       <p className="text-xs text-muted mt-2 max-w-md mx-auto">
         The {season > 0 ? season : "upcoming"} regular-season slate will appear here once schedule data is
         synced from nflverse (usually when the NFL releases it in May).
@@ -62,7 +63,7 @@ function EmptyState({ season }: { season: number }) {
   );
 }
 
-/** Rich matchup preview row (Week 1 home + team overview "Next game"). */
+/** Rich matchup preview row (home week preview + team overview "Next game"). */
 export function MatchupPreviewRow({
   game,
   showH2hHint = true,

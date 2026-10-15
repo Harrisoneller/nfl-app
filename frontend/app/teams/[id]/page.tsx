@@ -17,7 +17,7 @@ import { UpcomingSeason } from "@/components/UpcomingSeason";
 import { SkeletonRadar, SkeletonTable } from "@/components/Skeleton";
 import { EloBadge } from "@/components/predictions/EloBadge";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
-import { MatchupPreviewRow } from "@/components/Week1Schedule";
+import { MatchupPreviewRow } from "@/components/WeekSchedule";
 import { SeasonOdds } from "@/components/predictions/SeasonOdds";
 import { EloHistoryChart } from "@/components/predictions/EloHistoryChart";
 import { TeamRemainingScheduleCard } from "@/components/predictions/TeamRemainingSchedule";

@@ -10,7 +10,7 @@ import { LeagueBestBetsCard } from "@/components/betting/LeagueBestBets";
 import { TeamLogo } from "@/components/TeamLogo";
 import { LeaguePulse } from "@/components/LeaguePulse";
 import { WelcomeHero } from "@/components/home/WelcomeHero";
-import { Week1Schedule } from "@/components/Week1Schedule";
+import { WeekSchedule } from "@/components/WeekSchedule";
 import { FreshnessBadges } from "@/components/FreshnessBadges";
 import { ExperimentedInsightCards } from "@/components/home/ExperimentedInsightCards";
 import { PersonaGate } from "@/components/persona/PersonaGate";
@@ -41,17 +41,21 @@ async function safe<T>(
   }
 }
 
-function pickFeatured(games: GamePrediction[], topTeams: Set<string>): GamePrediction | undefined {
-  if (games.length === 0) return undefined;
-  const upcoming = games.filter((g) => g.home_score == null);
-  if (upcoming.length === 0) return undefined;
-  const scored = upcoming.map((g) => {
-    const competitive = 1 - Math.abs(g.prediction.home_win_prob - 0.5) * 2;
-    const topMatch = (topTeams.has(g.home_team_id) ? 1 : 0) + (topTeams.has(g.away_team_id) ? 1 : 0);
-    return { g, score: competitive * 2 + topMatch };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0].g;
+const isPlayable = (g: GamePrediction) => Boolean(g.home_team_id && g.away_team_id);
+const isUpcoming = (g: GamePrediction) => g.home_score == null || g.away_score == null;
+
+/** How much a neutral fan should want to watch: closeness + top-10 Elo teams. */
+function anticipation(g: GamePrediction, topTeams: Set<string>): number {
+  const competitive = 1 - Math.abs(g.prediction.home_win_prob - 0.5) * 2;
+  const topMatch = (topTeams.has(g.home_team_id) ? 1 : 0) + (topTeams.has(g.away_team_id) ? 1 : 0);
+  return competitive * 2 + topMatch;
+}
+
+function rankByAnticipation(games: GamePrediction[], topTeams: Set<string>): GamePrediction[] {
+  return games
+    .map((g) => ({ g, score: anticipation(g, topTeams) }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ g }) => g);
 }
 
 // /fantasy and /ai hidden from quick links until ready — routes still work via direct URL
@@ -63,51 +67,51 @@ const QUICK_LINKS = [
 ] as const;
 
 export default async function HomePage() {
-  // Tracks whether the Week 1 slate came back empty because there is no
-  // schedule yet, or because the request actually failed. The two render
-  // very differently and conflating them hides outages.
-  let week1Failed = false;
+  // Tracks whether the slate came back empty because there is no schedule
+  // yet, or because the request actually failed. The two render very
+  // differently and conflating them hides outages.
+  let predictionsFailed = false;
 
-  const [scoreboard, predictions, week1Predictions, eloRatings, freshness] =
-    await Promise.all([
-      safe(api.scoreboard(12, { revalidate: 15 }), [], "scoreboard"),
-      safe(api.predictGames(undefined, undefined, true, { revalidate: 60 }), { season: 0, week: null, games: [] }, "predictions"),
-      safe(
-        api.predictGames(undefined, 1, true, { revalidate: 60 }),
-        { season: 0, week: 1, games: [], partial: true },
-        "week1-predictions",
-        () => { week1Failed = true; },
-      ),
-      safe(api.currentElo({ revalidate: 300 }), { ratings: [] }, "elo"),
-      safe(api.freshness({ revalidate: 60 }), null, "freshness"),
-    ]);
+  // No week param: the backend resolves the current/next week (first week
+  // with an unplayed game), so the whole page rolls forward on its own.
+  // Never hardcode a week here — that is how Week 1 stuck around into October.
+  const [scoreboard, predictionsRaw, eloRatings, freshness] = await Promise.all([
+    safe(api.scoreboard(12, { revalidate: 15 }), [], "scoreboard"),
+    safe(
+      api.predictGames(undefined, undefined, true, { revalidate: 60 }),
+      { season: 0, week: null, games: [], partial: true },
+      "predictions",
+      () => { predictionsFailed = true; },
+    ),
+    safe(api.currentElo({ revalidate: 300 }), { ratings: [] }, "elo"),
+    safe(api.freshness({ revalidate: 60 }), null, "freshness"),
+  ]);
 
-  const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));
-  const featured = pickFeatured(predictions.games, topTeamIds);
-  const week1Season = week1Predictions.season || predictions.season;
-  const hasWeek1Games = week1Predictions.games.length > 0;
   // Budget timeout returns HTTP 200 with games=[] and partial=true. That must
   // never look like "schedule not released yet".
-  if (week1Predictions.partial && !hasWeek1Games) {
-    week1Failed = true;
+  if (predictionsRaw.partial && predictionsRaw.games.length === 0) {
+    predictionsFailed = true;
   }
-  const otherGames = (featured
-    ? predictions.games.filter((g) => g.id !== featured.id)
-    : predictions.games
-  )
-    .filter((g) => !(hasWeek1Games && predictions.week === 1 && g.week === 1))
-    .slice(0, 8);
+  const predictions = { ...predictionsRaw, games: predictionsRaw.games.filter(isPlayable) };
+  const upcomingGames = predictions.games.filter(isUpcoming);
+
+  const topTeamIds = new Set(eloRatings.ratings.slice(0, 10).map((r) => r.team_id));
+  const ranked = rankByAnticipation(upcomingGames, topTeamIds);
+  const featured = ranked[0];
+  // Preview rows take the next 6, the card board the 8 after — no game twice.
+  const previewGames = ranked.slice(1, 7);
+  const otherGames = ranked.slice(7, 15);
   const hasLiveGames = scoreboard.some((g) => g.status === "in" || g.status === "live");
   const liveGames = scoreboard.filter((g) => g.status === "in" || g.status === "live");
   const weekLabel = predictions.week ? `Week ${predictions.week}` : null;
-  const tossup = predictions.games
-    .filter((g) => g.home_score == null)
+  const tossup = upcomingGames
+    .slice()
     .sort((x, y) => Math.abs(x.prediction.home_win_prob - 0.5) - Math.abs(y.prediction.home_win_prob - 0.5))[0];
-  const likelyShootout = predictions.games
-    .filter((g) => g.home_score == null)
+  const likelyShootout = upcomingGames
+    .slice()
     .sort((x, y) => y.prediction.predicted_total - x.prediction.predicted_total)[0];
-  const highestConfidence = predictions.games
-    .filter((g) => g.home_score == null && g.prediction.confidence_tier === "high")
+  const highestConfidence = upcomingGames
+    .filter((g) => g.prediction.confidence_tier === "high")
     .sort((x, y) => Math.abs(y.prediction.home_win_prob - 0.5) - Math.abs(x.prediction.home_win_prob - 0.5))[0];
 
   return (
@@ -117,16 +121,23 @@ export default async function HomePage() {
 
       <QuickExploreBar />
 
-      <section>
-        <SectionHeader
-          title={week1Season ? `Week 1 · ${week1Season} season` : "Week 1 schedule"}
-          href={hasWeek1Games ? "/week" : undefined}
-          linkLabel={hasWeek1Games ? "Full week slate →" : undefined}
-        />
-        <Week1Schedule season={week1Season} games={week1Predictions.games} failed={week1Failed} />
-      </section>
-
       {featured && <FeaturedGame game={featured} weekLabel={weekLabel} />}
+
+      {/* Hidden when the featured card is the only game left this week. */}
+      {(previewGames.length > 0 || !featured) && (
+        <section>
+          <SectionHeader
+            title={
+              weekLabel
+                ? `${weekLabel} preview${predictions.season ? ` · ${predictions.season} season` : ""}`
+                : "Upcoming matchups"
+            }
+            href={previewGames.length > 0 ? "/week" : undefined}
+            linkLabel={previewGames.length > 0 ? "Full week slate →" : undefined}
+          />
+          <WeekSchedule season={predictions.season} games={previewGames} failed={predictionsFailed} />
+        </section>
+      )}
 
       <ExperimentedInsightCards
         tossup={tossup}
