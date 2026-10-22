@@ -1,19 +1,28 @@
 """Startup self-check.
 
-Runs once at boot and logs clear warnings for the most common
-"the app starts but X is broken" failure modes. Doesn't raise — we'd
-rather start in a degraded state and have the warnings visible than
-fail to boot.
+``run`` logs warnings for degraded boots and does not raise — a missing
+table should not take the API down in development.
+
+``enforce_production_auth`` is the exception. When the process is in
+production it refuses to start unless auth is configured and
+``SECRET_KEY`` is not the placeholder. Development and tests skip it.
 """
 from __future__ import annotations
 
+import os
+
 from sqlalchemy import inspect, text
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import SessionLocal, engine
 from .logging_config import get_logger
 
 log = get_logger(__name__)
+
+# ``.env.example`` uses ``change-me-to-a-long-random-string``. Any value
+# that starts with this prefix is the placeholder, including the bare
+# ``change-me``.
+_SECRET_PLACEHOLDER_PREFIX = "change-me"
 
 # Tables we expect to exist after `alembic upgrade head` ran successfully.
 EXPECTED_TABLES = [
@@ -32,6 +41,98 @@ EXPECTED_TABLES = [
     "endpoint_slo_snapshots",
     "experiment_events",
 ]
+
+
+class ProductionConfigError(RuntimeError):
+    """Production startup refused because auth would fail open."""
+
+
+def is_production_runtime(settings: Settings | None = None) -> bool:
+    """True when this process should fail closed.
+
+    Production is ``APP_ENV=production`` (``settings.app_env``). Railway
+    also sets ``RAILWAY_ENVIRONMENT=production`` on the production
+    environment; that counts even if ``APP_ENV`` was left at its
+    development default. Dev and pytest leave both unset / development.
+    """
+    s = settings if settings is not None else get_settings()
+    if s.app_env == "production":
+        return True
+    railway = os.environ.get("RAILWAY_ENVIRONMENT", "").strip().lower()
+    return railway == "production"
+
+
+def _secret_is_placeholder(secret: str | None) -> bool:
+    value = (secret or "").strip()
+    if not value:
+        return True
+    return value.lower().startswith(_SECRET_PLACEHOLDER_PREFIX)
+
+
+def production_boot_problems(settings: Settings | None = None) -> list[str]:
+    """Reasons production must not serve traffic. Empty outside production.
+
+    A passing boot is one of:
+
+    * Multi-user auth: ``MULTI_USER_MODE=true`` and ``ADMIN_EMAILS`` a
+      comma-separated list of admin emails.
+    * Single-user admin mode (the allowlist equivalent): ``MULTI_USER_MODE``
+      false and ``ADMIN_EMAILS`` empty, so the seeded system user is the
+      admin.
+
+    Plus a ``SECRET_KEY`` that is set and is not the ``change-me`` placeholder.
+    The messages name the variables and the expected shape. They never
+    include the secret value.
+    """
+    s = settings if settings is not None else get_settings()
+    if not is_production_runtime(s):
+        return []
+
+    problems: list[str] = []
+    if _secret_is_placeholder(s.secret_key):
+        problems.append(
+            "SECRET_KEY is missing or equals 'change-me' "
+            "(any value starting with 'change-me' is the placeholder). "
+            "Set a long random string, the same value on every service: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+        )
+
+    # Auth posture. Multi-user without an allowlist has no admin at boot.
+    # An allowlist with single-user mode ignores bearer tokens and then
+    # rejects system@local, so nobody can authenticate as admin.
+    if s.multi_user_mode:
+        if not s.admin_email_set:
+            problems.append(
+                "Auth isn't configured: MULTI_USER_MODE=true but no admin "
+                "list is set. Set ADMIN_EMAILS to a comma-separated list of "
+                "admin emails (for example admin@example.com,other@example.com), "
+                "or set MULTI_USER_MODE=false with ADMIN_EMAILS empty to use "
+                "single-user admin mode."
+            )
+    elif s.admin_email_set:
+        problems.append(
+            "Auth isn't configured: ADMIN_EMAILS is set but MULTI_USER_MODE "
+            "is false, so login tokens are ignored and the single-user "
+            "account is not on the allowlist. Set MULTI_USER_MODE=true, or "
+            "clear ADMIN_EMAILS to use single-user admin mode."
+        )
+    return problems
+
+
+def enforce_production_auth(settings: Settings | None = None) -> None:
+    """Refuse to start in production when auth would fail open.
+
+    Development and tests return immediately. The raised message lists
+    every problem so one boot shows the full set of missing variables.
+    """
+    problems = production_boot_problems(settings)
+    if not problems:
+        return
+    for problem in problems:
+        log.error("production_auth_refused", reason=problem)
+    raise ProductionConfigError(
+        "Refusing to start in production:\n- " + "\n- ".join(problems)
+    )
 
 
 def run() -> None:
