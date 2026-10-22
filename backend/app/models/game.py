@@ -32,6 +32,18 @@ class Game(Base, TimestampMixin):
     venue: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     broadcast: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # NULL = not started. "settling" is a committed claim whose grading
+    # transaction did not finish (scripts/reset_stuck_settlements.py clears it).
+    # "settled" means this final score was graded and must not be rewritten.
+    settlement_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True
+    )
+    settlement_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    settlement_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class GameStat(Base, TimestampMixin):

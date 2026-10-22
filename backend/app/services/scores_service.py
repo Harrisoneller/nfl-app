@@ -25,90 +25,189 @@ log = get_logger(__name__)
 _nfl_data = NflDataPyAdapter()
 
 
+# A stored final score is the one settlement graded. Later feeds must not
+# blank it or replace it once the game is settled.
+_STORED_FINAL = ("final", "status_final", "complete", "finished", "post")
+_INCOMING_LIVE = (
+    "final", "in", "live", "in progress", "status_final", "complete", "finished", "post",
+)
+
+
 async def refresh_scoreboard(db: Session) -> int:
-    """Refresh live scoreboard from ESPN."""
+    """Refresh the live scoreboard from ESPN, one game per transaction.
+
+    Re-applying the same payload does not write. A failure rolls that game
+    back and the rest of the scoreboard still commits.
+    """
     adapter = ESPNScoreboardAdapter()
     try:
         events = await adapter.fetch_current_scoreboard()
     finally:
         await adapter.aclose()
 
-    by_espn_id = {t.espn_id: t for t in db.query(Team).all() if t.espn_id is not None}
-    n = 0
-    for ev in events:
-        home_id = _resolve(by_espn_id, ev.get("home", {}))
-        away_id = _resolve(by_espn_id, ev.get("away", {}))
-        start = _parse_iso(ev.get("start_time"))
-        game = db.get(Game, ev["id"])
-        if game is None:
-            game = Game(id=ev["id"])
-            db.add(game)
-        game.season = ev.get("season") or 0
-        game.season_type = ev.get("season_type") or 2
-        game.week = ev.get("week")
-        game.start_time = start
-        game.status = ev.get("status") or "scheduled"
-        game.status_detail = ev.get("status_detail") or ""
-        game.home_team_id = home_id
-        game.away_team_id = away_id
-        # ESPN returns 0 for scheduled/upcoming games — treat as NULL unless game is live/final
-        status = (ev.get("status") or "scheduled").lower()
-        if status in ("final", "in", "live", "in progress"):
-            game.home_score = ev.get("home_score")
-            game.away_score = ev.get("away_score")
-        else:
-            game.home_score = None
-            game.away_score = None
-        game.venue = ev.get("venue") or ""
-        game.broadcast = ev.get("broadcast") or ""
-        game.raw = ev.get("raw") or {}
-        n += 1
+    by_espn_id = {
+        t.espn_id: t.id for t in db.query(Team).all() if t.espn_id is not None
+    }
     db.commit()
-    log.info("scoreboard_refreshed", events=n)
+
+    n = 0
+    written = 0
+    for ev in events:
+        gid = str(ev.get("id") or "")
+        if not gid:
+            continue
+        try:
+            outcome = _upsert_game(db, gid, _scoreboard_values(ev, by_espn_id))
+            db.commit()
+            n += 1
+            if outcome in ("inserted", "updated"):
+                written += 1
+        except Exception as exc:  # noqa: BLE001 — one event must not poison the board
+            db.rollback()
+            log.warning(
+                "score_upsert_rolled_back",
+                event_id=gid[:64],
+                error=str(exc)[:200],
+            )
+    log.info("scoreboard_refreshed", events=n, written=written)
     return n
 
 
 async def refresh_season_schedule(db: Session, season: int) -> int:
-    """Pull a full season's schedule from nfl-data-py and upsert."""
+    """Pull a full season's schedule from nfl-data-py and upsert.
+
+    Each game commits on its own. An identical row is not written again, and
+    a failure rolls back only that game.
+    """
     rows = await _nfl_data.schedules(season)
     if not rows:
         return 0
     n = 0
+    written = 0
     for row in rows:
         gid = str(row.get("game_id") or "")
         if not gid:
             continue
-        home_id = canonical_team(row.get("home_team"))
-        away_id = canonical_team(row.get("away_team"))
-        gameday = row.get("gameday")
-        gametime = row.get("gametime") or "13:00"
-        start = _parse_kickoff(gameday, gametime)
-
-        game = db.get(Game, gid)
-        if game is None:
-            game = Game(id=gid)
-            db.add(game)
-        game.season = int(row.get("season") or season)
-        game.season_type = _season_type(row.get("game_type"))
-        game.week = _safe_int(row.get("week"))
-        game.start_time = start
-        game.home_team_id = home_id
-        game.away_team_id = away_id
-        game.home_score = _safe_int(row.get("home_score"))
-        game.away_score = _safe_int(row.get("away_score"))
-        # nfl-data-py doesn't expose live status; if both scores present treat as final
-        if game.home_score is not None and game.away_score is not None:
-            game.status = "final"
-            game.status_detail = "Final"
-        else:
-            game.status = "scheduled"
-            game.status_detail = ""
-        game.venue = (row.get("stadium") or "")[:128]
-        game.broadcast = (row.get("network") or "")[:64]
-        n += 1
-    db.commit()
-    log.info("season_schedule_refreshed", season=season, games=n)
+        try:
+            outcome = _upsert_game(db, gid, _schedule_values(row, season))
+            db.commit()
+            n += 1
+            if outcome in ("inserted", "updated"):
+                written += 1
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            log.warning(
+                "schedule_upsert_rolled_back",
+                game_id=gid[:64],
+                error=str(exc)[:200],
+            )
+    log.info("season_schedule_refreshed", season=season, games=n, written=written)
     return n
+
+
+def _scoreboard_values(ev: dict[str, Any], by_espn_id: dict[int, str]) -> dict[str, Any]:
+    status = (ev.get("status") or "scheduled").lower()
+    # ESPN returns 0 for scheduled/upcoming games — treat as NULL unless live/final.
+    if status in ("final", "in", "live", "in progress"):
+        home_score = ev.get("home_score")
+        away_score = ev.get("away_score")
+    else:
+        home_score = None
+        away_score = None
+    return {
+        "season": ev.get("season") or 0,
+        "season_type": ev.get("season_type") or 2,
+        "week": ev.get("week"),
+        "start_time": _parse_iso(ev.get("start_time")),
+        "status": ev.get("status") or "scheduled",
+        "status_detail": ev.get("status_detail") or "",
+        "home_team_id": _resolve(by_espn_id, ev.get("home", {})),
+        "away_team_id": _resolve(by_espn_id, ev.get("away", {})),
+        "home_score": home_score,
+        "away_score": away_score,
+        "venue": ev.get("venue") or "",
+        "broadcast": ev.get("broadcast") or "",
+        "raw": ev.get("raw") or {},
+    }
+
+
+def _schedule_values(row: dict[str, Any], season: int) -> dict[str, Any]:
+    home_score = _safe_int(row.get("home_score"))
+    away_score = _safe_int(row.get("away_score"))
+    if home_score is not None and away_score is not None:
+        status, detail = "final", "Final"
+    else:
+        status, detail = "scheduled", ""
+    return {
+        "season": int(row.get("season") or season),
+        "season_type": _season_type(row.get("game_type")),
+        "week": _safe_int(row.get("week")),
+        "start_time": _parse_kickoff(row.get("gameday"), row.get("gametime") or "13:00"),
+        "status": status,
+        "status_detail": detail,
+        "home_team_id": canonical_team(row.get("home_team")),
+        "away_team_id": canonical_team(row.get("away_team")),
+        "home_score": home_score,
+        "away_score": away_score,
+        "venue": (row.get("stadium") or "")[:128],
+        "broadcast": (row.get("network") or "")[:64],
+    }
+
+
+def _upsert_game(db: Session, game_id: str, values: dict[str, Any]) -> str:
+    """Insert or update one game. Caller commits or rolls back.
+
+    Returns ``inserted``, ``updated``, or ``unchanged``. A settled game keeps
+    the score that was graded. A stored final is not blanked by a later
+    scheduled payload.
+    """
+    game = db.get(Game, game_id)
+    if game is None:
+        db.add(Game(id=game_id, **values))
+        return "inserted"
+
+    values = _protect_graded_score(game, values)
+    if _values_match(game, values):
+        return "unchanged"
+    for key, value in values.items():
+        setattr(game, key, value)
+    return "updated"
+
+
+def _protect_graded_score(game: Game, values: dict[str, Any]) -> dict[str, Any]:
+    stored_final = (game.status or "").lower() in _STORED_FINAL
+    incoming_live = (values.get("status") or "").lower() in _INCOMING_LIVE
+    locked = game.settlement_status == "settled" or (stored_final and not incoming_live)
+    if not locked:
+        return values
+    kept = dict(values)
+    kept["home_score"] = game.home_score
+    kept["away_score"] = game.away_score
+    kept["status"] = game.status
+    kept["status_detail"] = game.status_detail
+    return kept
+
+
+def _values_match(game: Game, values: dict[str, Any]) -> bool:
+    return all(_same(getattr(game, key), value) for key, value in values.items())
+
+
+def _same(current: Any, value: Any) -> bool:
+    """Kickoff timestamps round-trip through SQLite without tzinfo.
+
+    The same UTC instant must not count as a new score write.
+    """
+    if isinstance(current, datetime) or isinstance(value, datetime):
+        return _as_utc(current) == _as_utc(value)
+    return current == value
+
+
+def _as_utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def list_current_games(db: Session, limit: int = 32) -> list[Game]:
@@ -129,12 +228,11 @@ def list_team_schedule(db: Session, team_id: str, season: int | None = None) -> 
     return q.order_by(Game.start_time.asc().nullslast()).all()
 
 
-def _resolve(by_espn_id: dict[int, Team], side: dict[str, Any]) -> str | None:
+def _resolve(by_espn_id: dict[int, str], side: dict[str, Any]) -> str | None:
     eid = side.get("espn_id")
     if eid is None:
         return None
-    t = by_espn_id.get(int(eid))
-    return t.id if t else None
+    return by_espn_id.get(int(eid))
 
 
 def _parse_iso(s: Any) -> datetime | None:
