@@ -49,6 +49,7 @@ from .routers import (
     widgets,
 )
 from .sentry_init import init_sentry
+from .startup_doctor import enforce_production_auth
 from .startup_doctor import run as run_startup_doctor
 
 configure_logging()
@@ -58,6 +59,9 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Outside the doctor try/except below: a production auth failure must
+    # abort startup, not get logged and ignored. Dev and test return here.
+    enforce_production_auth(settings)
     sentry_on = init_sentry()
     from .cache import get_cache
 

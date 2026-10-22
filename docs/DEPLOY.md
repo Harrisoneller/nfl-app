@@ -28,6 +28,9 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
    APP_ROLE=web
    BOOT_WARMUP_LEVEL=minimal
    SECRET_KEY=<run: python -c "import secrets; print(secrets.token_urlsafe(64))" and paste>
+   # Required for the production boot check. See "Fail-closed production boot" below.
+   MULTI_USER_MODE=true
+   ADMIN_EMAILS=you@example.com
    GROK_API_KEY=<your xAI key>
 
    # Friends testing: keep these conservative
@@ -50,6 +53,8 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
      BOOT_WARMUP_LEVEL=minimal
      DERIVE_CRON_HOURS_UTC=6,18
      SECRET_KEY=<same as web service>
+     MULTI_USER_MODE=true
+     ADMIN_EMAILS=you@example.com
      ODDS_API_KEY=<if you use odds>
      ```
    - **Resources:** give the worker **≥ 1 GB RAM** (see [Memory & sizing](#6-memory--sizing)). The web service can stay smaller (~512 MB–1 GB) since it no longer runs heavy boot jobs.
@@ -64,6 +69,32 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
     # → app_role: "web", scheduler_enabled: false
     ```
     On the worker, check logs for `scheduler_started` (no public URL required).
+
+#### Fail-closed production boot
+
+The API detects production when `APP_ENV=production`. `RAILWAY_ENVIRONMENT=production` also counts, even if `APP_ENV` was left at `development`, so a Railway production service cannot skip the check by omitting `APP_ENV`. Development and pytest (`APP_ENV=development`, `RAILWAY_ENVIRONMENT` unset) stay permissive and still boot with the placeholder secret.
+
+If the check fails, the process logs `production_auth_refused` and exits during startup with `Refusing to start in production:` plus one line per problem. It does not serve traffic. Web and worker both run the check. The log line names the variable; it never prints `SECRET_KEY`.
+
+The boot check passes only when every bullet below is true:
+
+- `SECRET_KEY` is a non-empty random string, the same value on web and worker. The value `change-me`, a blank value, and anything that starts with `change-me` (including the `.env.example` placeholder `change-me-to-a-long-random-string`) are refused.
+- Auth is one of these two postures:
+  - **Multi-user (use this on a public URL).** `MULTI_USER_MODE=true` and `ADMIN_EMAILS` is a comma-separated list of admin emails, for example `ADMIN_EMAILS=you@example.com,other@example.com`. Matching is case-insensitive. Anonymous admin calls get 401. A signed-in email that is not on the list gets 403, even if that row has `is_admin` set.
+  - **Single-user equivalent.** `MULTI_USER_MODE=false` and `ADMIN_EMAILS` empty or unset. Every caller is the seeded `system@local` admin, and admin routes are not token-gated. Do not use this on a public URL.
+
+These postures refuse to boot (auth isn't configured):
+
+- `MULTI_USER_MODE=true` with `ADMIN_EMAILS` empty — no admin list.
+- `ADMIN_EMAILS` set while `MULTI_USER_MODE` is false — bearer tokens are ignored, and `system@local` is not on the allowlist, so nobody can reach admin routes.
+
+| Variable | Required in production | Format |
+|---|---|---|
+| `APP_ENV` | Yes, unless `RAILWAY_ENVIRONMENT=production` | `production` |
+| `RAILWAY_ENVIRONMENT` | Set by Railway on the production environment | `production` |
+| `SECRET_KEY` | Yes | non-empty random string; not `change-me` and not a `change-me…` prefix |
+| `MULTI_USER_MODE` | Yes, as part of one posture above | `true` or `false` |
+| `ADMIN_EMAILS` | Yes when `MULTI_USER_MODE=true`; must be empty when it is `false` | comma-separated emails, no spaces required |
 
 ### 2. Frontend on Vercel
 
@@ -82,22 +113,23 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
 
 Once both are up:
 
+Admin routes need an admin bearer token. The warmup script reads it from `ADMIN_BEARER_TOKEN` or from `ADMIN_BEARER_TOKEN_FILE` (a file whose only contents are the raw token). It writes a mode-600 header file and calls curl with `-H @file`, so the token is not placed on the curl command line. Do not commit the token, and do not pass it as an argument.
+
+Mint the token with `POST /auth/login` as an email on `ADMIN_EMAILS` (multi-user). In single-user mode the token is ignored and every caller is the system admin.
+
 ```bash
 chmod +x scripts/warmup-production.sh
-./scripts/warmup-production.sh https://<your-railway-url>.up.railway.app
+ADMIN_BEARER_TOKEN_FILE=/path/to/token ./scripts/warmup-production.sh https://<your-railway-url>.up.railway.app
+# or: ADMIN_BEARER_TOKEN=<access token> ./scripts/warmup-production.sh https://<your-railway-url>.up.railway.app
 ```
 
-Or run the curls manually (same script). **Odds** only populate if `ODDS_API_KEY` is set on the **worker**.
+**Odds** only populate if `ODDS_API_KEY` is set on the **worker**. `/admin/sync-status` and the other `/admin/*` reads are admin routes: use the same header file (`curl -H @/path/to/header`) rather than a bare curl. The header file is one line, `Authorization: Bearer <token>`.
 
 Heavy jobs on the **worker**:
 - **06:15 + 18:15 UTC** (`DERIVE_CRON_HOURS_UTC`): schedules → materialize nflverse → Elo → profiles → MC → awards
 - **03:30 UTC** (`H2H_CRON_HOURS_UTC`): H2H prewarm only
 
-Until the first derive finishes, some pages may load slowly once (lazy compute). Check progress:
-
-```bash
-curl https://your-url.up.railway.app/admin/sync-status
-```
+Until the first derive finishes, some pages may load slowly once (lazy compute). `/admin/sync-status` is an admin route. Check it with the same header file the warmup script uses (`curl -sS -H @/path/to/admin.hdr https://your-url.up.railway.app/admin/sync-status`), not a bare curl.
 
 To force a derive immediately after deploy (from your laptop):
 
@@ -256,7 +288,7 @@ Once you're past friends-testing and want to put this on the open internet:
 
 | Item | What | How |
 |---|---|---|
-| Auth | Enable real signups | Set `MULTI_USER_MODE=true` on **both** the web and worker services. Public pages stay browseable anonymously; per-user features (bets, widgets) become private per account. Admin is granted by `ADMIN_EMAILS` (allowlisted email = admin, everyone else = normal user). The built-in email/password `/auth` flow already issues Bearer tokens the frontend sends; wiring a provider like Clerk is optional. ⚠️ If `ADMIN_EMAILS` is set while `MULTI_USER_MODE=false`, **no one** can reach admin routes (every request is `system@local`, which isn't in the allowlist) — `startup_doctor` logs `doctor_admin_emails_without_multi_user` to catch this. |
+| Auth | Enable real signups | Set `MULTI_USER_MODE=true` and `ADMIN_EMAILS` on **both** the web and worker services. Public pages stay browseable anonymously; per-user features (bets, widgets) become private per account. Admin is granted by `ADMIN_EMAILS` (allowlisted email = admin, everyone else = normal user). The built-in email/password `/auth` flow already issues Bearer tokens the frontend sends; wiring a provider like Clerk is optional. Production refuses to boot if this posture is incomplete — see [Fail-closed production boot](#fail-closed-production-boot). ⚠️ If `ADMIN_EMAILS` is set while `MULTI_USER_MODE=false`, **no one** can reach admin routes, and production will not start. |
 | Sentry | Error tracking | Sign up at sentry.io, drop the DSN into `SENTRY_DSN` env var. |
 | Backups | Postgres dumps | Railway has a one-click backup feature, or schedule `scripts/backup_db.sh` to S3. |
 | Tighten cost caps | Lower per-user budget | Drop `AI_PER_USER_DAILY_BUDGET_USD` to 0.10 or gate AI behind auth-only. |
@@ -276,7 +308,8 @@ Once you're past friends-testing and want to put this on the open internet:
 - **Frontend deploy fails on Vercel with type errors** — `next build` is stricter than `next dev`. If you see errors, run `npm run build` locally first to surface them.
 - **Elo never rebuilds** — Railway's container restarts happen periodically; the in-memory cache resets. APScheduler restarts cleanly. If you see no `elo_history_rebuilt` log, hit `POST /predictions/admin/elo/rebuild` manually.
 - **"Deploy ran out of memory" / backend crashes with >1 user, repeated `Started server process` every few minutes** — an out-of-memory crash-loop. Provision **≥1 GB** (Railway → Settings → Resources) and keep a **single** uvicorn worker (no `--workers N`). See [Memory & sizing](#6-memory--sizing). If it persists after raising RAM, something is loading full (un-projected) play-by-play or warming multiple seasons at boot — check recent changes against `PBP_COLUMNS`, the `_team_pbp_aggregates` singleflight, and `_job_warmup_analytics`.
-- **Logged in as the admin email but the account shows `system@local` and `/admin` bounces you home** — `MULTI_USER_MODE` is `false` on the web service, so the backend ignores the login JWT and resolves everyone to the seeded `system@local` user. Because that email isn't in `ADMIN_EMAILS`, `/auth/me` returns `is_admin=false` and the admin page redirects. Fix: set `MULTI_USER_MODE=true` on the web (and worker) service and redeploy. Confirm `SECRET_KEY` is set to a stable random value (same on both services) so tokens verify. Check boot logs for `doctor_admin_emails_without_multi_user` — its presence means this trap is active.
+- **Process exits immediately with `Refusing to start in production`** — the fail-closed boot check failed. Read the lines under that message (they name `SECRET_KEY`, `MULTI_USER_MODE`, and `ADMIN_EMAILS` without printing the secret) and fix the variables on **both** web and worker. See [Fail-closed production boot](#fail-closed-production-boot).
+- **Logged in as the admin email but the account shows `system@local` and `/admin` bounces you home** — `MULTI_USER_MODE` is `false` on the web service, so the backend ignores the login JWT and resolves everyone to the seeded `system@local` user. Because that email isn't in `ADMIN_EMAILS`, `/auth/me` returns `is_admin=false` and the admin page redirects. Fix: set `MULTI_USER_MODE=true` on the web (and worker) service and redeploy. Confirm `SECRET_KEY` is set to a stable random value (same on both services) so tokens verify. In production this combination refuses to boot instead of serving.
 - **xAI / Grok API key not working** — verify at https://console.x.ai/. The current default model is `grok-2-latest`; older keys may need `grok-beta` (set `GROK_MODEL=grok-beta`).
 
 ---
