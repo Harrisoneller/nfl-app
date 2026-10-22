@@ -26,9 +26,9 @@ from typing import Any, TypedDict
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..adapters.data.odds_api import OddsFetchStatus, TheOddsApiAdapter
+from ..adapters.data.odds_api import OddsApiAuthError, OddsFetchStatus, TheOddsApiAdapter
 from ..config import get_settings
-from ..logging_config import get_logger
+from ..logging_config import get_logger, redact_secrets
 from ..models.game import Game
 from ..models.odds import OddsLine
 from . import artifact_cache
@@ -212,10 +212,14 @@ async def refresh_odds(db: Session, *, force: bool = False) -> OddsRefreshResult
         status = result.status
         message = result.message
         events = result.events
+    except OddsApiAuthError:
+        # 401/402 must fail the scheduled job. Do not record a successful pull.
+        raise
     except Exception as e:  # noqa: BLE001
-        log.warning("odds_fetch_failed", error=str(e))
+        safe = redact_secrets(str(e))
+        log.warning("odds_fetch_failed", error=safe[:200])
         status = "error"
-        message = str(e)
+        message = safe
     finally:
         await adapter.aclose()
 

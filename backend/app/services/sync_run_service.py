@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from ..logging_config import get_logger
+from ..logging_config import get_logger, redact_secrets
 from ..models.data_sync_run import DataSyncRun
 
 log = get_logger(__name__)
@@ -82,8 +82,20 @@ async def run_job(
         )
         return result
     except Exception as e:  # noqa: BLE001
-        finish(db, run, status="error", message=str(e)[:4000])
-        log.warning("sync_job_failed", domain=domain, error=str(e)[:200])
+        # OddsApiAuthError sets job_status="failed" so a 401/402 is not stored
+        # as a successful run. APScheduler only logs "executed successfully"
+        # when this function returns; re-raising keeps the job in the error path.
+        status = "failed" if getattr(e, "job_status", None) == "failed" else "error"
+        safe = redact_secrets(str(e))
+        finish(db, run, status=status, message=safe[:4000])
+        payload: dict[str, Any] = {"domain": domain, "error": safe[:200], "status": status}
+        error_code = getattr(e, "error_code", None)
+        if error_code:
+            payload["error_code"] = error_code
+        if status == "failed":
+            log.error("sync_job_failed", **payload)
+        else:
+            log.warning("sync_job_failed", **payload)
         raise
     finally:
         db.close()

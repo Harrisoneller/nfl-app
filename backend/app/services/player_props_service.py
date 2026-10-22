@@ -23,10 +23,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..adapters.data.odds_api import TheOddsApiAdapter
+from ..adapters.data.odds_api import OddsApiAuthError, TheOddsApiAdapter
 from ..cache import cache
 from ..config import get_settings
-from ..logging_config import get_logger
+from ..logging_config import get_logger, redact_secrets
 from ..models.player import Player
 from ..models.player_prop_snapshot import PlayerPropSnapshot
 from . import player_predictions_service as proj
@@ -87,7 +87,8 @@ async def refresh_player_props(db: Session, *, force: bool = False) -> dict[str,
 
     Budget guards mirror ``odds_service.refresh_odds``: respects a min-interval
     floor, an event-count cap, and a kickoff lookahead window. Returns a status
-    dict; never raises for upstream problems.
+    dict for ordinary upstream problems. HTTP 401/402 propagate as
+    ``OddsApiAuthError`` so the odds job is recorded as failed.
     """
     settings = get_settings()
     if not settings.player_props_enabled:
@@ -137,9 +138,13 @@ async def refresh_player_props(db: Session, *, force: bool = False) -> dict[str,
                 continue
             events_pulled += 1
             rows += _store_event_props(db, data, captured_at)
+    except OddsApiAuthError:
+        db.rollback()
+        raise
     except Exception as e:  # noqa: BLE001
-        log.warning("player_props_refresh_failed", error=str(e)[:200])
-        return {"status": "error", "rows": rows, "events": events_pulled, "message": str(e)[:200]}
+        safe = redact_secrets(str(e))[:200]
+        log.warning("player_props_refresh_failed", error=safe)
+        return {"status": "error", "rows": rows, "events": events_pulled, "message": safe}
     finally:
         await adapter.aclose()
 

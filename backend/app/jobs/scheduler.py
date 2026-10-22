@@ -19,8 +19,9 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 
+from ..adapters.data.odds_api import OddsApiAuthError
 from ..config import get_settings
-from ..logging_config import get_logger
+from ..logging_config import get_logger, redact_secrets
 from ..services import (
     analytics_service,
     artifact_cache,
@@ -157,17 +158,24 @@ async def _refresh_odds(db: Session) -> dict:
         slate = await sparky_service.build_slate(db)
         result = {**result, "sparky_slate_games": slate.get("count", 0)}
     except Exception as e:  # noqa: BLE001
-        log.warning("sparky_slate_build_failed", error=str(e)[:160])
+        # A failed slate write leaves the session unusable. Roll it back so a
+        # later props 401/402 can still fail this job instead of being swallowed.
+        db.rollback()
+        log.warning("sparky_slate_build_failed", error=redact_secrets(str(e))[:160])
     # Player props ride the same cron tick but keep their own (stricter) budget
-    # guards inside refresh_player_props. Best-effort: never fail the odds job.
+    # guards inside refresh_player_props. Ordinary upstream problems stay
+    # best-effort. HTTP 401/402 (rejected key or unpaid quota), including a
+    # per-event props call, fail this job instead of looking successful.
     try:
         from ..services import player_props_service
 
         props = await player_props_service.refresh_player_props(db)
         result = {**result, "player_prop_rows": props.get("rows", 0),
                   "player_prop_status": props.get("status")}
+    except OddsApiAuthError:
+        raise
     except Exception as e:  # noqa: BLE001
-        log.warning("player_props_refresh_failed", error=str(e)[:160])
+        log.warning("player_props_refresh_failed", error=redact_secrets(str(e))[:160])
     return result
 
 
