@@ -12,14 +12,10 @@ game predictions *market-aware*:
    feed): open→current consensus home-prob delta, surfaced as context. It is
    deliberately NOT an extra nudge on the blend — the current line already
    contains the movement; nudging again would double-count it.
-3. **Blend** — combine the model's numbers with consensus. Win probs blend in
-   logit space (proper for probabilities), spread/total linearly. The market
-   weight grows with the number of independent sources and is capped, so a
-   one-book line never drowns the model and an 8-book consensus mostly is the
-   forecast. The pure-model numbers are preserved under ``model_only`` and the
-   difference is exposed as ``edge`` — that gap *is* the product's value-finding
-   signal (spec: "treat the market as the prior and the model as the attempt
-   to find where it's wrong").
+3. **Edge** — the headline fair stays the model. Consensus is attached beside
+   it, and ``edge`` is fair minus the posted number. Nothing in this module
+   writes a market probability, spread, or total back onto the published
+   prediction.
 
 All blend math is pure and unit-tested; only the consensus readers touch the DB.
 """
@@ -39,7 +35,6 @@ from ..models.odds import OddsLine
 from ..models.odds_snapshot import OddsSnapshot
 from ..models.seed import NFL_TEAMS
 from ..utils.teams import canonical_team
-from . import prediction_dist
 from .sparky import odds_math
 
 log = get_logger(__name__)
@@ -47,14 +42,6 @@ log = get_logger(__name__)
 BLEND_VERSION = "market-blend-v1"
 
 # ---- Tunables ----------------------------------------------------------------
-
-# Market weight = min(CAP, BASE + PER_SOURCE × effective_sources). With 5 books
-# the market carries ~0.80 of the headline number; with 1 book only ~0.40.
-# Defaults live in param_registry ("market_blend" category) — tunable from
-# /admin → Parameters without a deploy. These constants are fallback docs.
-_W_BASE = 0.30
-_W_PER_SOURCE = 0.10
-_W_CAP = 0.85
 
 
 def _p(key: str) -> float:
@@ -336,72 +323,24 @@ def context_for_game(
 
 
 def apply_market_blend(pred: dict[str, Any], market: dict[str, Any] | None) -> None:
-    """Mutate one predict_game dict: headline ← blend, model ← model_only.
+    """Attach the market quote and the edge. The headline fair is not moved.
 
-    No market → annotate basis and return; the model numbers stand unchanged.
-    Admin overrides run AFTER this and still supersede everything.
+    The name is historical. Published win probability, spread, total and
+    scores stay the model numbers. Market data is comparison only: fair minus
+    the posted number. Admin overrides still run after this.
     """
     if not market or market.get("consensus_home_prob") is None:
         pred["prediction_basis"] = "model_only"
         return
 
     n_eff = float(market.get("effective_sources") or 0.0)
-    w = market_weight(n_eff)
-    sigma = float(pred.get("margin_sd") or prediction_dist.margin_sigma())
-
     model_p = float(pred["home_win_prob"])
     model_spread = float(pred["predicted_spread"])
     model_total = float(pred["predicted_total"])
-
     mkt_p = float(market["consensus_home_prob"])
-    blended_p = blend_prob(model_p, mkt_p, w)
-
     mkt_spread = market.get("spread_home")
-    if mkt_spread is not None:
-        blended_spread = blend_value(model_spread, float(mkt_spread), w)
-    else:
-        # Consistency over inertia: derive the spread from the blended win prob
-        # so the headline pair can't disagree about who's favored.
-        # win_prob = Φ(margin/σ)  ⇒  margin = σ·Φ⁻¹(p); spread = −margin.
-        blended_spread = -(sigma * prediction_dist.norm_ppf(blended_p))
-
     mkt_total = market.get("total")
-    blended_total = (
-        blend_value(model_total, float(mkt_total), w)
-        if mkt_total is not None else model_total
-    )
 
-    expected_margin = -blended_spread
-    m_lo80, m_hi80 = prediction_dist.margin_interval(expected_margin, sigma, 0.80)
-    m_lo50, m_hi50 = prediction_dist.margin_interval(expected_margin, sigma, 0.50)
-
-    pred["model_only"] = {
-        "home_win_prob": round(model_p, 3),
-        "away_win_prob": round(1 - model_p, 3),
-        "predicted_spread": round(model_spread, 1),
-        "predicted_total": round(model_total, 1),
-    }
-    pred["home_win_prob"] = round(blended_p, 3)
-    pred["away_win_prob"] = round(1 - blended_p, 3)
-    pred["predicted_spread"] = round(blended_spread, 1)
-    pred["predicted_total"] = round(blended_total, 1)
-    pred["predicted_home_score"] = round((blended_total - blended_spread) / 2, 1)
-    pred["predicted_away_score"] = round((blended_total + blended_spread) / 2, 1)
-    pred["distribution"] = {
-        "expected_margin": round(expected_margin, 1),
-        "margin_sd": sigma,
-        "home_win_prob": round(blended_p, 3),
-        "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
-        "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],
-        "home_score_range_80": [
-            round((blended_total + m_lo80) / 2, 1),
-            round((blended_total + m_hi80) / 2, 1),
-        ],
-        "away_score_range_80": [
-            round((blended_total - m_hi80) / 2, 1),
-            round((blended_total - m_lo80) / 2, 1),
-        ],
-    }
     pred["market"] = {
         "consensus_home_prob": round(mkt_p, 4),
         "spread_home": mkt_spread,
@@ -411,7 +350,7 @@ def apply_market_blend(pred: dict[str, Any], market: dict[str, Any] | None) -> N
         "effective_sources": n_eff,
         "movement": market.get("movement"),
         "sources": market.get("sources"),
-        "weight": round(w, 2),
+        "weight": 0.0,
     }
     pred["edge"] = {
         # Positive win-prob edge = the model likes HOME more than the market.
@@ -425,15 +364,11 @@ def apply_market_blend(pred: dict[str, Any], market: dict[str, Any] | None) -> N
             if mkt_total is not None else None
         ),
     }
-    # Raw disagreement is not edge. Walk-forward against closing lines only a
-    # fraction of a spread disagreement showed up in results (and none of a
-    # totals disagreement), so the number we'd actually bet on is the
-    # disagreement times that realization rate. Shown next to the raw gap so
-    # nothing downstream mistakes a 4-point opinion for a 4-point edge.
+    # The realization rate is an edge-layer note. It does not change the fair.
     beta, beta_t = _p("market.edge_beta"), _p("market.edge_beta_total")
     if pred["edge"]["spread"] is not None:
         pred["edge"]["spread_expected_pts"] = round(pred["edge"]["spread"] * beta, 2)
     if pred["edge"]["total"] is not None:
         pred["edge"]["total_expected_pts"] = round(pred["edge"]["total"] * beta_t, 2)
     pred["edge"]["realization"] = {"spread": beta, "total": beta_t}
-    pred["prediction_basis"] = BLEND_VERSION
+    pred["prediction_basis"] = "model_only"

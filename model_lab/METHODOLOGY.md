@@ -185,7 +185,7 @@ env    = clamp(env, 0.75, 1.30)                   # overall cap ≈ ±25–30%
 
 **Injury multipliers** (Sleeper status): OUT/IR/PUP/NFI/SUSPENDED → 0.0; Doubtful → 0.3; Questionable → 0.85; else 1.0.
 
-**Market anchor** (next game only, volume/yardage stats, ≥2 books): pull toward consensus prop line by `k = min(0.40, 0.12 × books)`: `mean ← mean + k·(line − mean)`. TD/INT lines are thresholds, not medians — never anchored.
+**Market anchor:** not applied. Published means are the model. Consensus prop lines and ADP are post-hoc comparisons, not blend weights.
 
 Multipliers shift the **mean**; week-to-week game_sd stays put (except role scaling).
 

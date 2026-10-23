@@ -1,4 +1,4 @@
-"""Task-specific ML predictions with market-residual + calibration support."""
+"""Task-specific ML predictions. Targets are outcomes, not market residuals."""
 from __future__ import annotations
 
 import json
@@ -14,13 +14,14 @@ from ..cache import cache
 from ..logging_config import get_logger
 from ..models.seed import NFL_TEAMS
 from ..utils.teams import canonical_team
-from . import elo_service, feature_store_service
-from . import prediction_dist, task_modeling_service
+from . import elo_service, feature_store_service, task_modeling_service
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 _MODEL_DIR = Path(os.environ.get("ML_MODEL_DIR", "/tmp"))
+# Blind design. No closing line, moneyline, or observed game-day weather.
+# v6-blind filename so a residual model trained against the spread is not loaded.
 _FEATURES = [
     "home_elo",
     "away_elo",
@@ -37,8 +38,6 @@ _FEATURES = [
     "short_week_home",
     "short_week_away",
     "away_travel_proxy",
-    "weather_class_code",
-    "weather_is_bad",
     "qb_change_proxy_home",
     "qb_change_proxy_away",
     "offense_continuity_home",
@@ -145,16 +144,6 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
         home_def_prev = _team_prev_metric(team_weeks, h, target_week, "def_epa_roll4")
         away_def_prev = _team_prev_metric(team_weeks, a, target_week, "def_epa_roll4")
 
-        weather_class = task_modeling_service.weather_class(
-            roof=_safe_str(g.get("roof")),
-            wind_mph=_safe(g.get("weather_wind_mph")),
-            precip_in=_safe(g.get("weather_precipitation")),
-            temperature_f=_safe(g.get("weather_temperature")),
-        )
-        weather_code = {"indoor": 0, "mild": 1, "cold": 2, "wet": 3, "windy": 4}.get(weather_class, 1)
-        market_spread_home = _safe(g.get("spread_line"))
-        market_baseline_margin = None if market_spread_home is None else -market_spread_home
-        market_home_win_prob = _market_home_win_prob(g)
         travel_proxy = _travel_proxy(home_id=h, away_id=a)
 
         row = {
@@ -177,8 +166,6 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
             "short_week_home": 0,
             "short_week_away": 0,
             "away_travel_proxy": travel_proxy,
-            "weather_class_code": weather_code,
-            "weather_is_bad": 1 if weather_class in {"wet", "windy", "cold"} else 0,
             "qb_change_proxy_home": min(1.0, abs(home_off_epa - home_off_prev) * 1.2),
             "qb_change_proxy_away": min(1.0, abs(away_off_epa - away_off_prev) * 1.2),
             "offense_continuity_home": max(0.0, 1.0 - min(1.0, abs(home_off_epa - home_off_prev))),
@@ -188,10 +175,6 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
             "ol_injury_proxy_away": 0.25 if week <= 2 else 0.1,
             "home_score": _safe(g.get("home_score")),
             "away_score": _safe(g.get("away_score")),
-            "market_spread_home": market_spread_home,
-            "market_baseline_home_margin": market_baseline_margin,
-            "market_home_win_prob": market_home_win_prob,
-            "market_available": 1 if market_baseline_margin is not None or market_home_win_prob is not None else 0,
         }
         rows.append(row)
 
@@ -201,13 +184,6 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
     df["rest_days_away"] = df["rest_days_away"].fillna(7)
     df["short_week_home"] = (df["rest_days_home"] <= 6).astype(int)
     df["short_week_away"] = (df["rest_days_away"] <= 6).astype(int)
-    df["market_home_win_prob"] = df["market_home_win_prob"].fillna(
-        df["market_spread_home"].map(
-            lambda x: prediction_dist.win_prob(-float(x), prediction_dist.margin_sigma())
-            if pd.notna(x)
-            else 0.5
-        )
-    )
     df["home_margin"] = df["home_score"] - df["away_score"]
     df["home_win"] = (df["home_margin"] > 0).astype(int)
     return df
@@ -218,10 +194,6 @@ def _safe(v) -> float | None:
         return float(v) if pd.notna(v) else None
     except (TypeError, ValueError):
         return None
-
-
-def _safe_str(v: Any) -> str | None:
-    return str(v) if v is not None else None
 
 
 def _team_prev_metric(team_weeks: pd.DataFrame, team: str, week: int, col: str) -> float:
@@ -255,24 +227,6 @@ def _travel_proxy(*, home_id: str, away_id: str) -> float:
     return 0.2
 
 
-def _market_home_win_prob(row: pd.Series) -> float | None:
-    hm = _safe(row.get("home_moneyline"))
-    am = _safe(row.get("away_moneyline"))
-    if hm is None and am is None:
-        return None
-    # American odds to implied probability.
-    def _implied(price: float) -> float:
-        p = int(price)
-        if p < 0:
-            return (-p) / ((-p) + 100.0)
-        return 100.0 / (p + 100.0)
-
-    if hm is not None:
-        return _implied(hm)
-    away_p = _implied(am or 0.0)
-    return max(0.01, min(0.99, 1.0 - away_p))
-
-
 def _sample_weight(frame: pd.DataFrame) -> pd.Series:
     max_idx = int((frame["season"] * 100 + frame["week_number"]).max())
     recency = frame.apply(
@@ -287,7 +241,6 @@ def _sample_weight(frame: pd.DataFrame) -> pd.Series:
         1.0
         + (0.15 * frame["short_week_home"].astype(float))
         + (0.10 * frame["short_week_away"].astype(float))
-        + (0.08 * frame["weather_is_bad"].astype(float))
         + (0.10 * frame["qb_change_proxy_home"].astype(float))
         + (0.10 * frame["qb_change_proxy_away"].astype(float))
     )
@@ -295,7 +248,7 @@ def _sample_weight(frame: pd.DataFrame) -> pd.Series:
 
 
 def _task_model_file(task: str) -> Path:
-    return _MODEL_DIR / f"nfl_{task}_xgb.json"
+    return _MODEL_DIR / f"nfl_{task}_v6blind_xgb.json"
 
 
 def _task_calibration_file(task: str) -> Path:
@@ -361,9 +314,9 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
         )
         X = big[_FEATURES]
         if task == task_modeling_service.TASK_SPREAD_EDGE:
-            y = big["home_margin"] - big["market_baseline_home_margin"].fillna(0.0)
+            y = big["home_margin"]
         else:
-            y = big["home_win"] - big["market_home_win_prob"].fillna(0.5)
+            y = big["home_win"]
         model.fit(X, y, sample_weight=weights)
         preds = model.predict(X)
         resid_mae = float((preds - y).abs().mean())
@@ -375,10 +328,9 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
 
         calibration_payload: dict[str, Any] | None = None
         if task == task_modeling_service.TASK_WIN_PROBABILITY:
-            base_probs = big["market_home_win_prob"].fillna(0.5).tolist()
             raw_probs = [
-                min(max(base + float(res), 1e-6), 1 - 1e-6)
-                for base, res in zip(base_probs, preds.tolist())
+                min(max(float(p), 1e-6), 1 - 1e-6)
+                for p in preds.tolist()
             ]
             outcomes = big["home_win"].astype(int).tolist()
             previous = _load_task_calibration(task)
@@ -418,8 +370,7 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
             "feature_set_version": cfg.feature_set_version,
             "calibration": calibration_payload,
             "residual_diagnostics": {
-                "market_available_pct": round(float(big["market_available"].mean()), 4),
-                "target_kind": cfg.target_kind,
+                "target_kind": "outcome",
             },
         }
 
@@ -477,26 +428,11 @@ async def predict_week_ml(db: Session, season: int, week: int) -> dict[str, Any]
     win_calibration = _load_task_calibration(task_modeling_service.TASK_WIN_PROBABILITY)
     out = []
     for idx, (_, g) in enumerate(weekly.iterrows()):
-        baseline_margin = _safe(g.get("market_baseline_home_margin"))
-        baseline_win = _safe(g.get("market_home_win_prob"))
         spread_residual = float(spread_residuals[idx])
         win_residual = float(win_residuals[idx])
-        final_margin = task_modeling_service.combine_market_and_residual(
-            baseline_value=baseline_margin,
-            residual_value=spread_residual,
-            fallback_baseline=0.0,
-        )
-        raw_home_prob = task_modeling_service.combine_market_and_residual(
-            baseline_value=baseline_win,
-            residual_value=win_residual,
-            fallback_baseline=0.5,
-        )
-        raw_home_prob = min(max(float(raw_home_prob), 1e-6), 1 - 1e-6)
+        final_margin = spread_residual
+        raw_home_prob = min(max(float(win_residual), 1e-6), 1 - 1e-6)
         calibrated_home_prob = task_modeling_service.apply_platt_calibration(raw_home_prob, win_calibration)
-        market = task_modeling_service.market_baseline(
-            market_spread_home=_safe(g.get("market_spread_home")),
-            market_home_win_prob=baseline_win,
-        )
         out.append({
             "game_id": g["game_id"],
             "home_team_id": g["home_team"],
@@ -504,11 +440,11 @@ async def predict_week_ml(db: Session, season: int, week: int) -> dict[str, Any]
             "predicted_spread": round(-float(final_margin), 1),  # negative = home favored
             "predicted_home_margin": round(float(final_margin), 1),
             "predicted_home_win_prob": round(calibrated_home_prob, 3),
-            "market_baseline": market,
+            "market_baseline": {"available": False},
             "residual_diagnostics": {
                 "spread_residual": round(spread_residual, 4),
                 "win_residual": round(win_residual, 4),
-                "market_used": bool(market["available"]),
+                "market_used": False,
             },
             "calibration": {
                 "method": (win_calibration or {}).get("method", "identity"),

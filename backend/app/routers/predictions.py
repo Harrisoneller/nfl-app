@@ -25,7 +25,7 @@ async def games(
     response: Response,
     season: int | None = None,
     week: int | None = None,
-    include_ml: bool = True,
+    include_ml: bool = False,
     db: Session = Depends(get_db),
 ):
     """Predicted spread + win prob for each game in a week.

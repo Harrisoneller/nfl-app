@@ -31,7 +31,6 @@ Layout
 * ``team_game_rows``      PBP → one row per (game, offense) with weighted sums.
 * ``fit_ratings``         decayed cross-season ridge per metric.
 * ``QBBook``              quarterback ratings + each team's recent QB mix.
-* ``market_ratings``      power ratings implied by *past* closing spreads.
 * ``WeekModel``           everything above for one (season, week); exposes
                           ``features(home, away, home_qb, away_qb)`` and
                           ``predict(...)``.
@@ -47,7 +46,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import pandas as pd
 
-MODEL_VERSION = "qb-ridge-v5"
+MODEL_VERSION = "qb-ridge-v6-blind"
 
 # ---- Hyperparameters (validated on 2016–2020, held out 2021–2026) ----------
 
@@ -70,24 +69,22 @@ DEFAULT_PARAMS: dict[str, float] = {
     "qb_replacement_epa": -0.10, # prior for a QB with no volume (EPA/db vs avg)
     "qb_vet_dropbacks": 600.0,   # career volume at which the prior reaches avg
     "qb_change_threshold": 0.015,  # |starter − mix| that counts as a change
-    # market prior (power ratings from past closing spreads)
-    "mkt_half_life_weeks": 6.0,
-    "mkt_season_carry": 0.50,
-    "mkt_ridge": 2.0,
 }
 
-# ---- Stage-2 coefficients (OLS on 2015–2026 wk3 outcomes; see docs/MODEL_V5.md) ---
+# ---- Stage-2 coefficients ----------------------------------------------------
 # Margin is home − away. Feature "x_d" = (home off + away def) − (away off +
-# home def) for metric x; "qb_d" = home QB delta − away QB delta (EPA/db);
-# "mkt_d" = market-implied rating difference (points).
+# home def) for metric x; "qb_d" = home QB delta − away QB delta (EPA/db).
+# There is no market column. The with-market design (mkt_d on closing spreads)
+# is not a fallback and is not a coefficient of zero: it is not in the model.
+# These values are the previous no-market OLS and are replaced by the frozen
+# 2015–2023 walk-forward export (see v6_blind). Sigma stays 13.5 in prediction_dist.
+MARGIN_FEATURES: tuple[str, ...] = ("epa_d", "pts_d", "st_d", "qb_d")
+TOTAL_FEATURES: tuple[str, ...] = ("pts_s", "epa_s", "env2", "plays_s", "qb_s")
 MARGIN_COEFS: dict[str, float] = {
-    "mkt_d": 0.669, "epa_d": 6.266, "pts_d": 0.644, "st_d": 0.961, "qb_d": 34.977,
-    "hfa": 1.824,
-}
-# Fallback when no historical lines are available (no market prior).
-MARGIN_COEFS_NO_MKT: dict[str, float] = {
     "epa_d": 19.114, "pts_d": 0.928, "st_d": 0.927, "qb_d": 34.326, "hfa": 1.833,
 }
+# Alias so a second, with-market design cannot be selected.
+MARGIN_COEFS_NO_MKT: dict[str, float] = MARGIN_COEFS
 # Total = const + Σ coef·feature; "x_s" = sum of both sides, "env2" =
 # 2 × the weighted league points intercept (scoring environment drift).
 TOTAL_COEFS: dict[str, float] = {
@@ -452,55 +449,7 @@ def build_qb_book(
 
 
 # =============================================================================
-# 4. Market prior: power ratings implied by past closing spreads
-# =============================================================================
-
-
-def market_ratings(
-    schedule: pd.DataFrame | None,
-    season: int,
-    week: int,
-    teams: Iterable[str],
-    params: dict[str, float] | None = None,
-) -> tuple[dict[str, float], float] | None:
-    """Least-squares team ratings from *previous* games' closing spreads.
-
-    ``spread_line`` is nflverse's convention (home favored by, positive). Only
-    games before (season, week) — this is the market's past opinion, a strong
-    prior, never the line for the game being predicted.
-    """
-    teams = sorted(set(teams))
-    if schedule is None or len(schedule) == 0 or "spread_line" not in schedule.columns:
-        return None
-    s = schedule[
-        schedule["spread_line"].notna()
-        & (schedule["season"] >= season - 1)
-        & ((schedule["season"] < season) | ((schedule["season"] == season) & (schedule["week"] < week)))
-        & schedule["home_team"].isin(teams) & schedule["away_team"].isin(teams)
-    ]
-    if len(s) < 16:
-        return None
-    ti = {t: i for i, t in enumerate(teams)}
-    n, k = len(s), len(teams)
-    x = np.zeros((n, k + 1))
-    x[np.arange(n), s["home_team"].map(ti).to_numpy()] += 1.0
-    x[np.arange(n), s["away_team"].map(ti).to_numpy()] -= 1.0
-    neutral = (s["location"] == "Neutral").to_numpy(dtype=float) if "location" in s.columns else np.zeros(n)
-    x[:, k] = 1.0 - neutral
-    age = _week_index(season, week) - _week_index(s["season"], s["week"])
-    w = np.power(0.5, age / _p(params, "mkt_half_life_weeks")) * np.power(
-        _p(params, "mkt_season_carry"), season - s["season"].to_numpy(dtype=float)
-    )
-    pen = np.full(k + 1, _p(params, "mkt_ridge"))
-    pen[k] = 1e-6
-    xtw = x.T * w
-    b = np.linalg.solve(xtw @ x + np.diag(pen), xtw @ s["spread_line"].to_numpy(dtype=float))
-    r = b[:k] - b[:k].mean()
-    return {t: float(v) for t, v in zip(teams, r)}, float(b[k])
-
-
-# =============================================================================
-# 5. One week's model
+# 4. One week's model
 # =============================================================================
 
 
@@ -510,7 +459,6 @@ class WeekModel:
     week: int
     ratings: Ratings
     qb: QBBook
-    market: tuple[dict[str, float], float] | None
     params: dict[str, float] | None = None
     margin_coefs: dict[str, float] = field(default_factory=lambda: dict(MARGIN_COEFS))
     margin_coefs_no_mkt: dict[str, float] = field(default_factory=lambda: dict(MARGIN_COEFS_NO_MKT))
@@ -534,8 +482,6 @@ class WeekModel:
         f["qb_h"], f["qb_a"] = qh, qa
         f["qb_d"], f["qb_s"] = qh - qa, qh + qa
         f["env2"] = 2.0 * f.get("pts_ic", 0.0)
-        if self.market is not None:
-            f["mkt_d"] = self.market[0].get(home, 0.0) - self.market[0].get(away, 0.0)
         return f
 
     def predict(
@@ -548,7 +494,7 @@ class WeekModel:
         away_qb: str | None = None,
     ) -> dict[str, Any]:
         f = self.features(home, away, home_qb, away_qb)
-        coefs = self.margin_coefs if "mkt_d" in f else self.margin_coefs_no_mkt
+        coefs = self.margin_coefs
         hfa = 0.0 if neutral else coefs.get("hfa", 0.0)
         parts = {k: coefs[k] * f.get(k, 0.0) for k in coefs if k != "hfa"}
         margin = sum(parts.values()) + hfa
@@ -562,7 +508,7 @@ class WeekModel:
             "features": {k: round(float(v), 4) for k, v in f.items()},
             "margin_parts": {**{k: round(float(v), 2) for k, v in parts.items()}, "hfa": round(hfa, 2)},
             "total_parts": {k: round(float(v), 2) for k, v in tparts.items()},
-            "uses_market_prior": "mkt_d" in f,
+            "uses_market_prior": False,
             "qb_change": {
                 "home": abs(f["qb_h"]) >= qbt,
                 "away": abs(f["qb_a"]) >= qbt,
@@ -583,12 +529,14 @@ def build_week_model(
     total_coefs: dict[str, float] | None = None,
 ) -> WeekModel:
     teams = sorted(set(teams))
+    # ``schedule`` is accepted so callers keep a stable signature. Closing
+    # lines are not a rating input.
+    del schedule
     wm = WeekModel(
         season=season,
         week=week,
         ratings=fit_ratings(rows, season, week, teams, params),
         qb=build_qb_book(rows, season, week, teams, params),
-        market=market_ratings(schedule, season, week, teams, params),
         params=params,
     )
     if margin_coefs:
