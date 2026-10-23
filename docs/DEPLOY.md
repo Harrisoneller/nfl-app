@@ -40,10 +40,12 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
    RATE_LIMIT_AI=10/hour
 
    # Canonical site. www is added automatically. statletics.io is also the default
-   # of CORS_PRODUCTION_ORIGINS. Preview hosts for CORS_VERCEL_PROJECT (default
-   # nfl-app) are allowed as https://nfl-app.vercel.app and https://nfl-app-<preview>.vercel.app.
+   # of CORS_PRODUCTION_ORIGINS. Vercel hosts are exact: https://nfl-app.vercel.app,
+   # https://nfl-app-harrisonellers-projects.vercel.app, git branch previews
+   # ending in that team, and deployment URLs nfl-<id>-harrisonellers-projects.
    CORS_ORIGINS=https://statletics.io
    CORS_VERCEL_PROJECT=nfl-app
+   CORS_VERCEL_TEAM=harrisonellers-projects
    ```
 7. **Add a worker service** (Phase A — stops OOM crash-loops on the public URL):
    - In the same Railway project: **+ New → GitHub Repo** → same repo, root directory `backend`.
@@ -78,10 +80,9 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
 The API detects production when any of these is true:
 
 - `APP_ENV=production`.
-- `RAILWAY_ENVIRONMENT` or `RAILWAY_ENVIRONMENT_NAME` is `production` (any case), even if `APP_ENV` is explicitly `development`.
-- `APP_ENV` is unset or blank, and `RAILWAY_ENVIRONMENT` or `RAILWAY_ENVIRONMENT_NAME` is set to any non-empty value. A Railway preview whose name is not `production` still fails closed. An explicit `APP_ENV=development` opts out of that "any Railway name" rule.
+- `RAILWAY_ENVIRONMENT` or `RAILWAY_ENVIRONMENT_NAME` is set to any non-empty value, including when `APP_ENV=development`. A development label on Railway does not skip the check.
 
-Development and pytest (`APP_ENV=development`, Railway variables unset) stay permissive and still boot with the placeholder secret.
+Development and pytest (`APP_ENV=development`, both Railway variables unset) stay permissive and still boot with the placeholder secret.
 
 If the check fails, the process logs `production_auth_refused` and exits during startup with `Refusing to start in production:` plus one line per problem. It does not serve traffic. Web and worker both run the check. The log line names the variable; it never prints `SECRET_KEY`.
 
@@ -99,8 +100,8 @@ These postures refuse to boot:
 
 | Variable | Required in production | Format |
 |---|---|---|
-| `APP_ENV` | Set to `production`, or leave unset on Railway | `production`, or unset when a Railway environment variable is present |
-| `RAILWAY_ENVIRONMENT` / `RAILWAY_ENVIRONMENT_NAME` | Set by Railway | any non-empty name counts when `APP_ENV` is unset; the value `production` always counts |
+| `APP_ENV` | `production` on a host that is not Railway | `production`. On Railway, any value still fails closed because Railway sets the variables below |
+| `RAILWAY_ENVIRONMENT` / `RAILWAY_ENVIRONMENT_NAME` | Set by Railway | any non-empty name counts as production, including when `APP_ENV=development` |
 | `SECRET_KEY` | Yes | at least 32 characters, not a `change-me` prefix, not low-entropy |
 | `MULTI_USER_MODE` | Yes | `true` |
 | `ADMIN_EMAILS` | Yes | comma-separated emails, no spaces required |
@@ -116,7 +117,7 @@ These postures refuse to boot:
    ```
    This value is **baked in at build time**. If you add or change it after the first deploy, you **must redeploy** the frontend or every page will still call `localhost:8000` and look empty.
 5. Deploy. Vercel gives you a URL like `https://nfl-app-yourname.vercel.app`.
-6. **Go back to Railway** and set `CORS_ORIGINS` to the canonical site (`https://statletics.io`; `https://www.statletics.io` is added automatically). Set `CORS_VERCEL_PROJECT` to the Vercel project slug if it is not `nfl-app`. Restart the backend web service. Credentialed browser calls are allowed from those production origins and from that project's preview hosts (`https://<slug>.vercel.app` and `https://<slug>-<preview>.vercel.app`). Other `*.vercel.app` sites are not allowed. (Required for **team/player** pages — they fetch from the browser; CORS does not affect the homepage server render.)
+6. **Go back to Railway** and set `CORS_ORIGINS` to the canonical site (`https://statletics.io`; `https://www.statletics.io` is added automatically). `CORS_VERCEL_PROJECT` defaults to `nfl-app` and `CORS_VERCEL_TEAM` to `harrisonellers-projects`. Restart the backend web service. Credentialed browser calls are allowed from those production origins and from exact Vercel hosts only: `https://nfl-app.vercel.app`, `https://nfl-app-<team>.vercel.app`, `https://nfl-app-git-<branch>-<team>.vercel.app`, and `https://nfl-<id>-<team>.vercel.app`. A lookalike such as `https://nfl-app-evil.vercel.app` is not allowed. (Required for **team/player** pages — they fetch from the browser; CORS does not affect the homepage server render.)
 
 ### 3. Post-deploy bootstrap
 
@@ -310,7 +311,7 @@ Once you're past friends-testing and want to put this on the open internet:
 ## Common gotchas
 
 - **Site loads but everything is empty (no scores, metrics, schedule, predictions)** — (1) Vercel `NEXT_PUBLIC_API_BASE` missing or set after first build → set to Railway URL and **Redeploy** frontend. (2) Fresh Railway DB never warmed → run `scripts/warmup-production.sh`. (3) Team pages still blank → fix `CORS_ORIGINS` + restart backend. Open DevTools → Network: failed calls to `localhost:8000` mean (1); blocked calls to Railway with CORS errors mean (3).
-- **CORS error in browser console after deploy** — Preflight returns **400** when the browser `Origin` is not allowed. Fix: set `CORS_ORIGINS` or `CORS_PRODUCTION_ORIGINS` to the site URL (e.g. `https://statletics.io` — the API auto-adds `https://www.statletics.io`), no trailing slash, and set `CORS_VERCEL_PROJECT` to the Vercel project slug (default `nfl-app`). Preview hosts for that slug are allowed; other `*.vercel.app` sites are not. Redeploy the **web** service. Check `GET /health` → `cors_origins` lists both apex and www.
+- **CORS error in browser console after deploy** — Preflight returns **400** when the browser `Origin` is not allowed. Fix: set `CORS_ORIGINS` or `CORS_PRODUCTION_ORIGINS` to the site URL (e.g. `https://statletics.io` — the API auto-adds `https://www.statletics.io`), no trailing slash. Vercel hosts must match the exact project and team patterns (`CORS_VERCEL_PROJECT=nfl-app`, `CORS_VERCEL_TEAM=harrisonellers-projects`). `https://nfl-app-evil.vercel.app` is not allowed. Redeploy the **web** service. Check `GET /health` → `cors_origins` lists both apex and www.
 - **Deploy fails: `Connection refused` on localhost:5432, healthcheck `/live` times out** — the backend service has no `DATABASE_URL`. Add a PostgreSQL database to the project, then **reference** its `DATABASE_URL` on the backend service (step 1.5 above). Redeploy.
 - **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or delete your override so the Postgres reference wins.
 - **Backend 500s with `relation "team_elo_ratings" does not exist`** — the Procfile/railway.toml runs `alembic upgrade head`, but if the build fails or you bypassed it, run it manually via `railway run alembic upgrade head` from the Railway CLI.

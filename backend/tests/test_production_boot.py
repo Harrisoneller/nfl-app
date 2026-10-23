@@ -201,14 +201,26 @@ def test_unset_app_env_railway_environment_name_is_production(monkeypatch):
     assert any("system admin" in problem for problem in problems)
 
 
-def test_explicit_development_ignores_non_production_railway_name(monkeypatch):
+def test_development_on_railway_still_fails_closed(monkeypatch):
     monkeypatch.setenv("APP_ENV", "development")
     monkeypatch.setenv("RAILWAY_ENVIRONMENT", "staging")
-    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "preview")
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT_NAME", raising=False)
     monkeypatch.setenv("SECRET_KEY", "change-me")
+    monkeypatch.setenv("MULTI_USER_MODE", "true")
+    monkeypatch.setenv("ADMIN_EMAILS", "admin@example.com")
+    problems = production_boot_problems(_settings())
+    assert any("SECRET_KEY" in problem for problem in problems)
+
+
+def test_development_with_only_railway_environment_name_fails_closed(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "preview")
+    monkeypatch.setenv("SECRET_KEY", _REAL_SECRET)
     monkeypatch.setenv("MULTI_USER_MODE", "false")
     monkeypatch.setenv("ADMIN_EMAILS", "")
-    assert production_boot_problems(_settings()) == []
+    problems = production_boot_problems(_settings())
+    assert any("system admin" in problem for problem in problems)
 
 
 def test_lifespan_refuses_to_serve(monkeypatch):
