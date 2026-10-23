@@ -41,6 +41,12 @@ class Game(Base, TimestampMixin):
     settlement_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Lease start for the current ``settling`` claim. Refreshed when an
+    # expired claim is taken over. Distinct from ``settlement_started_at``,
+    # which stays at the first attempt.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     settlement_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

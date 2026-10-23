@@ -16,7 +16,7 @@ from app.models.user import User
 from app.services import bet_service, scores_service
 from scripts.reset_stuck_settlements import (
     format_report,
-    guard_not_production,
+    guard_local_database,
     parse_args,
     run,
 )
@@ -193,15 +193,186 @@ def test_failed_game_rolls_back_and_does_not_retry_until_reset(db, monkeypatch):
     assert db.get(Bet, good.id).result_units == pytest.approx(3.0)
 
 
-def test_reset_script_is_dry_run_by_default_and_refuses_production():
+def test_reset_script_is_dry_run_by_default_and_fails_closed():
     assert parse_args([]).apply is False
     assert parse_args(["--apply"]).apply is True
     with pytest.raises(SystemExit):
-        guard_not_production("production", "sqlite://")
+        guard_local_database("production", "sqlite://")
     with pytest.raises(SystemExit):
-        guard_not_production("development", "postgresql://user:pw@monorail.proxy.rlwy.net/db")
-    guard_not_production("development", "sqlite://")
-    guard_not_production("development", "postgresql://localhost/nflapp")
+        guard_local_database("production", "postgresql://localhost/nflapp")
+    refused = [
+        "postgresql://user:pw@monorail.proxy.rlwy.net/db",
+        "postgresql://localhost:pw@monorail.proxy.rlwy.net/db",
+        "postgresql://localhost.attacker.example/db",
+        "postgresql://db.internal/nfl",
+        "postgresql:///",
+        "",
+        "not a url",
+    ]
+    for url in refused:
+        with pytest.raises(SystemExit):
+            guard_local_database("development", url)
+    allowed = [
+        "sqlite://",
+        "sqlite:///./test.db",
+        "postgresql://localhost/nflapp",
+        "postgresql+psycopg://localhost/nflapp",
+        "postgresql://127.0.0.1:5432/nflapp",
+        "postgresql://[::1]/nflapp",
+        "postgresql://postgres/nflapp",
+    ]
+    for url in allowed:
+        guard_local_database("development", url)
+
+
+def test_expired_claim_is_reclaimed_and_a_fresh_claim_is_not(db, monkeypatch):
+    from app.config import Settings
+    from app.services import settlement_service
+
+    assert Settings.model_fields["settlement_claim_ttl_seconds"].default == 15 * 60
+    monkeypatch.setattr(settlement_service, "_claim_ttl", lambda: timedelta(minutes=15))
+
+    user = _user(db)
+    _game(db, "g1", "PHI", "DAL", 27, 17)
+    bet = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    game = db.get(Game, "g1")
+    fresh = datetime.now(timezone.utc) - timedelta(minutes=2)
+    game.settlement_status = "settling"
+    game.settlement_started_at = fresh
+    game.claimed_at = fresh
+    db.commit()
+
+    warnings: list[tuple] = []
+
+    def capture(event, **kwargs):
+        warnings.append((event, kwargs))
+
+    monkeypatch.setattr(settlement_service.log, "warning", capture)
+    held = bet_service.settle_user_bets(db, user.id)
+    assert held["games_stuck"] == 1
+    assert held["settled_bets"] == 0
+    assert warnings == []
+    db.expire_all()
+    assert db.get(Bet, bet.id).status == "pending"
+    assert db.get(Game, "g1").settlement_status == "settling"
+
+    game = db.get(Game, "g1")
+    started = datetime.now(timezone.utc) - timedelta(minutes=20)
+    game.settlement_started_at = started
+    game.claimed_at = started
+    db.commit()
+    reclaimed = bet_service.settle_user_bets(db, user.id)
+    assert reclaimed["settled_bets"] == 1
+    assert reclaimed["games_stuck"] == 0
+    assert warnings
+    event, fields = warnings[-1]
+    assert event == "settlement_claim_expired"
+    assert fields["game_id"] == "g1"
+    assert fields["claim_age_seconds"] >= 15 * 60
+    db.expire_all()
+    assert db.get(Bet, bet.id).status == "won"
+    assert db.get(Bet, bet.id).result_units == pytest.approx(3.0)
+    finished = db.get(Game, "g1")
+    assert finished.settlement_status == "settled"
+    # The first attempt's start stays put. The lease clock moves forward
+    # when the expired claim is taken over.
+    assert settlement_service._as_utc(finished.settlement_started_at) == settlement_service._as_utc(
+        started
+    )
+    assert settlement_service._as_utc(finished.claimed_at) > settlement_service._as_utc(started)
+
+    missing = _game(db, "g2", "KC", "DEN", 30, 10)
+    missing.settlement_status = "settling"
+    missing.claimed_at = None
+    missing.settlement_started_at = started
+    db.commit()
+    _straight(db, user, "g2", "KC", "KC", "DEN")
+    warnings.clear()
+    taken = bet_service.settle_user_bets(db, user.id)
+    assert taken["settled_bets"] == 1
+    assert any(
+        event == "settlement_claim_expired" and fields["game_id"] == "g2"
+        for event, fields in warnings
+    )
+    assert db.get(Game, "g2").settlement_status == "settled"
+
+
+def test_regrading_a_settled_game_is_ordered_and_repeatable(db, monkeypatch):
+    user = _user(db)
+    game = _game(db, "g1", "PHI", "DAL", 27, 17)
+    from app.services.settlement_service import settle_game
+
+    assert settle_game(db, game)["stuck"] is False
+    db.expire_all()
+    assert db.get(Game, "g1").settlement_status == "settled"
+
+    later = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    earlier = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    same_time = datetime(2025, 9, 8, 12, tzinfo=timezone.utc)
+    # Inserted second, but placed earlier. Ordering must follow placed_at, then id.
+    later.placed_at = same_time + timedelta(hours=5)
+    earlier.placed_at = same_time
+    db.commit()
+
+    seen: list = []
+    real = bet_service._grade_leg
+
+    def spy(session, leg):
+        seen.append(leg.bet_id)
+        return real(session, leg)
+
+    monkeypatch.setattr(bet_service, "_grade_leg", spy)
+    first = bet_service.settle_user_bets(db, user.id)
+    assert first["settled_bets"] == 2
+    assert seen == [earlier.id, later.id]
+
+    db.expire_all()
+
+    def snapshot():
+        rows = db.query(Bet).order_by(Bet.placed_at.asc(), Bet.id.asc()).all()
+        return [
+            (row.id, row.status, row.result_units, row.legs[0].leg_result)
+            for row in rows
+        ]
+
+    graded = snapshot()
+    assert [row[0] for row in graded] == [earlier.id, later.id]
+    assert all(row[1] == "won" and row[2] == pytest.approx(3.0) for row in graded)
+
+    second = bet_service.settle_user_bets(db, user.id)
+    assert second["settled_bets"] == 0
+    assert second["graded_legs"] == 0
+    db.expire_all()
+    assert snapshot() == graded
+
+    kick = datetime(2025, 9, 7, 17, tzinfo=timezone.utc)
+    near = _game(db, "z-near", "BUF", "MIA", 10, 7)
+    far = _game(db, "a-far", "BUF", "MIA", 10, 7)
+    low = _game(db, "a-tie", "GB", "CHI", 3, 3)
+    high = _game(db, "b-tie", "GB", "CHI", 3, 3)
+    near.start_time = kick + timedelta(minutes=10)
+    far.start_time = kick + timedelta(hours=3)
+    low.start_time = kick - timedelta(hours=1)
+    high.start_time = kick + timedelta(hours=1)
+    db.commit()
+    buf = type("Leg", (), {
+        "event_id": None,
+        "game_id": None,
+        "home_team_id": "BUF",
+        "away_team_id": "MIA",
+        "commence_time": kick,
+    })()
+    gb = type("Leg", (), {
+        "event_id": None,
+        "game_id": None,
+        "home_team_id": "GB",
+        "away_team_id": "CHI",
+        "commence_time": kick,
+    })()
+    assert bet_service._find_game(db, buf).id == near.id
+    assert bet_service._find_game(db, buf).id == near.id
+    assert bet_service._find_game(db, gb).id == low.id
+    assert bet_service._find_game(db, gb).id == low.id
 
 
 class _Board:

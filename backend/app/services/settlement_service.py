@@ -9,9 +9,10 @@ Each final game is its own transaction:
 
 If step 2 raises, the transaction rolls back. Legs, payouts, and the
 historical row from that attempt are gone. The claim from step 1 stays
-``settling``, and later runs leave the game alone so a failed write is not
-retried forever. ``scripts/reset_stuck_settlements.py`` clears those rows
-(dry-run unless ``--apply``, and it refuses production).
+``settling``. A later run leaves it alone until ``claimed_at`` is older
+than the configured TTL, then reclaims it and logs a warning. The reset
+script can clear the claim sooner (dry-run unless ``--apply``; it only
+connects to allowlisted local and test hosts).
 
 Re-running a game that is already ``settled`` only grades bets that are still
 pending (a wager logged after the game ended). It does not rewrite a stored
@@ -20,9 +21,9 @@ result or add the profit a second time.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..logging_config import get_logger
@@ -41,37 +42,99 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def claim_game(db: Session, game: Game) -> str:
+def _as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes. Treat them as UTC so lease math matches."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _claim_ttl() -> timedelta:
+    from ..config import get_settings
+
+    seconds = int(get_settings().settlement_claim_ttl_seconds)
+    return timedelta(seconds=max(seconds, 1))
+
+
+def _claim_age_seconds(claimed_at: datetime | None, now: datetime) -> int | None:
+    claimed = _as_utc(claimed_at)
+    if claimed is None:
+        return None
+    return int((_as_utc(now) - claimed).total_seconds())
+
+
+def _lease_expired(claimed_at: datetime | None, cutoff: datetime) -> bool:
+    """A missing timestamp is expired so a claim from before the column existed can be taken."""
+    claimed = _as_utc(claimed_at)
+    if claimed is None:
+        return True
+    return claimed < _as_utc(cutoff)
+
+
+def claim_game(
+    db: Session,
+    game: Game,
+    *,
+    now: datetime | None = None,
+    ttl: timedelta | None = None,
+) -> str:
     """Return ``claimed``, ``settled``, or ``stuck``.
 
     The transition into ``settling`` is a single conditional UPDATE so two
     workers cannot both grade the same game. It is committed before any
     grading writes.
+
+    A claim whose ``claimed_at`` is older than the TTL is reclaimed by that
+    same UPDATE. The warning names the game and how long the previous claim
+    was held.
     """
-    status = db.execute(
-        select(Game.settlement_status).where(Game.id == game.id)
-    ).scalar()
+    now = now or _now()
+    ttl = ttl if ttl is not None else _claim_ttl()
+    cutoff = now - ttl
+    status, claimed_at = db.execute(
+        select(Game.settlement_status, Game.claimed_at).where(Game.id == game.id)
+    ).one()
     if status == SETTLED:
         return "settled"
-    if status == SETTLING:
+    if status == SETTLING and not _lease_expired(claimed_at, cutoff):
         return "stuck"
 
-    started = _now()
+    expired = status == SETTLING
     res = db.execute(
         update(Game)
         .where(Game.id == game.id)
-        .where(Game.settlement_status.is_(None))
-        .values(settlement_status=SETTLING, settlement_started_at=started)
+        .where(
+            or_(
+                Game.settlement_status.is_(None),
+                and_(
+                    Game.settlement_status == SETTLING,
+                    or_(Game.claimed_at.is_(None), Game.claimed_at < cutoff),
+                ),
+            )
+        )
+        .values(
+            settlement_status=SETTLING,
+            claimed_at=now,
+            settlement_started_at=func.coalesce(Game.settlement_started_at, now),
+        )
     )
     if (res.rowcount or 0) == 1:
         db.commit()
         db.refresh(game)
+        if expired:
+            log.warning(
+                "settlement_claim_expired",
+                game_id=game.id,
+                claim_age_seconds=_claim_age_seconds(claimed_at, now),
+            )
         return "claimed"
 
     db.rollback()
-    status = db.execute(
-        select(Game.settlement_status).where(Game.id == game.id)
-    ).scalar()
+    status, claimed_at = db.execute(
+        select(Game.settlement_status, Game.claimed_at).where(Game.id == game.id)
+    ).one()
     db.refresh(game)
     if status == SETTLED:
         return "settled"
@@ -104,6 +167,7 @@ def reset_stuck_games(db: Session, game_ids: list[str] | None = None) -> int:
         stmt.values(
             settlement_status=None,
             settlement_started_at=None,
+            claimed_at=None,
             settlement_finished_at=None,
         )
     )

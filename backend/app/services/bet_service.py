@@ -114,7 +114,7 @@ def list_bets(db: Session, user_id: uuid.UUID, status: str | None = None) -> lis
     stmt = select(Bet).where(Bet.user_id == user_id)
     if status:
         stmt = stmt.where(Bet.status == status)
-    stmt = stmt.order_by(Bet.placed_at.desc())
+    stmt = stmt.order_by(Bet.placed_at.desc(), Bet.id.asc())
     return list(db.execute(stmt).scalars().all())
 
 
@@ -139,8 +139,26 @@ def delete_bet(db: Session, user_id: uuid.UUID, bet_id: uuid.UUID) -> bool:
 # --------------------------------------------------------------------------- #
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _ordered_legs(bet: Bet) -> list[BetLeg]:
+    """Leg id order, so a parlay's price is the same product every time."""
+    return sorted(bet.legs, key=lambda leg: (leg.id is None, leg.id or 0))
+
+
 def _find_game(db: Session, leg: BetLeg) -> Game | None:
-    """Resolve the Game row for a leg (direct event_id, then team+time fuzzy)."""
+    """Resolve the Game row for a leg (direct event_id, then team+time fuzzy).
+
+    Several games can sit in the kickoff window. The closest kickoff wins,
+    and an equal distance uses the smaller game id, so the same leg always
+    resolves to the same game.
+    """
     if leg.event_id:
         g = db.get(Game, leg.event_id)
         if g is not None:
@@ -150,7 +168,7 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
         if g is not None:
             return g
     if leg.home_team_id and leg.away_team_id and leg.commence_time:
-        return (
+        candidates = (
             db.query(Game)
             .filter(
                 ((Game.home_team_id == leg.home_team_id) & (Game.away_team_id == leg.away_team_id))
@@ -162,8 +180,19 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
                     leg.commence_time + timedelta(hours=6),
                 )
             )
-            .first()
+            .all()
         )
+        if not candidates:
+            return None
+        commence = _as_utc(leg.commence_time)
+
+        def distance(game: Game) -> tuple[float, str]:
+            start = _as_utc(game.start_time)
+            if start is None or commence is None:
+                return (float("inf"), game.id)
+            return (abs((start - commence).total_seconds()), game.id)
+
+        return min(candidates, key=distance)
     return None
 
 
@@ -379,7 +408,11 @@ def apply_game_grades(
     Legs that are already graded are left alone, so a second pass cannot
     double-count profit. The bet is rolled up only while it is still pending.
     """
-    stmt = select(Bet).where(Bet.status == PENDING)
+    stmt = (
+        select(Bet)
+        .where(Bet.status == PENDING)
+        .order_by(Bet.placed_at.asc(), Bet.id.asc())
+    )
     if user_id is not None:
         stmt = stmt.where(Bet.user_id == user_id)
     bets = list(db.execute(stmt).scalars().unique().all())
@@ -389,7 +422,7 @@ def apply_game_grades(
     for bet in bets:
         changed = False
         touched = False
-        for leg in bet.legs:
+        for leg in _ordered_legs(bet):
             if leg.leg_result != PENDING:
                 continue
             resolved = _find_game(db, leg)
@@ -443,7 +476,7 @@ def apply_clv_for_open_legs(db: Session, user_id: uuid.UUID) -> int:
     changed_bets = 0
     for bet in list_bets(db, user_id, status=PENDING):
         changed = False
-        for leg in bet.legs:
+        for leg in _ordered_legs(bet):
             if leg.leg_result != PENDING:
                 continue
             game = _find_game(db, leg)
@@ -476,10 +509,11 @@ def _rollup_ready(bet: Bet) -> bool:
     """Roll a pending bet up when every leg is graded. Returns True if it settled."""
     if bet.status != PENDING:
         return False
-    leg_results = [leg.leg_result for leg in bet.legs]
+    legs = _ordered_legs(bet)
+    leg_results = [leg.leg_result for leg in legs]
     if not leg_results or any(r == PENDING for r in leg_results):
         return False
-    leg_decimals = [leg.odds_decimal for leg in bet.legs]
+    leg_decimals = [leg.odds_decimal for leg in legs]
     if bet.bet_type == "parlay":
         status, payout, result = grading.settle_parlay(
             leg_results, leg_decimals, bet.stake_units
@@ -503,7 +537,9 @@ def settle_user_bets(db: Session, user_id: uuid.UUID) -> dict[str, int]:
     """Idempotently settle all of a user's pending bets, one game at a time.
 
     Each final game commits on its own. An error rolls that game back and
-    does not grade it again until the stuck claim is reset. Returns counts.
+    does not grade it again until the claim lease expires or the stuck
+    claim is reset. Pending bets on an already settled game are graded in
+    placed_at, then bet id, order. Returns counts.
     """
     from .settlement_service import settle_pending_bets
 

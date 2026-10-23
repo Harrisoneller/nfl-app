@@ -9,8 +9,10 @@ retry. It does not change scores, bets, or Sparky results, and it does not
 VACUUM.
 
 Dry-run is the default. Nothing is written unless ``--apply`` is passed.
-The script refuses to run when ``APP_ENV`` is production or the database URL
-looks like a hosted production database. Do not point it at production.
+The script fails closed: it only connects when ``APP_ENV`` is not production
+and the database host is on the allowlist (localhost, 127.0.0.1, ::1, or
+the ``postgres`` test container). A local SQLite file has no host and is
+allowed. Every other host is refused. Do not point it at production.
 
 Usage (from ``backend/``)::
 
@@ -22,36 +24,62 @@ from __future__ import annotations
 import argparse
 import sys
 
-_REMOTE_MARKERS = (
-    "railway",
-    "rlwy.net",
-    "neon.tech",
-    "amazonaws.com",
-    "render.com",
-    "supabase.co",
-    "heroku.com",
-)
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
+
+# Exact hosts. Matching is not a substring check, so a name that merely
+# contains "localhost" is refused. ``postgres`` is the test database container.
+_ALLOWED_DB_HOSTS = frozenset({
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "postgres",
+})
 
 
-def guard_not_production(app_env: str, database_url: str) -> None:
-    """Raise ``SystemExit`` before a connection when the target looks production.
+def _normalized_host(host: str | None) -> str:
+    value = (host or "").strip().lower()
+    if value.startswith("[") and value.endswith("]"):
+        return value[1:-1]
+    return value
 
-    The message does not include the URL (it may carry a password).
+
+def guard_local_database(app_env: str, database_url: str) -> None:
+    """Raise ``SystemExit`` unless the target is local or the test database.
+
+    Production is refused even when the host would otherwise be allowed.
+    The message does not include the URL (it may carry a password) or the
+    host that was rejected.
     """
-    env = (app_env or "").strip().lower()
-    url = (database_url or "").strip().lower()
-    if env == "production" or any(marker in url for marker in _REMOTE_MARKERS):
+    if (app_env or "").strip().lower() == "production":
         raise SystemExit(
-            "refusing to reset stuck settlements: target looks like production. "
+            "refusing to reset stuck settlements: APP_ENV is production. "
             "This script does not run against production."
         )
+    try:
+        url = make_url(database_url or "")
+    except ArgumentError:
+        raise SystemExit(
+            "refusing to reset stuck settlements: database host is not on the "
+            "allowlist. This script does not run against production."
+        ) from None
+    host = _normalized_host(url.host)
+    driver = (url.drivername or "").split("+", 1)[0]
+    if driver == "sqlite" and not host:
+        return
+    if host in _ALLOWED_DB_HOSTS:
+        return
+    raise SystemExit(
+        "refusing to reset stuck settlements: database host is not on the "
+        "allowlist. This script does not run against production."
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Find games stuck mid-settlement and reset the claim. "
-            "Dry-run unless --apply. Refuses production. Does not VACUUM."
+            "Dry-run unless --apply. Local and test hosts only. Does not VACUUM."
         )
     )
     parser.add_argument(
@@ -95,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.config import get_settings
 
     settings = get_settings()
-    guard_not_production(settings.app_env, settings.database_url)
+    guard_local_database(settings.app_env, settings.database_url)
 
     from app.db import SessionLocal
 

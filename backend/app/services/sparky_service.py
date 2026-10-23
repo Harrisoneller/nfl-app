@@ -1386,15 +1386,37 @@ def _dedupe_predictions(
         new_day = pred.slate_date or date.min
         if new_day >= prev_day:
             by_event[pred.event_id] = pred
-    return list(by_event.values()), collapsed
+    ordered = sorted(
+        by_event.values(),
+        key=lambda pred: (pred.slate_date or date.min, pred.event_id),
+    )
+    return ordered, collapsed
+
+
+def _kickoff_key(start: datetime | None, commence: datetime, game_id: str) -> tuple[float, str]:
+    """Closest kickoff, then game id. Naive timestamps are UTC (SQLite)."""
+    if start is None:
+        return (float("inf"), game_id)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = start.astimezone(timezone.utc)
+    kick = commence if commence.tzinfo is None else commence.astimezone(timezone.utc)
+    if kick.tzinfo is None:
+        kick = kick.replace(tzinfo=timezone.utc)
+    return (abs((start - kick).total_seconds()), game_id)
 
 
 def _resolve_prediction_game(db: Session, pred: SparkyGamePrediction) -> Game | None:
-    """Match a prediction to a Game by event id, then teams + kickoff window."""
+    """Match a prediction to a Game by event id, then teams + kickoff window.
+
+    When several games sit in the window, the closest kickoff wins and an
+    equal distance uses the smaller game id.
+    """
     game = db.get(Game, pred.event_id)
     if game is not None or pred.commence_time is None:
         return game
-    return (
+    candidates = (
         db.query(Game)
         .filter(
             ((Game.home_team_id == pred.home_team_id) & (Game.away_team_id == pred.away_team_id))
@@ -1404,7 +1426,13 @@ def _resolve_prediction_game(db: Session, pred: SparkyGamePrediction) -> Game | 
             pred.commence_time - timedelta(hours=4),
             pred.commence_time + timedelta(hours=4),
         ))
-        .first()
+        .all()
+    )
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda game: _kickoff_key(game.start_time, pred.commence_time, game.id),
     )
 
 
@@ -1491,7 +1519,8 @@ def settle_sparky_results(
     for r in recent_rankings:
         by_slate[r.slate_id].append(r)
 
-    for slate_id, rows in by_slate.items():
+    for slate_id in sorted(by_slate):
+        rows = by_slate[slate_id]
         if not rows:
             continue
         try:
@@ -1539,6 +1568,7 @@ def _settle_one_parlay_slate(
     Returns False when there is nothing to write (not ready, or already stored
     with the same outcome). Caller commits or rolls back.
     """
+    rows = sorted(rows, key=lambda row: (row.rank if row.rank is not None else 99, row.id or 0))
     sample_legs = rows[0].legs or []
     leg_ids = [str(leg.get("event_id")) for leg in sample_legs if leg.get("event_id")]
     if len(leg_ids) != 3:
@@ -1547,7 +1577,7 @@ def _settle_one_parlay_slate(
         return False
 
     winning_rank: int | None = None
-    for ranking in sorted(rows, key=lambda x: x.rank or 99):
+    for ranking in rows:
         hit = True
         for leg in (ranking.legs or []):
             eid = str(leg.get("event_id") or "")
