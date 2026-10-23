@@ -95,6 +95,7 @@ export type Widget = {
   sort_order: number;
   last_rendered_at: string | null;
   created_at: string;
+  is_public: boolean;
 };
 
 async function parseApiError(res: Response): Promise<string> {
@@ -2011,6 +2012,10 @@ export const api = {
       body: JSON.stringify(spec),
     }),
   deleteWidget: (id: string) => req<{ ok: boolean }>(`/widgets/${id}`, { method: "DELETE" }),
+  revokeWidget: (id: string) =>
+    req<{ ok: boolean; is_public: boolean }>(`/widgets/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+    }),
 
   // sparky — betting prediction & parlay intelligence
   sparkySlate: (

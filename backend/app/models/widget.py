@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,10 @@ class Widget(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     spec: Mapped[dict] = mapped_column(_JSON, nullable=False)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Existing rows stay shareable. The owner turns this off via POST /revoke.
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_rendered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, server_default=func.now()

@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models.widget import Widget
-from ..schemas.widget import WidgetSpec
+from ..schemas.widget import MAX_WIDGET_LIMIT, MAX_WIDGET_LIST_ITEMS, WidgetSpec
 from . import comparison_service, news_service, odds_service, scores_service, stats_service
 
 # Keys that must never appear on the anonymous share payload, at any depth.
@@ -51,6 +51,60 @@ _DISPLAY_KEYS = (
     "color_by",
 )
 
+# Params that are lists of ids or names. A non-list value must not be iterated.
+_LIST_PARAM_KEYS = frozenset({"team_ids", "names", "columns", "ids"})
+
+
+def bound_limit(value: Any) -> int | None:
+    """Clamp a limit into 1..MAX_WIDGET_LIMIT. Unusable values become None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 1:
+        return None
+    return min(value, MAX_WIDGET_LIMIT)
+
+
+def bound_params(params: Any) -> dict[str, Any]:
+    """Cap `limit` and every list param. Drop a limit that is not a positive int."""
+    raw = params if isinstance(params, dict) else {}
+    bounded: dict[str, Any] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        if key == "limit":
+            limit = bound_limit(value)
+            if limit is not None:
+                bounded[key] = limit
+            continue
+        if key in _LIST_PARAM_KEYS:
+            bounded[key] = list(value[:MAX_WIDGET_LIST_ITEMS]) if isinstance(value, list) else []
+            continue
+        if isinstance(value, list):
+            bounded[key] = value[:MAX_WIDGET_LIST_ITEMS]
+            continue
+        bounded[key] = value
+    return bounded
+
+
+def bound_display(display: Any) -> dict[str, Any]:
+    raw = display if isinstance(display, dict) else {}
+    kept = {key: raw[key] for key in _DISPLAY_KEYS if key in raw}
+    columns = kept.get("columns")
+    if "columns" in kept:
+        if isinstance(columns, list):
+            kept["columns"] = [
+                item for item in columns[:MAX_WIDGET_LIST_ITEMS] if isinstance(item, str)
+            ]
+        else:
+            kept["columns"] = []
+    if "limit" in kept:
+        limit = bound_limit(kept["limit"])
+        if limit is None:
+            kept.pop("limit")
+        else:
+            kept["limit"] = limit
+    return kept
+
 
 def strip_private(value: Any) -> Any:
     """Drop owner, chat, and note fields recursively. Leave other values intact."""
@@ -76,7 +130,6 @@ def public_spec(spec: dict[str, Any] | None) -> dict[str, Any]:
     source = raw.get("data_source") if isinstance(raw.get("data_source"), dict) else {}
     display = raw.get("display") if isinstance(raw.get("display"), dict) else {}
     params = source.get("params") if isinstance(source.get("params"), dict) else {}
-    kept_display = {key: display[key] for key in _DISPLAY_KEYS if key in display}
     return {
         "title": _text(raw.get("title")),
         "kind": _text(raw.get("kind")),
@@ -84,9 +137,9 @@ def public_spec(spec: dict[str, Any] | None) -> dict[str, Any]:
         "data_source": {
             "service": _text(source.get("service")),
             "method": _text(source.get("method")),
-            "params": strip_private(params),
+            "params": bound_params(strip_private(params)),
         },
-        "display": strip_private(kept_display),
+        "display": strip_private(bound_display(display)),
     }
 
 
@@ -146,12 +199,22 @@ def delete(db: Session, user_id: uuid.UUID, widget_id: uuid.UUID) -> bool:
     return True
 
 
+def revoke_public(db: Session, user_id: uuid.UUID, widget_id: uuid.UUID) -> bool:
+    """Owner-only. Hide the widget from GET /widgets/{id}/public."""
+    w = db.query(Widget).filter(Widget.id == widget_id, Widget.user_id == user_id).first()
+    if w is None:
+        return False
+    w.is_public = False
+    db.commit()
+    return True
+
+
 async def render(db: Session, spec: dict[str, Any]) -> dict[str, Any]:
     """Run the data source described in a spec and return its payload."""
     ds = spec.get("data_source") or {}
     service = ds.get("service")
     method = ds.get("method")
-    params = ds.get("params") or {}
+    params = bound_params(ds.get("params") or {})
 
     if service == "comparison" and method == "compare_teams":
         return await comparison_service.compare_teams(
