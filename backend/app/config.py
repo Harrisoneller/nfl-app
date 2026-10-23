@@ -31,6 +31,26 @@ def _cors_www_alias(origin: str) -> str | None:
     return f"{scheme}://www.{host}{port}"
 
 
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_VERCEL_APP_HOST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+)
+
+
+def _dns_label(value: str) -> str | None:
+    label = (value or "").strip().lower()
+    if _DNS_LABEL.fullmatch(label):
+        return label
+    return None
+
+
+def _vercel_app_host(value: str) -> str | None:
+    host = (value or "").strip().lower().rstrip("/").removeprefix("https://")
+    if not host.endswith(".vercel.app") or not _VERCEL_APP_HOST.fullmatch(host):
+        return None
+    return host
+
+
 def expand_cors_origins(origins: list[str]) -> list[str]:
     """Dedupe and add www/apex pairs so both https://site.com and https://www.site.com work."""
     seen: set[str] = set()
@@ -197,10 +217,20 @@ class Settings(BaseSettings):
     # This project's own sites. Merged into the allowlist (www/apex pairs expanded).
     # Override with CORS_PRODUCTION_ORIGINS. Empty string disables the extra list.
     cors_production_origins: str = "https://statletics.io"
-    # Credentialed browser calls are limited to this Vercel project's hosts:
-    # https://<slug>.vercel.app and https://<slug>-<preview>.vercel.app.
-    # Not every *.vercel.app site. Empty slug disables the regex.
+    # Credentialed *.vercel.app origins are an exact list, not a prefix match.
+    # https://<project>.vercel.app
+    # https://<project>-<team>.vercel.app
+    # https://<project>-git-<branch>-<team>.vercel.app
+    # https://<deployment-prefix>-<9 char id>-<team>.vercel.app
+    # Lookalikes such as <project>-evil.vercel.app do not match.
     cors_vercel_project: str = "nfl-app"
+    cors_vercel_team: str = "harrisonellers-projects"
+    # Vercel shortens this project's deployment hostname to ``nfl-<id>-<team>``.
+    # Empty disables that alternative.
+    cors_vercel_deployment_prefix: str = "nfl"
+    # Extra exact vercel.app hosts (comma-separated). The assigned production
+    # alias is not the bare project name.
+    cors_vercel_exact_hosts: str = "nfl-app-wheat.vercel.app"
     cors_allow_vercel_regex: bool = True
 
     @field_validator("cors_origins", mode="before")
@@ -235,19 +265,36 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_regex(self) -> str | None:
-        """Preview hosts for this Vercel project only.
+        """Exact Vercel hosts for this project and team.
 
-        Starlette matches with ``fullmatch``, so a sibling project on
-        ``*.vercel.app`` does not get credentialed access.
+        Starlette matches with ``fullmatch``. A name that merely starts with
+        the project slug, or a vercel.app host with an extra suffix, does not
+        match.
         """
         if not self.cors_allow_vercel_regex:
             return None
-        slug = (self.cors_vercel_project or "").strip().lower()
-        # One DNS label: letters, digits, hyphens. Reject anything that could
-        # widen the pattern (dots, stars, slashes).
-        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", slug):
+        project = _dns_label(self.cors_vercel_project)
+        team = _dns_label(self.cors_vercel_team)
+        if not project or not team:
             return None
-        return rf"https://{re.escape(slug)}(?:-[a-z0-9-]+)?\.vercel\.app"
+        project_re = re.escape(project)
+        team_re = re.escape(team)
+        branch = r"(?:[a-z0-9]+(?:-[a-z0-9]+)*)"
+        parts = [
+            rf"https://{project_re}\.vercel\.app",
+            rf"https://{project_re}-{team_re}\.vercel\.app",
+            rf"https://{project_re}-git-{branch}-{team_re}\.vercel\.app",
+        ]
+        prefix = _dns_label(self.cors_vercel_deployment_prefix)
+        if prefix:
+            parts.append(
+                rf"https://{re.escape(prefix)}-[a-z0-9]{{9}}-{team_re}\.vercel\.app"
+            )
+        for host in self.cors_vercel_exact_hosts.split(","):
+            exact = _vercel_app_host(host)
+            if exact:
+                parts.append(re.escape(f"https://{exact}"))
+        return "(?:" + "|".join(parts) + ")"
 
     @property
     def cors_allows_only_localhost(self) -> bool:

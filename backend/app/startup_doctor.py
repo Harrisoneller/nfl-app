@@ -56,25 +56,17 @@ class ProductionConfigError(RuntimeError):
     """Production startup refused because auth would fail open."""
 
 
-def _env_blank(name: str) -> bool:
-    raw = os.environ.get(name)
-    return raw is None or not raw.strip()
-
-
 def is_production_runtime(settings: Settings | None = None) -> bool:
     """True when this process should fail closed.
 
     Production is any of:
 
     * ``APP_ENV=production`` (``settings.app_env``).
-    * ``RAILWAY_ENVIRONMENT`` or ``RAILWAY_ENVIRONMENT_NAME`` equal to
-      ``production`` (any case), even when ``APP_ENV`` is explicitly
-      ``development``.
-    * ``APP_ENV`` unset or blank, and either Railway variable set to any
-      non-empty value. Railway names preview environments something other
-      than ``production``; those still must not boot as "everyone is admin".
+    * ``RAILWAY_ENVIRONMENT`` or ``RAILWAY_ENVIRONMENT_NAME`` set to any
+      non-empty value. That includes ``APP_ENV=development`` on Railway, so
+      labeling the process development does not skip the boot check.
 
-    Dev and pytest set ``APP_ENV=development`` and leave the Railway
+    Dev and pytest set ``APP_ENV=development`` and leave both Railway
     variables unset, so they stay permissive.
     """
     s = settings if settings is not None else get_settings()
@@ -84,9 +76,7 @@ def is_production_runtime(settings: Settings | None = None) -> bool:
         os.environ.get("RAILWAY_ENVIRONMENT", ""),
         os.environ.get("RAILWAY_ENVIRONMENT_NAME", ""),
     )
-    if any(value.strip().lower() == "production" for value in railway_values):
-        return True
-    return _env_blank("APP_ENV") and any(value.strip() for value in railway_values)
+    return any(value.strip() for value in railway_values)
 
 
 def _secret_is_placeholder(secret: str | None) -> bool:
