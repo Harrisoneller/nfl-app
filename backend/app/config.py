@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     )
 
     # Core
-    app_env: Literal["development", "production"] = "development"
+    # "test" is accepted so the reset script can require an explicit
+    # non-production APP_ENV. The default still applies when the variable
+    # is absent; the reset script does not use that default.
+    app_env: Literal["development", "test", "production"] = "development"
     # web = API only (Railway public service). worker = scheduler + ingest/derive.
     # Local dev: use worker (or two terminals with web + worker) — see RUNBOOK.
     app_role: Literal["web", "worker"] = "worker"
@@ -163,6 +166,9 @@ class Settings(BaseSettings):
     # Boot: none | minimal (seed + current-season schedule) | full (legacy dev warmups)
     boot_warmup_level: Literal["none", "minimal", "full"] = "minimal"
     schedule_scores_seconds: int = 30
+    # A game left in settlement_status='settling' is reclaimed after this
+    # many seconds. The next scores tick grades it again and logs a warning.
+    settlement_claim_ttl_seconds: int = 15 * 60
     schedule_news_seconds: int = 300
     schedule_odds_seconds: int = 900  # deprecated for odds (cron-driven now); kept for back-compat
     # Heavy derive chain (materialize, elo, profiles, MC, awards) — UTC hours
