@@ -6,6 +6,7 @@ directly so test overrides stay localized.
 """
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,26 @@ def _cors_www_alias(origin: str) -> str | None:
     if host.startswith("www."):
         return f"{scheme}://{host[4:]}{port}"
     return f"{scheme}://www.{host}{port}"
+
+
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_VERCEL_APP_HOST = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+)
+
+
+def _dns_label(value: str) -> str | None:
+    label = (value or "").strip().lower()
+    if _DNS_LABEL.fullmatch(label):
+        return label
+    return None
+
+
+def _vercel_app_host(value: str) -> str | None:
+    host = (value or "").strip().lower().rstrip("/").removeprefix("https://")
+    if not host.endswith(".vercel.app") or not _VERCEL_APP_HOST.fullmatch(host):
+        return None
+    return host
 
 
 def expand_cors_origins(origins: list[str]) -> list[str]:
@@ -191,9 +212,25 @@ class Settings(BaseSettings):
     player_props_lookahead_days: int = 7    # only pull props for games this close
 
     # CORS — browser Origin must match allow_origins and/or cors_origin_regex (see main.py).
-    # Production: set CORS_ORIGINS to your Vercel URL(s), comma-separated, no trailing slash.
+    # Production: set CORS_ORIGINS to extra frontend URLs, comma-separated, no trailing slash.
     cors_origins: str = "http://localhost:3000"
-    # Also allow https://<anything>.vercel.app (production + preview deploys).
+    # This project's own sites. Merged into the allowlist (www/apex pairs expanded).
+    # Override with CORS_PRODUCTION_ORIGINS. Empty string disables the extra list.
+    cors_production_origins: str = "https://statletics.io"
+    # Credentialed *.vercel.app origins are an exact list, not a prefix match.
+    # https://<project>.vercel.app
+    # https://<project>-<team>.vercel.app
+    # https://<project>-git-<branch>-<team>.vercel.app
+    # https://<deployment-prefix>-<9 char id>-<team>.vercel.app
+    # Lookalikes such as <project>-evil.vercel.app do not match.
+    cors_vercel_project: str = "nfl-app"
+    cors_vercel_team: str = "harrisonellers-projects"
+    # Vercel shortens this project's deployment hostname to ``nfl-<id>-<team>``.
+    # Empty disables that alternative.
+    cors_vercel_deployment_prefix: str = "nfl"
+    # Extra exact vercel.app hosts (comma-separated). The assigned production
+    # alias is not the bare project name.
+    cors_vercel_exact_hosts: str = "nfl-app-wheat.vercel.app"
     cors_allow_vercel_regex: bool = True
 
     @field_validator("cors_origins", mode="before")
@@ -218,14 +255,46 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        raw = [u.strip().rstrip("/") for u in self.cors_origins.split(",") if u.strip()]
-        return expand_cors_origins(raw)
+        configured = [u.strip().rstrip("/") for u in self.cors_origins.split(",") if u.strip()]
+        production = [
+            u.strip().rstrip("/")
+            for u in self.cors_production_origins.split(",")
+            if u.strip()
+        ]
+        return expand_cors_origins([*configured, *production])
 
     @property
     def cors_origin_regex(self) -> str | None:
+        """Exact Vercel hosts for this project and team.
+
+        Starlette matches with ``fullmatch``. A name that merely starts with
+        the project slug, or a vercel.app host with an extra suffix, does not
+        match.
+        """
         if not self.cors_allow_vercel_regex:
             return None
-        return r"https://.*\.vercel\.app"
+        project = _dns_label(self.cors_vercel_project)
+        team = _dns_label(self.cors_vercel_team)
+        if not project or not team:
+            return None
+        project_re = re.escape(project)
+        team_re = re.escape(team)
+        branch = r"(?:[a-z0-9]+(?:-[a-z0-9]+)*)"
+        parts = [
+            rf"https://{project_re}\.vercel\.app",
+            rf"https://{project_re}-{team_re}\.vercel\.app",
+            rf"https://{project_re}-git-{branch}-{team_re}\.vercel\.app",
+        ]
+        prefix = _dns_label(self.cors_vercel_deployment_prefix)
+        if prefix:
+            parts.append(
+                rf"https://{re.escape(prefix)}-[a-z0-9]{{9}}-{team_re}\.vercel\.app"
+            )
+        for host in self.cors_vercel_exact_hosts.split(","):
+            exact = _vercel_app_host(host)
+            if exact:
+                parts.append(re.escape(f"https://{exact}"))
+        return "(?:" + "|".join(parts) + ")"
 
     @property
     def cors_allows_only_localhost(self) -> bool:

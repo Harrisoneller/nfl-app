@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
+from ..deps import get_db, require_admin
 from ..services import (
     awards_service,
     backtest_service,
@@ -262,7 +262,13 @@ def current_ratings(season: int | None = None, db: Session = Depends(get_db)):
     return {"ratings": rows}
 
 
-@router.post("/admin/elo/rebuild")
+# Model rebuilds, training, and lifecycle writes. Router-level
+# require_admin so a new route added here cannot ship without the gate.
+# Anonymous callers get 401; a signed-in non-admin gets 403.
+_admin = APIRouter(dependencies=[Depends(require_admin)])
+
+
+@_admin.post("/elo/rebuild")
 async def rebuild_elo(seasons: str | None = None, db: Session = Depends(get_db)):
     """Recompute Elo from scratch for the given seasons (comma-separated).
 
@@ -280,7 +286,7 @@ async def rebuild_elo(seasons: str | None = None, db: Session = Depends(get_db))
     return {"seasons": season_list, "rows_written": rows}
 
 
-@router.post("/admin/ml/train")
+@_admin.post("/ml/train")
 async def train_ml(seasons: str | None = None, db: Session = Depends(get_db)):
     """Train the XGBoost margin model. Defaults to last 4 seasons."""
     if seasons:
@@ -291,7 +297,7 @@ async def train_ml(seasons: str | None = None, db: Session = Depends(get_db)):
     return await ml_predictions_service.train(db, season_list)
 
 
-@router.get("/admin/lifecycle/latest")
+@_admin.get("/lifecycle/latest")
 def lifecycle_latest(db: Session = Depends(get_db)):
     """Latest lifecycle run summary + promotion decision."""
     latest = model_lifecycle_service.latest_run(db)
@@ -299,7 +305,7 @@ def lifecycle_latest(db: Session = Depends(get_db)):
     return {"latest": latest, "champion": champion}
 
 
-@router.post("/admin/lifecycle/run")
+@_admin.post("/lifecycle/run")
 async def lifecycle_run(
     season: int | None = None,
     force: bool = False,
@@ -311,3 +317,6 @@ async def lifecycle_run(
         season=season,
         force=force,
     )
+
+
+router.include_router(_admin, prefix="/admin")

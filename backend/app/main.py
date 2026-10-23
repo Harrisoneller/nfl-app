@@ -49,6 +49,7 @@ from .routers import (
     widgets,
 )
 from .sentry_init import init_sentry
+from .startup_doctor import enforce_production_auth
 from .startup_doctor import run as run_startup_doctor
 
 configure_logging()
@@ -58,6 +59,9 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Outside the doctor try/except below: a production auth failure must
+    # abort startup, not get logged and ignored. Dev and test return here.
+    enforce_production_auth(settings)
     sentry_on = init_sentry()
     from .cache import get_cache
 
@@ -205,9 +209,11 @@ def create_app() -> FastAPI:
     app.include_router(bets.router, prefix="/bets", tags=["bets"])
     app.include_router(sparky.router, prefix="/sparky", tags=["sparky"])
     app.include_router(h2h.router, prefix="/h2h", tags=["h2h"])
-    # /admin/* is gated: overrides carries require_admin on its own router,
-    # and the refresh/cache routes get the same guard here (they were public
-    # before — dev convenience, but no reason to leave them open).
+    # /admin/* is gated with require_admin. Overrides, params, rankings, and
+    # reruns carry the dependency on their own routers; refresh/cache routes
+    # get it here. /admin/cost-summary (health router) and /predictions/admin/*
+    # carry it on those routers. Anonymous callers get 401; a signed-in
+    # non-admin gets 403.
     app.include_router(
         admin_overrides.router, prefix="/admin/overrides", tags=["admin"],
     )

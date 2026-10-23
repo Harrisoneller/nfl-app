@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..deps import get_db
+from ..deps import get_db, require_admin
 from ..rate_limits import limiter
 from ..services.cost_service import ledger
 
@@ -67,7 +67,12 @@ def ready(db: Session = Depends(get_db)) -> dict:
     return {"ok": ok, "checks": checks}
 
 
-@router.get("/admin/cost-summary")
+@router.get("/admin/cost-summary", dependencies=[Depends(require_admin)])
 def cost_summary() -> dict:
-    """Today's AI spend at a glance — global + top users."""
+    """Today's AI spend at a glance — global + top users.
+
+    Admin only. The ledger includes per-user spend, so this is not a
+    public health probe. Anonymous callers get 401; a signed-in
+    non-admin gets 403.
+    """
     return ledger.summary()
