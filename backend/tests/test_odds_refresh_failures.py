@@ -192,7 +192,7 @@ async def test_job_refresh_odds_auth_failure_marks_run_failed(
     db = factory()
     try:
         run = db.query(DataSyncRun).filter(DataSyncRun.domain == "odds").one()
-        assert run.status == "failed"
+        assert run.status == "error"
         assert error_code in (run.message or "")
         assert API_KEY not in (run.message or "")
     finally:
@@ -239,7 +239,18 @@ async def test_props_per_event_auth_failure_marks_job_failed(
                 json={"message": "rejected", "error_code": error_code},
                 headers=_QUOTA,
             )
-        return httpx.Response(200, json=[], headers={"x-requests-remaining": "41", "x-requests-used": "9"})
+        # Non-empty game odds so an empty 200 is not what fails this job.
+        return httpx.Response(
+            200,
+            json=[{
+                "id": "evt-1",
+                "commence_time": soon,
+                "home_team": "Kansas City Chiefs",
+                "away_team": "Buffalo Bills",
+                "bookmakers": [],
+            }],
+            headers={"x-requests-remaining": "41", "x-requests-used": "9"},
+        )
 
     factory = _patch_odds_job(monkeypatch, handler)
 
@@ -274,8 +285,148 @@ async def test_props_per_event_auth_failure_marks_job_failed(
     db = factory()
     try:
         run = db.query(DataSyncRun).filter(DataSyncRun.domain == "odds").one()
-        assert run.status == "failed"
+        assert run.status == "error"
         assert error_code in (run.message or "")
         assert API_KEY not in (run.message or "")
+    finally:
+        db.close()
+
+
+async def _run_odds_job(monkeypatch, handler):
+    from app.jobs.scheduler import _job_refresh_odds
+
+    factory = _patch_odds_job(monkeypatch, handler)
+    job = SimpleNamespace(
+        id="odds",
+        func=_job_refresh_odds,
+        args=(),
+        kwargs={},
+        misfire_grace_time=None,
+    )
+    events = await run_coroutine_job(
+        job, "default", [datetime.now(UTC)], "apscheduler.scheduler",
+    )
+    return factory, events
+
+
+async def _assert_upstream_failure(
+    monkeypatch, caplog, capsys, handler, needle: str, *, expect_quota: bool = True,
+):
+    from app.logging_config import configure_logging, install_http_secret_redaction
+    from app.models.data_sync_run import DataSyncRun
+
+    configure_logging()
+    install_http_secret_redaction()
+    caplog.set_level(logging.DEBUG)
+    factory, events = await _run_odds_job(monkeypatch, handler)
+    text = _ANSI.sub("", capsys.readouterr().out + caplog.text)
+
+    assert events and events[0].code == EVENT_JOB_ERROR
+    assert "executed successfully" not in text
+    assert API_KEY not in text
+    assert needle in text
+    if expect_quota:
+        assert "x-requests-remaining" in text
+        assert "x-requests-used" in text
+        assert "/sports/americanfootball_nfl/odds" in text
+        assert "api.the-odds-api.com" not in text.split("odds_api_response", 1)[-1].split("\n", 1)[0]
+
+    db = factory()
+    try:
+        run = db.query(DataSyncRun).filter(DataSyncRun.domain == "odds").one()
+        assert run.status == "error"
+        assert API_KEY not in (run.message or "")
+        assert needle in (run.message or "")
+    finally:
+        db.close()
+    return text
+
+
+@pytest.mark.parametrize(
+    ("status_code", "needle"),
+    [(429, "rate_limited"), (500, "HTTP 500"), (503, "HTTP 503")],
+)
+async def test_job_refresh_odds_upstream_http_is_error(
+    monkeypatch, caplog, capsys, status_code, needle,
+):
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(status_code, json={"message": "nope"}, headers=_QUOTA)
+
+    await _assert_upstream_failure(monkeypatch, caplog, capsys, handler, needle)
+    assert len(calls) == 1
+
+
+async def test_job_refresh_odds_empty_200_is_degraded(monkeypatch, caplog, capsys):
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json=[], headers=_QUOTA)
+
+    text = await _assert_upstream_failure(monkeypatch, caplog, capsys, handler, "degraded")
+    assert len(calls) == 1
+    assert "odds_api_empty" in text
+    assert API_KEY not in text
+
+
+async def test_job_refresh_odds_timeout_is_error(monkeypatch, caplog, capsys):
+    from app.adapters.data.odds_api import TheOddsApiAdapter
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(TheOddsApiAdapter._get.retry, "sleep", _no_sleep)
+    monkeypatch.setattr(TheOddsApiAdapter._get_object.retry, "sleep", _no_sleep)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        raise httpx.ReadTimeout("timed out")
+
+    await _assert_upstream_failure(
+        monkeypatch, caplog, capsys, handler, "RetryError", expect_quota=False,
+    )
+    assert len(calls) == 2
+
+
+async def test_empty_events_list_does_not_fail_the_job(monkeypatch, caplog, capsys):
+    """An empty /events payload is a normal offseason result, not a degraded odds pull."""
+    from apscheduler.events import EVENT_JOB_EXECUTED
+
+    from app.logging_config import configure_logging
+    from app.models.data_sync_run import DataSyncRun
+
+    configure_logging()
+    caplog.set_level(logging.INFO)
+    soon = (datetime.now(UTC) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/events") and "/events/" not in path:
+            return httpx.Response(200, json=[], headers=_QUOTA)
+        return httpx.Response(
+            200,
+            json=[{
+                "id": "evt-1",
+                "commence_time": soon,
+                "home_team": "Kansas City Chiefs",
+                "away_team": "Buffalo Bills",
+                "bookmakers": [],
+            }],
+            headers=_QUOTA,
+        )
+
+    factory, events = await _run_odds_job(monkeypatch, handler)
+    text = _ANSI.sub("", capsys.readouterr().out + caplog.text)
+    assert events and events[0].code == EVENT_JOB_EXECUTED
+    assert "executed successfully" in text
+    assert API_KEY not in text
+    db = factory()
+    try:
+        run = db.query(DataSyncRun).filter(DataSyncRun.domain == "odds").one()
+        assert run.status == "ok"
     finally:
         db.close()

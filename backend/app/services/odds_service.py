@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from ..adapters.data.odds_api import OddsApiAuthError, OddsFetchStatus, TheOddsApiAdapter
 from ..config import get_settings
-from ..logging_config import get_logger, redact_secrets
+from ..logging_config import get_logger
 from ..models.game import Game
 from ..models.odds import OddsLine
 from . import artifact_cache
@@ -213,13 +213,15 @@ async def refresh_odds(db: Session, *, force: bool = False) -> OddsRefreshResult
         message = result.message
         events = result.events
     except OddsApiAuthError:
-        # 401/402 must fail the scheduled job. Do not record a successful pull.
+        # 401/402 must fail the scheduled job. Do not record a successful pull,
+        # and do not stamp last-refresh — the next cron should try again.
         raise
-    except Exception as e:  # noqa: BLE001
-        safe = redact_secrets(str(e))
-        log.warning("odds_fetch_failed", error=safe[:200])
+    except Exception as e:  # noqa: BLE001 — timeouts surface as RetryError
+        # Do not interpolate the exception: HTTPStatusError/RetryError can
+        # carry the request URL, which includes apiKey.
+        log.error("odds_fetch_failed", error_type=type(e).__name__)
         status = "error"
-        message = safe
+        message = f"The Odds API request failed ({type(e).__name__})"
     finally:
         await adapter.aclose()
 
@@ -260,16 +262,27 @@ async def refresh_odds(db: Session, *, force: bool = False) -> OddsRefreshResult
         except Exception as e:  # noqa: BLE001
             log.warning("sparky_snapshot_capture_failed", error=str(e)[:160])
 
-    # Record the pull time (any outcome) so the min-interval guard holds across
-    # restarts and we don't re-hit a rate-limited/erroring API every cron tick.
+    # Record the pull time (any outcome that reached the API) so the
+    # min-interval guard holds across restarts and we don't re-hit a
+    # rate-limited or empty API every cron tick. 401/402 never get here.
     _set_last_refresh(db, status, lines_in_db)
-    log.info(
-        "odds_refreshed",
-        lines=n,
-        status=status,
-        upstream_events=len(events),
-        lines_in_db=lines_in_db,
-    )
+    if status in ("rate_limited", "error", "degraded", "unauthorized"):
+        log.error(
+            "odds_refresh_failed",
+            lines=n,
+            status=status,
+            upstream_events=len(events),
+            lines_in_db=lines_in_db,
+            message=message,
+        )
+    else:
+        log.info(
+            "odds_refreshed",
+            lines=n,
+            status=status,
+            upstream_events=len(events),
+            lines_in_db=lines_in_db,
+        )
     return {
         "lines": n,
         "configured": configured,

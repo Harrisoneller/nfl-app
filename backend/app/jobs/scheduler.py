@@ -19,7 +19,11 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 
-from ..adapters.data.odds_api import OddsApiAuthError
+from ..adapters.data.odds_api import (
+    UPSTREAM_FAILURE_STATUSES,
+    OddsApiAuthError,
+    OddsUpstreamError,
+)
 from ..config import get_settings
 from ..logging_config import get_logger, redact_secrets
 from ..services import (
@@ -149,8 +153,23 @@ async def _refresh_context(db: Session) -> dict:
     return await context_service.refresh_context(db, season, week)
 
 
+def _reject_upstream_status(status: object, message: object) -> None:
+    """Raise so ``run_job`` stores ``error`` instead of a successful odds run.
+
+    Intentional skips (``skipped_fresh``, ``skipped_offseason``, ``disabled``)
+    are not failures. 429, 5xx, timeouts, and an empty odds payload are.
+    """
+    if status not in UPSTREAM_FAILURE_STATUSES:
+        return
+    detail = message if isinstance(message, str) and message else str(status)
+    raise OddsUpstreamError(str(status), detail)
+
+
 async def _refresh_odds(db: Session) -> dict:
     result = await odds_service.refresh_odds(db)
+    # 429 / 5xx / timeout / empty odds payload must fail the job before we
+    # spend more quota on props. 401/402 already raised inside refresh_odds.
+    _reject_upstream_status(result.get("status"), result.get("message"))
     # After odds (and their snapshots) are refreshed, rebuild Sparky's slate so
     # predictions/signals/parlays stay in sync with the latest lines. Best-effort:
     # never let a Sparky error fail the odds job.
@@ -163,19 +182,25 @@ async def _refresh_odds(db: Session) -> dict:
         db.rollback()
         log.warning("sparky_slate_build_failed", error=redact_secrets(str(e))[:160])
     # Player props ride the same cron tick but keep their own (stricter) budget
-    # guards inside refresh_player_props. Ordinary upstream problems stay
-    # best-effort. HTTP 401/402 (rejected key or unpaid quota), including a
-    # per-event props call, fail this job instead of looking successful.
+    # guards inside refresh_player_props. HTTP 401/402, 429, 5xx, and timeouts
+    # fail this job instead of looking successful.
     try:
         from ..services import player_props_service
 
         props = await player_props_service.refresh_player_props(db)
         result = {**result, "player_prop_rows": props.get("rows", 0),
                   "player_prop_status": props.get("status")}
-    except OddsApiAuthError:
+    except (OddsApiAuthError, OddsUpstreamError):
         raise
-    except Exception as e:  # noqa: BLE001
-        log.warning("player_props_refresh_failed", error=redact_secrets(str(e))[:160])
+    except Exception as e:
+        log.error(
+            "player_props_refresh_failed",
+            error_type=type(e).__name__,
+        )
+        raise OddsUpstreamError(
+            "error", f"Player props request failed ({type(e).__name__})",
+        ) from e
+    _reject_upstream_status(props.get("status"), props.get("message"))
     return result
 
 

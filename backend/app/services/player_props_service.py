@@ -23,10 +23,15 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..adapters.data.odds_api import OddsApiAuthError, TheOddsApiAdapter
+from ..adapters.data.odds_api import (
+    UPSTREAM_FAILURE_STATUSES,
+    OddsApiAuthError,
+    OddsUpstreamError,
+    TheOddsApiAdapter,
+)
 from ..cache import cache
 from ..config import get_settings
-from ..logging_config import get_logger, redact_secrets
+from ..logging_config import get_logger
 from ..models.player import Player
 from ..models.player_prop_snapshot import PlayerPropSnapshot
 from . import player_predictions_service as proj
@@ -86,9 +91,10 @@ async def refresh_player_props(db: Session, *, force: bool = False) -> dict[str,
     """Pull player-prop odds for near-kickoff events, append-only.
 
     Budget guards mirror ``odds_service.refresh_odds``: respects a min-interval
-    floor, an event-count cap, and a kickoff lookahead window. Returns a status
-    dict for ordinary upstream problems. HTTP 401/402 propagate as
-    ``OddsApiAuthError`` so the odds job is recorded as failed.
+    floor, an event-count cap, and a kickoff lookahead window. HTTP 401/402
+    propagate as ``OddsApiAuthError``. 429, 5xx, and timeouts propagate as
+    ``OddsUpstreamError``. The odds job records both as ``error``. An empty
+    events list is a normal offseason result and stays ``ok``.
     """
     settings = get_settings()
     if not settings.player_props_enabled:
@@ -112,6 +118,8 @@ async def refresh_player_props(db: Session, *, force: bool = False) -> dict[str,
     try:
         ev_result = await adapter.fetch_events()
         if ev_result.status != "ok":
+            if ev_result.status in UPSTREAM_FAILURE_STATUSES:
+                raise OddsUpstreamError(ev_result.status, ev_result.message)
             return {"status": ev_result.status, "rows": 0, "events": 0,
                     "message": ev_result.message}
 
@@ -141,10 +149,16 @@ async def refresh_player_props(db: Session, *, force: bool = False) -> dict[str,
     except OddsApiAuthError:
         db.rollback()
         raise
-    except Exception as e:  # noqa: BLE001
-        safe = redact_secrets(str(e))[:200]
-        log.warning("player_props_refresh_failed", error=safe)
-        return {"status": "error", "rows": rows, "events": events_pulled, "message": safe}
+    except OddsUpstreamError:
+        db.rollback()
+        raise
+    except Exception as e:  # RetryError after a timeout, or any other transport failure
+        db.rollback()
+        # Do not log str(e): a chained HTTP error can include the request URL.
+        log.error("player_props_refresh_failed", error_type=type(e).__name__)
+        raise OddsUpstreamError(
+            "error", f"Player props request failed ({type(e).__name__})",
+        ) from e
     finally:
         await adapter.aclose()
 

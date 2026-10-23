@@ -5,9 +5,11 @@ user-facing endpoint without a cache check.
 
 HTTP 401 (rejected or exhausted key) and 402 (payment required) are hard
 failures: the response ``error_code`` is logged at error level and
-:class:`OddsApiAuthError` is raised so the odds job is recorded as failed.
-Every response, success or failure, logs ``x-requests-remaining`` and
-``x-requests-used``.
+:class:`OddsApiAuthError` is raised so the odds job is recorded as ``error``.
+429, 5xx, timeouts, and an empty odds payload are also failures
+(:class:`OddsUpstreamError` or a non-ok :class:`OddsFetchResult`). Logs carry
+the endpoint path plus ``x-requests-remaining`` and ``x-requests-used`` — never
+the request URL, which contains ``apiKey``.
 """
 from __future__ import annotations
 
@@ -23,7 +25,9 @@ from ...logging_config import get_logger
 log = get_logger(__name__)
 settings = get_settings()
 
-OddsFetchStatus = Literal["ok", "disabled", "unauthorized", "rate_limited", "error"]
+OddsFetchStatus = Literal[
+    "ok", "disabled", "unauthorized", "rate_limited", "error", "degraded",
+]
 
 # 401: invalid / deactivated key, or usage quota on some plans.
 # 402: payment required / out of credits.
@@ -33,11 +37,10 @@ _AUTH_FAILURE_STATUSES = frozenset({401, 402})
 class OddsApiAuthError(Exception):
     """The Odds API returned HTTP 401 or 402.
 
-    ``job_status`` is how the sync-run recorder distinguishes this from a
-    generic error and persists the run as ``failed``.
+    The scheduled job records this as ``error`` (the same ``DataSyncRun.status``
+    every other failed job uses). The auth reason is ``error_code`` on the
+    exception and in the run message.
     """
-
-    job_status = "failed"
 
     def __init__(self, status_code: int, error_code: str | None) -> None:
         self.status_code = status_code
@@ -46,6 +49,23 @@ class OddsApiAuthError(Exception):
         super().__init__(
             f"The Odds API request failed with HTTP {status_code} (error_code={code})"
         )
+
+
+class OddsUpstreamError(Exception):
+    """429, 5xx, timeout, or an empty odds payload.
+
+    Distinct from :class:`OddsApiAuthError` so a bad key is not retried and is
+    not treated as a transient upstream miss. The sync run is still ``error``.
+    """
+
+    def __init__(self, status: str, message: str | None = None) -> None:
+        self.status = status
+        detail = message or status
+        super().__init__(detail if status in detail else f"{status}: {detail}")
+
+
+# Statuses that must not be stored as a successful odds job.
+UPSTREAM_FAILURE_STATUSES = frozenset({"unauthorized", "rate_limited", "error", "degraded"})
 
 
 @dataclass(frozen=True)
@@ -118,20 +138,20 @@ class TheOddsApiAdapter:
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(min=1, max=4),
-        retry=retry_if_not_exception_type(OddsApiAuthError),
+        retry=retry_if_not_exception_type((OddsApiAuthError, OddsUpstreamError)),
     )
     async def _get(self, path: str, params: dict) -> OddsFetchResult:
         if not self._enabled():
             return OddsFetchResult([], "disabled", "ODDS_API_KEY is not set")
         response = await self._send(path, params)
         if response.status_code == 429:
-            log.warning("odds_api_rate_limited", status_code=response.status_code, path=path)
+            log.error("odds_api_rate_limited", status_code=response.status_code, path=path)
             return OddsFetchResult([], "rate_limited", "The Odds API rate limit was hit (429)")
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError:
-            # HTTPStatusError stringifies the full URL, which includes apiKey.
-            log.warning("odds_api_http_error", status_code=response.status_code, path=path)
+            # Do not log the exception: its string includes the full URL and apiKey.
+            log.error("odds_api_http_error", status_code=response.status_code, path=path)
             return OddsFetchResult(
                 [],
                 "error",
@@ -140,6 +160,19 @@ class TheOddsApiAdapter:
         data = response.json()
         if not isinstance(data, list):
             return OddsFetchResult([], "error", "Unexpected response shape from The Odds API")
+        # An empty 200 from the collection odds endpoint is a degraded pull.
+        # The events list is allowed to be empty (offseason / no upcoming games).
+        if (
+            not data
+            and path.endswith("/odds")
+            and "/events/" not in path
+        ):
+            log.error("odds_api_empty", status_code=response.status_code, path=path)
+            return OddsFetchResult(
+                [],
+                "degraded",
+                "The Odds API returned an empty odds payload",
+            )
         return OddsFetchResult(data, "ok")
 
     async def fetch_game_odds(
@@ -167,21 +200,35 @@ class TheOddsApiAdapter:
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(min=1, max=4),
-        retry=retry_if_not_exception_type(OddsApiAuthError),
+        retry=retry_if_not_exception_type((OddsApiAuthError, OddsUpstreamError)),
     )
     async def _get_object(self, path: str, params: dict) -> dict[str, Any] | None:
         """Like _get but for endpoints that return one JSON object.
 
-        404/422/429 stay soft misses. 401 and 402 raise :class:`OddsApiAuthError`
-        so a per-event props call cannot be recorded as a success.
+        404/422 stay soft misses (event gone or market unavailable). 401 and 402
+        raise :class:`OddsApiAuthError`. 429 and 5xx raise
+        :class:`OddsUpstreamError` so a per-event props call cannot be recorded
+        as a success. Timeouts propagate and become ``RetryError`` after the
+        second attempt.
         """
         if not self._enabled():
             return None
         response = await self._send(path, params)
-        if response.status_code in (404, 422, 429):
+        if response.status_code in (404, 422):
             log.warning("odds_api_event_fetch_failed", status=response.status_code, path=path)
             return None
-        response.raise_for_status()
+        if response.status_code == 429:
+            log.error("odds_api_rate_limited", status_code=response.status_code, path=path)
+            raise OddsUpstreamError(
+                "rate_limited", "The Odds API rate limit was hit (429)",
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            log.error("odds_api_http_error", status_code=response.status_code, path=path)
+            raise OddsUpstreamError(
+                "error", f"The Odds API returned HTTP {response.status_code}",
+            ) from None
         data = response.json()
         return data if isinstance(data, dict) else None
 

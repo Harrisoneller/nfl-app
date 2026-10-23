@@ -81,21 +81,18 @@ async def run_job(
             message=_status_message(result),
         )
         return result
-    except Exception as e:  # noqa: BLE001
-        # OddsApiAuthError sets job_status="failed" so a 401/402 is not stored
-        # as a successful run. APScheduler only logs "executed successfully"
-        # when this function returns; re-raising keeps the job in the error path.
-        status = "failed" if getattr(e, "job_status", None) == "failed" else "error"
+    except Exception as e:
+        # Every failed job is stored as "error". Freshness only counts "ok",
+        # and the other writers (model reruns, lifecycle) already use "error".
+        # APScheduler logs "executed successfully" only when this returns;
+        # re-raising keeps the job on the error path.
         safe = redact_secrets(str(e))
-        finish(db, run, status=status, message=safe[:4000])
-        payload: dict[str, Any] = {"domain": domain, "error": safe[:200], "status": status}
+        finish(db, run, status="error", message=safe[:4000])
+        payload: dict[str, Any] = {"domain": domain, "error": safe[:200], "status": "error"}
         error_code = getattr(e, "error_code", None)
         if error_code:
             payload["error_code"] = error_code
-        if status == "failed":
-            log.error("sync_job_failed", **payload)
-        else:
-            log.warning("sync_job_failed", **payload)
+        log.error("sync_job_failed", **payload)
         raise
     finally:
         db.close()
