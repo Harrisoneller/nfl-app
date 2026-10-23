@@ -1994,6 +1994,13 @@ export const api = {
 
   // widgets
   listWidgets: (policy?: FetchPolicy) => req<Widget[]>("/widgets", undefined, policy),
+  /** Anonymous share read. Server components have no stored token, so this
+   *  must not go through the authenticated list or render routes. */
+  getPublicWidget: (id: string) =>
+    req<{
+      widget: { id: string; title: string; kind: string; spec: Record<string, unknown> };
+      data: Record<string, unknown>;
+    }>(`/widgets/${encodeURIComponent(id)}/public`),
   renderWidget: (id: string) =>
     req<{ widget: Record<string, unknown>; data: Record<string, unknown> }>(
       `/widgets/${id}/render`,

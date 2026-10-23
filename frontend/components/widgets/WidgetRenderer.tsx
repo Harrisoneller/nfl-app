@@ -5,12 +5,22 @@ import { Card } from "../Card";
 
 type Spec = Record<string, any>;
 
-export function WidgetRenderer({ spec }: { spec: Spec }) {
-  const [data, setData] = useState<any>(null);
+export function WidgetRenderer({
+  spec,
+  data: provided,
+}: {
+  spec: Spec;
+  /** Pre-rendered payload from GET /widgets/{id}/public. Skips the
+   *  authenticated POST /widgets/render used by the in-app preview. */
+  data?: Record<string, unknown>;
+}) {
+  const skipFetch = provided !== undefined;
+  const [data, setData] = useState<any>(skipFetch ? provided : null);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!skipFetch);
 
   useEffect(() => {
+    if (skipFetch) return;
     let mounted = true;
     setLoading(true);
     api
@@ -21,7 +31,7 @@ export function WidgetRenderer({ spec }: { spec: Spec }) {
     return () => {
       mounted = false;
     };
-  }, [JSON.stringify(spec)]);
+  }, [JSON.stringify(spec), skipFetch]);
 
   return (
     <Card title={spec.title}>

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import get_current_user, get_db
 from ..models.user import User
-from ..schemas.widget import WidgetCreate, WidgetOut
+from ..schemas.widget import PublicWidgetResponse, WidgetCreate, WidgetOut
 from ..services import widget_service
 
 router = APIRouter()
@@ -39,6 +39,26 @@ def delete_widget(
     if not widget_service.delete(db, user.id, widget_id):
         raise HTTPException(404, "widget not found")
     return {"ok": True}
+
+
+@router.get("/{widget_id}/public", response_model=PublicWidgetResponse)
+async def read_public_widget(
+    widget_id: uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    """Fetch and render one widget for the anonymous share page.
+
+    No bearer token. The id is a uuid4, so possession of the URL is the
+    capability. Listing, create, inline render, and delete stay authenticated.
+    """
+    widget = widget_service.get(db, widget_id)
+    if widget is None:
+        raise HTTPException(404, "widget not found")
+    # Render the whitelisted spec so owner fields stored beside the
+    # definition never become query parameters.
+    spec = widget_service.public_spec(widget.spec if isinstance(widget.spec, dict) else {})
+    data = await widget_service.render(db, spec)
+    return widget_service.public_view(widget, data)
 
 
 @router.get("/{widget_id}/render")

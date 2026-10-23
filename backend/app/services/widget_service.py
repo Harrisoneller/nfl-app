@@ -15,6 +15,104 @@ from ..models.widget import Widget
 from ..schemas.widget import WidgetSpec
 from . import comparison_service, news_service, odds_service, scores_service, stats_service
 
+# Keys that must never appear on the anonymous share payload, at any depth.
+# Widget specs are JSONB and rendered payloads are free-form, so a denylist
+# backs the spec whitelist below.
+_PRIVATE_KEYS = frozenset(
+    {
+        "user_id",
+        "userid",
+        "owner_id",
+        "email",
+        "e_mail",
+        "owner_email",
+        "chat",
+        "chats",
+        "chat_content",
+        "chat_message",
+        "chat_messages",
+        "transcript",
+        "private_notes",
+        "private_note",
+        "notes",
+        "note",
+        "hashed_password",
+        "password",
+        "password_hash",
+    }
+)
+
+_DISPLAY_KEYS = (
+    "columns",
+    "sort_by",
+    "sort_dir",
+    "limit",
+    "highlight_winner",
+    "color_by",
+)
+
+
+def strip_private(value: Any) -> Any:
+    """Drop owner, chat, and note fields recursively. Leave other values intact."""
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or key.lower() in _PRIVATE_KEYS:
+                continue
+            cleaned[key] = strip_private(item)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [strip_private(item) for item in value]
+    return value
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def public_spec(spec: dict[str, Any] | None) -> dict[str, Any]:
+    """Whitelist the WidgetSpec fields a shared page is allowed to render."""
+    raw = spec if isinstance(spec, dict) else {}
+    source = raw.get("data_source") if isinstance(raw.get("data_source"), dict) else {}
+    display = raw.get("display") if isinstance(raw.get("display"), dict) else {}
+    params = source.get("params") if isinstance(source.get("params"), dict) else {}
+    kept_display = {key: display[key] for key in _DISPLAY_KEYS if key in display}
+    return {
+        "title": _text(raw.get("title")),
+        "kind": _text(raw.get("kind")),
+        "description": _text(raw.get("description")),
+        "data_source": {
+            "service": _text(source.get("service")),
+            "method": _text(source.get("method")),
+            "params": strip_private(params),
+        },
+        "display": strip_private(kept_display),
+    }
+
+
+def public_view(widget: Widget, data: dict[str, Any] | None) -> dict[str, Any]:
+    """Definition plus rendered data, with owner fields removed."""
+    spec = public_spec(widget.spec if isinstance(widget.spec, dict) else {})
+    if not spec["title"]:
+        spec["title"] = widget.title
+    if not spec["kind"]:
+        spec["kind"] = widget.kind
+    payload = data if isinstance(data, dict) else {}
+    return {
+        "widget": {
+            "id": widget.id,
+            "title": widget.title,
+            "kind": widget.kind,
+            "spec": spec,
+        },
+        "data": strip_private(payload),
+    }
+
+
+def get(db: Session, widget_id: uuid.UUID) -> Widget | None:
+    """Fetch one widget by its unguessable id, ignoring who owns it."""
+    return db.query(Widget).filter(Widget.id == widget_id).first()
+
 
 def list_for_user(db: Session, user_id: uuid.UUID) -> list[Widget]:
     return (

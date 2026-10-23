@@ -64,3 +64,21 @@ class WidgetOut(BaseModel):
     sort_order: int
     last_rendered_at: datetime | None = None
     created_at: datetime
+
+
+class PublicWidget(BaseModel):
+    """Widget definition safe to render without a login.
+
+    Deliberately omits owner identity and dashboard bookkeeping
+    (``user_id``, ``pinned``, ``sort_order``, timestamps).
+    """
+
+    id: uuid.UUID
+    title: str
+    kind: str
+    spec: dict[str, Any]
+
+
+class PublicWidgetResponse(BaseModel):
+    widget: PublicWidget
+    data: dict[str, Any]
