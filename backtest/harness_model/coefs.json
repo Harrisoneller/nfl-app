@@ -1,0 +1,190 @@
+{
+  "model_version": "qb-ridge-v6-blind",
+  "hyperparams": {
+    "half_life": 14.0,
+    "k_pass": 8.0,
+    "k_rush": 10.0,
+    "k_success": 12.0,
+    "def_weight": 0.55,
+    "qb_k": 400.0
+  },
+  "margin": {
+    "pass": 10.285,
+    "rush": 6.417,
+    "success": 77.429,
+    "hfa": 1.781
+  },
+  "total": {
+    "const": 45.315,
+    "pass": 13.785,
+    "rush": 0.961,
+    "success": -7.102
+  },
+  "by_season": {
+    "2016": {
+      "margin": {
+        "pass": 20.214,
+        "rush": 16.317,
+        "success": 10.068,
+        "hfa": 1.563
+      },
+      "total": {
+        "const": 45.392,
+        "pass": 4.356,
+        "rush": -1.656,
+        "success": -7.943
+      }
+    },
+    "2017": {
+      "margin": {
+        "pass": 14.218,
+        "rush": -1.354,
+        "success": 72.825,
+        "hfa": 2.324
+      },
+      "total": {
+        "const": 45.322,
+        "pass": 5.302,
+        "rush": 3.717,
+        "success": 22.136
+      }
+    },
+    "2018": {
+      "margin": {
+        "pass": 14.13,
+        "rush": -7.38,
+        "success": 80.077,
+        "hfa": 2.345
+      },
+      "total": {
+        "const": 44.698,
+        "pass": 7.435,
+        "rush": -2.662,
+        "success": 22.858
+      }
+    },
+    "2019": {
+      "margin": {
+        "pass": 11.773,
+        "rush": -3.62,
+        "success": 82.496,
+        "hfa": 2.297
+      },
+      "total": {
+        "const": 45.073,
+        "pass": 10.618,
+        "rush": -1.164,
+        "success": 14.544
+      }
+    },
+    "2020": {
+      "margin": {
+        "pass": 11.735,
+        "rush": 0.743,
+        "success": 81.046,
+        "hfa": 1.825
+      },
+      "total": {
+        "const": 45.184,
+        "pass": 10.023,
+        "rush": 3.17,
+        "success": 2.215
+      }
+    },
+    "2021": {
+      "margin": {
+        "pass": 12.544,
+        "rush": 5.592,
+        "success": 74.322,
+        "hfa": 1.523
+      },
+      "total": {
+        "const": 45.858,
+        "pass": 12.013,
+        "rush": -1.624,
+        "success": 1.445
+      }
+    },
+    "2022": {
+      "margin": {
+        "pass": 11.763,
+        "rush": 6.321,
+        "success": 78.982,
+        "hfa": 1.565
+      },
+      "total": {
+        "const": 45.83,
+        "pass": 12.069,
+        "rush": -2.608,
+        "success": 3.499
+      }
+    },
+    "2023": {
+      "margin": {
+        "pass": 10.349,
+        "rush": 6.207,
+        "success": 80.724,
+        "hfa": 1.642
+      },
+      "total": {
+        "const": 45.558,
+        "pass": 12.595,
+        "rush": -1.528,
+        "success": -0.459
+      }
+    },
+    "2024": {
+      "margin": {
+        "pass": 10.285,
+        "rush": 6.417,
+        "success": 77.429,
+        "hfa": 1.781
+      },
+      "total": {
+        "const": 45.315,
+        "pass": 13.785,
+        "rush": 0.961,
+        "success": -7.102
+      }
+    },
+    "2025": {
+      "margin": {
+        "pass": 10.285,
+        "rush": 6.417,
+        "success": 77.429,
+        "hfa": 1.781
+      },
+      "total": {
+        "const": 45.315,
+        "pass": 13.785,
+        "rush": 0.961,
+        "success": -7.102
+      }
+    },
+    "2026": {
+      "margin": {
+        "pass": 10.285,
+        "rush": 6.417,
+        "success": 77.429,
+        "hfa": 1.781
+      },
+      "total": {
+        "const": 45.315,
+        "pass": 13.785,
+        "rush": 0.961,
+        "success": -7.102
+      }
+    }
+  },
+  "features": [
+    "pass_comp",
+    "rush_comp",
+    "sr_comp",
+    "hfa",
+    "pass_sum",
+    "rush_sum",
+    "sr_sum"
+  ],
+  "starter_proxy": "2014\u20132024: weekly depth-chart QB order, overridden only when an injury row with date_modified at or before kickoff minus 24h has report_status Out. Those depth charts have season and week and no captured_at, so they are not a proven T-24h snapshot. 2025\u20132026: latest depth chart whose dt is at or before kickoff minus 24h (those files are timestamped). Injury files for 2025\u20132026 have no date_modified, so they are not applied. gametime is compared as UTC. No home_qb_id. No last-start fallback. Missing chart \u2192 QB delta 0.",
+  "data_sha256": "539b6fb9a848cbf25c8efceb9b8777caf87a7b8db519a226de166c153138eefc"
+}
