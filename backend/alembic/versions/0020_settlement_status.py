@@ -3,7 +3,9 @@
 A final game moves NULL -> settling -> settled inside per-game settlement.
 ``settling`` is committed before the grading writes so a crash cannot leave
 half-graded legs or a second historical-result insert. ``claimed_at`` is the
-lease for that claim: a later run reclaims it after the configured TTL.
+lease for that claim, measured with the database clock. ``claim_token``
+fences the final settled write so a worker whose lease was reclaimed
+cannot overwrite it. A later run reclaims an expired lease.
 ``scripts/reset_stuck_settlements.py`` can clear a claim sooner (dry-run by
 default; it only connects to allowlisted local and test hosts).
 
@@ -37,6 +39,10 @@ def upgrade() -> None:
     )
     op.add_column(
         "games",
+        sa.Column("claim_token", sa.String(length=32), nullable=True),
+    )
+    op.add_column(
+        "games",
         sa.Column("settlement_finished_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index(
@@ -47,6 +53,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_games_settlement_status", table_name="games")
     op.drop_column("games", "settlement_finished_at")
+    op.drop_column("games", "claim_token")
     op.drop_column("games", "claimed_at")
     op.drop_column("games", "settlement_started_at")
     op.drop_column("games", "settlement_status")

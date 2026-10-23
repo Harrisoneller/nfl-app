@@ -47,6 +47,9 @@ class Game(Base, TimestampMixin):
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set when the claim is taken. The settled write matches this value, so a
+    # worker whose lease was reclaimed cannot overwrite the new owner.
+    claim_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
     settlement_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -9,10 +9,11 @@ retry. It does not change scores, bets, or Sparky results, and it does not
 VACUUM.
 
 Dry-run is the default. Nothing is written unless ``--apply`` is passed.
-The script fails closed: it only connects when ``APP_ENV`` is not production
-and the database host is on the allowlist (localhost, 127.0.0.1, ::1, or
-the ``postgres`` test container). A local SQLite file has no host and is
-allowed. Every other host is refused. Do not point it at production.
+The script fails closed. ``APP_ENV`` must be set in the environment to
+``development`` or ``test``; an unset value is refused even though settings
+would otherwise default to development. Production is refused. The database
+host must be localhost, 127.0.0.1, ::1, or the ``postgres`` test container.
+A local SQLite file has no host and is allowed. Every other host is refused.
 
 Usage (from ``backend/``)::
 
@@ -22,6 +23,7 @@ Usage (from ``backend/``)::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from sqlalchemy.engine.url import make_url
@@ -35,6 +37,9 @@ _ALLOWED_DB_HOSTS = frozenset({
     "::1",
     "postgres",
 })
+# Settings defaults APP_ENV to development when the variable is absent.
+# The script does not accept that default.
+_ALLOWED_APP_ENVS = frozenset({"development", "test"})
 
 
 def _normalized_host(host: str | None) -> str:
@@ -44,17 +49,19 @@ def _normalized_host(host: str | None) -> str:
     return value
 
 
-def guard_local_database(app_env: str, database_url: str) -> None:
+def guard_local_database(app_env: str | None, database_url: str) -> None:
     """Raise ``SystemExit`` unless the target is local or the test database.
 
-    Production is refused even when the host would otherwise be allowed.
-    The message does not include the URL (it may carry a password) or the
-    host that was rejected.
+    ``APP_ENV`` must be the string ``development`` or ``test``. Unset, blank,
+    and production are refused before the host is considered. The message
+    does not include the URL (it may carry a password) or the host that
+    was rejected.
     """
-    if (app_env or "").strip().lower() == "production":
+    env = app_env.strip().lower() if isinstance(app_env, str) else ""
+    if env not in _ALLOWED_APP_ENVS:
         raise SystemExit(
-            "refusing to reset stuck settlements: APP_ENV is production. "
-            "This script does not run against production."
+            "refusing to reset stuck settlements: APP_ENV must be set to "
+            "development or test. An unset or production value is refused."
         )
     try:
         url = make_url(database_url or "")
@@ -118,12 +125,18 @@ def format_report(report: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    # Guard before importing the engine so a production URL is never contacted
-    # just to decide we should refuse.
+    # The process environment, not Settings' development default. Refuse
+    # before importing the engine so an unset or production env never connects.
+    app_env = os.environ.get("APP_ENV")
+    if (app_env or "").strip().lower() not in _ALLOWED_APP_ENVS:
+        raise SystemExit(
+            "refusing to reset stuck settlements: APP_ENV must be set to "
+            "development or test. An unset or production value is refused."
+        )
     from app.config import get_settings
 
     settings = get_settings()
-    guard_local_database(settings.app_env, settings.database_url)
+    guard_local_database(app_env, settings.database_url)
 
     from app.db import SessionLocal
 

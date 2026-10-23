@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     )
 
     # Core
-    app_env: Literal["development", "production"] = "development"
+    # "test" is accepted so the reset script can require an explicit
+    # non-production APP_ENV. The default still applies when the variable
+    # is absent; the reset script does not use that default.
+    app_env: Literal["development", "test", "production"] = "development"
     # web = API only (Railway public service). worker = scheduler + ingest/derive.
     # Local dev: use worker (or two terminals with web + worker) — see RUNBOOK.
     app_role: Literal["web", "worker"] = "worker"

@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models.bet import Bet, BetLeg
@@ -223,6 +223,25 @@ def test_reset_script_is_dry_run_by_default_and_fails_closed():
     ]
     for url in allowed:
         guard_local_database("development", url)
+        guard_local_database("test", url)
+    for missing in (None, "", "   ", "production", "Production", "staging"):
+        with pytest.raises(SystemExit):
+            guard_local_database(missing, "sqlite://")
+
+
+def test_reset_main_refuses_unset_app_env(monkeypatch):
+    """Settings would default APP_ENV to development. The script must not."""
+    from scripts.reset_stuck_settlements import main
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("reset script connected without APP_ENV")
+
+    monkeypatch.setattr("app.db.SessionLocal", explode)
+    with pytest.raises(SystemExit):
+        main([])
 
 
 def test_expired_claim_is_reclaimed_and_a_fresh_claim_is_not(db, monkeypatch):
@@ -295,6 +314,96 @@ def test_expired_claim_is_reclaimed_and_a_fresh_claim_is_not(db, monkeypatch):
         for event, fields in warnings
     )
     assert db.get(Game, "g2").settlement_status == "settled"
+
+
+def test_stale_claim_token_cannot_mark_settled(db, monkeypatch):
+    """A worker whose lease was reclaimed must not commit its grades."""
+    from app.services import settlement_service
+
+    user = _user(db)
+    game = _game(db, "g1", "PHI", "DAL", 27, 17)
+    bet = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+
+    real = bet_service.apply_game_grades
+
+    def reclaim_before_grading(session, graded, user_id=None):
+        session.execute(
+            update(Game)
+            .where(Game.id == graded.id)
+            .values(claim_token="reclaimed-token")
+        )
+        session.commit()
+        return real(session, graded, user_id=user_id)
+
+    monkeypatch.setattr(bet_service, "apply_game_grades", reclaim_before_grading)
+    outcome = settlement_service.settle_game(db, game, user_id=user.id)
+    assert outcome["rolled_back"] == 1
+    assert outcome["settled_bets"] == 0
+    db.expire_all()
+    stored = db.get(Game, "g1")
+    assert stored.settlement_status == "settling"
+    assert stored.claim_token == "reclaimed-token"
+    assert db.get(Bet, bet.id).status == "pending"
+    assert db.get(Bet, bet.id).result_units is None
+
+    # The worker that holds the new token can finish. A second call claims
+    # only if the lease is expired; hand it the token directly.
+    assert settlement_service.mark_settled(db, "g1", "not-the-token") is False
+    db.rollback()
+    assert settlement_service.mark_settled(db, "g1", "reclaimed-token") is True
+    db.commit()
+    db.expire_all()
+    assert db.get(Game, "g1").settlement_status == "settled"
+    assert db.get(Game, "g1").claim_token == "reclaimed-token"
+
+
+def test_sqlite_reclaim_uses_database_clock_for_naive_timestamps(db, monkeypatch):
+    """SQLite round-trips datetimes without tzinfo. Do not compare them to an aware clock."""
+    from app.services import settlement_service
+
+    monkeypatch.setattr(settlement_service, "_claim_ttl", lambda: timedelta(minutes=15))
+    game = _game(db, "g1", "PHI", "DAL", 27, 17)
+    game.settlement_status = "settling"
+    game.claim_token = "old-token"
+    # The value SQLite will hand back: naive, no offset.
+    game.claimed_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(tzinfo=None)
+    game.settlement_started_at = game.claimed_at
+    db.commit()
+    db.expire_all()
+    loaded = db.execute(select(Game.claimed_at).where(Game.id == "g1")).scalar()
+    assert loaded.tzinfo is None
+
+    statements: list[tuple[str, object]] = []
+
+    def recv(conn, cursor, statement, parameters, context, executemany):
+        statements.append((" ".join(statement.lower().split()), parameters))
+
+    event.listen(db.get_bind(), "before_cursor_execute", recv)
+    status, token = settlement_service.claim_game(db, db.get(Game, "g1"))
+    assert status == "stuck"
+    assert token is None
+    updates = [sql for sql, _params in statements if sql.startswith("update")]
+    assert updates
+    assert "datetime('now'" in updates[0]
+    assert "+00:00" not in updates[0]
+    for _sql, params in statements:
+        values = params.values() if isinstance(params, dict) else params
+        for value in values:
+            assert not (
+                isinstance(value, datetime) and value.tzinfo is not None
+            )
+    db.expire_all()
+    assert db.get(Game, "g1").claim_token == "old-token"
+
+    stored = db.get(Game, "g1")
+    stored.claimed_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).replace(tzinfo=None)
+    db.commit()
+    status, token = settlement_service.claim_game(db, db.get(Game, "g1"))
+    assert status == "claimed"
+    assert token
+    db.expire_all()
+    assert db.get(Game, "g1").claim_token == token
+    assert db.get(Game, "g1").settlement_status == "settling"
 
 
 def test_regrading_a_settled_game_is_ordered_and_repeatable(db, monkeypatch):
