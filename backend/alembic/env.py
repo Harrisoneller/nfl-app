@@ -31,6 +31,33 @@ target_metadata = Base.metadata
 _sqlite_compat_installed = False
 
 
+def _install_sqlite_batch_alters() -> None:
+    """Run ALTER COLUMN through Alembic batch mode on SQLite.
+
+    ``render_as_batch`` only changes autogenerate output. Existing
+    ``op.alter_column`` calls still emit ``ALTER COLUMN``, which SQLite
+    rejects. Batch mode rebuilds the table. Postgres keeps the original op.
+    """
+    from alembic.operations.base import Operations
+
+    if getattr(Operations, "_sqlite_batch_alters", False):
+        return
+
+    original = Operations.alter_column
+
+    def alter_column(self, table_name, column_name, *args, **kw):
+        dialect = getattr(getattr(self, "impl", None), "dialect", None)
+        if getattr(dialect, "name", None) == "sqlite":
+            schema = kw.pop("schema", None)
+            with self.batch_alter_table(table_name, schema=schema) as batch:
+                batch.alter_column(column_name, *args, **kw)
+            return None
+        return original(self, table_name, column_name, *args, **kw)
+
+    Operations.alter_column = alter_column
+    Operations._sqlite_batch_alters = True
+
+
 def _install_sqlite_compat() -> None:
     """Render the Postgres revision history onto SQLite.
 
@@ -68,10 +95,11 @@ def _install_sqlite_compat() -> None:
 
 
 _install_sqlite_compat()
+_install_sqlite_batch_alters()
 
 
 def _render_as_batch() -> bool:
-    """SQLite cannot ALTER COLUMN. Batch mode rebuilds the table instead."""
+    """Ask autogenerate to emit batch ops when the target is SQLite."""
     url = config.get_main_option("sqlalchemy.url") or ""
     return url.startswith("sqlite")
 
