@@ -55,7 +55,12 @@ export function AdminPanel({
           setMsg(
             "Odds API returned 0 upcoming NFL events — the Week 1 schedule may not be posted yet. Try again closer to kickoff.",
           );
-        } else if (status === "error" || status === "unauthorized" || status === "rate_limited") {
+        } else if (
+          status === "error" ||
+          status === "unauthorized" ||
+          status === "rate_limited" ||
+          status === "degraded"
+        ) {
           setMsg(
             `Odds API ${status}${refresh?.message ? `: ${refresh.message}` : ""}. Check ODDS_API_KEY and try again.`,
           );
