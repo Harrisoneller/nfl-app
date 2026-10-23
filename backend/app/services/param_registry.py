@@ -97,7 +97,7 @@ class ParamSpec:
 CATEGORIES: dict[str, dict[str, str]] = {
     "v5_model": {
         "label": "Game Model v5 (QB-aware ratings)",
-        "description": "The v5 game model: one opponent-adjusted ridge over the last three seasons with recency decay, a quarterback layer that prices this week's starter against the QB mix the team's numbers were built on, and a prior from past closing spreads. Coefficients were fit on 2015–2026 outcomes and validated walk-forward (docs/MODEL_V5.md). `v5.coef_qb` is the most consequential value — it is how many points one EPA/dropback of QB difference is worth, and every starter change on the board moves with it.",
+        "description": "Inactive on the published board. The live fair is the market-blind v6 model, which has no closing-line prior. These v5 keys stay in the registry so older admin rows still resolve. `v5.coef_market_prior` does not enter the fair.",
     },
     "elo": {
         "label": "Elo Ratings",
@@ -113,7 +113,7 @@ CATEGORIES: dict[str, dict[str, str]] = {
     },
     "market_blend": {
         "label": "Market Blend",
-        "description": "How much the sportsbook/Kalshi consensus pulls the headline game numbers. model_only and edge are always preserved.",
+        "description": "Inactive on the published fair. The headline spread, total, and win probability stay the model. Market numbers are attached only as a comparison and an edge note. These weights remain so older admin rows still resolve.",
     },
     "player_engine": {
         "label": "Player Projection Engine",
@@ -121,7 +121,7 @@ CATEGORIES: dict[str, dict[str, str]] = {
     },
     "prop_anchors": {
         "label": "Prop-Line Anchoring",
-        "description": "How much posted player prop lines pull weekly stat projections toward the market.",
+        "description": "Inactive on published player means. Prop lines are not pulled into the projection. The keys remain so older admin rows still resolve.",
     },
     "defense_adjust": {
         "label": "Opponent Defense Adjustment",
@@ -129,7 +129,7 @@ CATEGORIES: dict[str, dict[str, str]] = {
     },
     "fantasy_market": {
         "label": "Fantasy Market (ADP)",
-        "description": "How drafting-market consensus (ADP) blends into fantasy ranks, and how that trust decays in-season.",
+        "description": "Inactive on published projections. ADP is kept as a comparison column. It is not blended into the rank or the points. The keys remain so older admin rows still resolve.",
     },
     "input_levers": {
         "label": "Input-Lever Mechanics",
@@ -234,7 +234,7 @@ _SPECS: tuple[ParamSpec, ...] = (
           "Spread points per 1.0 EPA/dropback between this week's starter and the team's recent QB mix. Fit: ~35 (≈ 35 dropbacks a game). Starter changes move with this.",
           34.977, 0.0, 60.0, "v5_model", step=0.5, unit="pts", affects=_GAME),
     _spec("v5.coef_market_prior", "Weight on past-line power ratings",
-          "Points per point of market-implied rating difference built from PREVIOUS games' closing spreads (never this game's line). Set 0 to make the model fully independent of the market.",
+          "Inactive. The published v6-blind fair has no closing-line prior, so this weight does not move the board. Kept so older admin rows still resolve.",
           0.669, 0.0, 1.0, "v5_model", step=0.01, affects=_GAME),
     _spec("v5.hfa_pts", "Home-field advantage (pts)",
           "Home-field advantage in points. Fit on 2015–2026 at ~1.8 — post-2020 home edge is well below the old 2.5–3.0 folklore.",
@@ -254,13 +254,13 @@ _SPECS: tuple[ParamSpec, ...] = (
           3.0, 0.0, 10.0, "epa_adjust", step=0.5, affects=_GAME),
     # ---- Market blend --------------------------------------------------------
     _spec("market.w_base", "Base market weight",
-          "Market share of the headline blend with a single source; grows per source up to the cap. Walk-forward vs closing lines the optimal model share was ~10% (2017–26) and ~0% (2021–26), so the market carries ~80–92% by default.",
+          "Inactive on the published headline. The fair is not blended with the market. Kept so older admin rows still resolve.",
           0.80, 0.0, 0.95, "market_blend", affects=_GAME),
     _spec("market.w_per_source", "Weight per source",
-          "Additional market weight per independent book/exchange in the consensus.",
+          "Inactive on the published headline. Extra books do not increase the market share of the fair. Kept so older admin rows still resolve.",
           0.02, 0.0, 0.3, "market_blend", affects=_GAME),
     _spec("market.w_cap", "Market weight cap",
-          "Ceiling on market share of the blend — the model always keeps at least (1 − cap).",
+          "Inactive on the published headline. There is no blend for this cap to bind. Kept so older admin rows still resolve.",
           0.92, 0.3, 1.0, "market_blend", affects=_GAME),
     _spec("market.edge_beta", "Spread edge realization",
           "Share of a model-vs-closing-line spread disagreement that historically showed up in results (walk-forward 2017–2026: ~0.09; 2021–26 alone ~0). The 'expected edge' shown next to raw disagreement is disagreement × this.",
@@ -349,16 +349,16 @@ _SPECS: tuple[ParamSpec, ...] = (
           0.90, 0.5, 1.0, "player_engine", affects=_PLAYER),
     # ---- Prop anchors --------------------------------------------------------
     _spec("props.anchor_weight_per_book", "Anchor weight per book",
-          "Pull toward the posted prop line per book quoting it.",
+          "Inactive on published player means. Prop lines are not pulled into the projection. Kept so older admin rows still resolve.",
           0.12, 0.0, 0.4, "prop_anchors", affects=_PLAYER),
     _spec("props.anchor_weight_cap", "Anchor weight cap",
-          "Maximum total pull toward prop lines for volume/yardage stats.",
+          "Inactive on published player means. There is no prop-line pull for this cap to bind. Kept so older admin rows still resolve.",
           0.40, 0.0, 0.9, "prop_anchors", affects=_PLAYER),
     _spec("props.anchor_weight_cap_scoring", "Anchor cap (TD/scoring stats)",
-          "Lower cap for scoring stats — TD prop lines are noisier than yardage lines.",
+          "Inactive on published player means. Scoring props are not pulled into the projection. Kept so older admin rows still resolve.",
           0.30, 0.0, 0.9, "prop_anchors", affects=_PLAYER),
     _spec("props.price_shift_cap_sd", "Price-implied mean shift cap",
-          "Max shift (in SDs) from line→market-implied mean when using de-vigged over price.",
+          "Inactive on published player means. De-vigged prop prices do not shift the projection. Kept so older admin rows still resolve.",
           0.80, 0.0, 2.0, "prop_anchors", affects=_PLAYER),
     # ---- Defense adjustment --------------------------------------------------
     _spec("defense.shrink", "Defense factor shrink",
@@ -372,13 +372,13 @@ _SPECS: tuple[ParamSpec, ...] = (
           1.25, 1.0, 1.6, "defense_adjust", affects=_PLAYER),
     # ---- Fantasy market ------------------------------------------------------
     _spec("adp.weight_preseason", "ADP weight (preseason)",
-          "Drafting-market share of preseason fantasy ranks before any games are played.",
+          "Inactive on published projections. ADP is a comparison column, not a share of the rank or the points. Kept so older admin rows still resolve.",
           0.55, 0.0, 1.0, "fantasy_market", affects=("fantasy ranks", "VORP")),
     _spec("adp.weight_decay_per_week", "ADP decay per week",
-          "How fast ADP trust fades as real-season data arrives.",
+          "Inactive on published projections. ADP does not fade into the points because it is not blended in. Kept so older admin rows still resolve.",
           0.045, 0.0, 0.2, "fantasy_market", step=0.005, affects=("fantasy ranks",)),
     _spec("adp.weight_floor", "ADP weight floor",
-          "Minimum ADP influence kept all season (market memory never hits zero).",
+          "Inactive on published projections. There is no ADP blend for a floor to keep alive. Kept so older admin rows still resolve.",
           0.15, 0.0, 0.5, "fantasy_market", affects=("fantasy ranks",)),
     # ---- Input-lever mechanics ----------------------------------------------
     _spec("levers.pace_elasticity", "Pace → scoring elasticity",
