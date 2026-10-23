@@ -309,6 +309,35 @@ def test_create_rejects_oversized_limit_and_list_params(api):
     columns["display"]["columns"] = [f"col-{i}" for i in range(33)]
     assert post(columns) == 422
 
+    from app.utils.seasons import SEASON_RANGE_START, current_or_upcoming_season
+
+    latest = current_or_upcoming_season()
+    for bad_season in ("2024", True, 1.5, SEASON_RANGE_START - 1, latest + 1):
+        bad = copy.deepcopy(_SPEC)
+        bad["data_source"]["params"]["season"] = bad_season
+        assert post(bad) == 422, bad_season
+
+    for bad_team in (12, "", "K", "this-is-too-long", "KC!", {"id": "KC"}, None):
+        bad = copy.deepcopy(_SPEC)
+        bad["data_source"]["params"]["team_id"] = bad_team
+        assert post(bad) == 422, bad_team
+
+    not_a_list = copy.deepcopy(_SPEC)
+    not_a_list["data_source"]["params"]["team_ids"] = "KC"
+    assert post(not_a_list) == 422
+
+    mixed = copy.deepcopy(_SPEC)
+    mixed["data_source"]["params"]["team_ids"] = ["KC", 1]
+    assert post(mixed) == 422
+
+    ok = copy.deepcopy(_SPEC)
+    ok["data_source"]["params"]["season"] = latest
+    ok["data_source"]["params"]["team_id"] = "kc"
+    created = client.post("/widgets", headers=headers, json={"spec": ok, "pinned": False})
+    assert created.status_code == 200, created.text
+    assert created.json()["spec"]["data_source"]["params"]["season"] == latest
+    assert created.json()["spec"]["data_source"]["params"]["team_id"] == "KC"
+
     ok = copy.deepcopy(_SPEC)
     ok["data_source"]["params"]["limit"] = 100
     ok["data_source"]["params"]["team_ids"] = ["KC", "BUF"]
@@ -396,6 +425,63 @@ def test_inline_render_caps_limit_and_team_list(api, monkeypatch):
     assert captured["team_ids"] == [f"T{i}" for i in range(32)]
 
 
+def test_public_read_rejects_bad_season_and_team_id(api, monkeypatch):
+    client: TestClient = api["client"]
+    widget_id = api["widget_id"]
+
+    async def fake_render(db, spec):
+        raise AssertionError("invalid params must not be rendered")
+
+    monkeypatch.setattr("app.services.widget_service.render", fake_render)
+
+    _plant_param(widget_id, "season", "2024")
+    bad_season = client.get(f"/widgets/{widget_id}/public")
+    assert bad_season.status_code == 422
+    assert bad_season.headers.get("cache-control") != "public, max-age=60"
+
+    _plant_param(widget_id, "season", 1800)
+    assert client.get(f"/widgets/{widget_id}/public").status_code == 422
+
+    _plant_param(widget_id, "team_id", {"id": "KC"})
+    bad_team = client.get(f"/widgets/{widget_id}/public")
+    assert bad_team.status_code == 422
+    assert "team_id" in bad_team.json()["detail"]
+
+    _plant_param(widget_id, "team_ids", "KC")
+    assert client.get(f"/widgets/{widget_id}/public").status_code == 422
+
+
+def test_inline_render_rejects_bad_team_id(api):
+    client: TestClient = api["client"]
+    inline = client.post(
+        "/widgets/render",
+        headers=api["headers"],
+        json={
+            "data_source": {
+                "service": "comparison",
+                "method": "compare_team_to_league",
+                "params": {"team_id": "not a team", "season": 2024},
+            }
+        },
+    )
+    assert inline.status_code == 422
+    assert "team_id" in inline.json()["detail"]
+
+    missing = client.post(
+        "/widgets/render",
+        headers=api["headers"],
+        json={
+            "data_source": {
+                "service": "stats",
+                "method": "team_aggregate",
+                "params": {"season": 2024},
+            }
+        },
+    )
+    assert missing.status_code == 422
+    assert missing.json()["detail"] == "team_id is required"
+
+
 def test_owner_can_revoke_public_share(api, monkeypatch):
     client: TestClient = api["client"]
     widget_id = api["widget_id"]
@@ -447,6 +533,28 @@ def test_is_public_migration_defaults_existing_rows_to_true():
     assert 'down_revision: Union[str, None] = "0020_settlement_status"' in text
     assert 'server_default=sa.text("true")' in text
     assert "nullable=False" in text
+
+
+def _plant_param(widget_id: str, key: str, value) -> None:
+    from app.db import SessionLocal
+    from app.models.widget import Widget
+
+    db = SessionLocal()
+    try:
+        widget = db.query(Widget).filter(Widget.id == uuid.UUID(widget_id)).one()
+        spec = dict(widget.spec)
+        source = dict(spec["data_source"])
+        params = dict(source.get("params") or {})
+        params.pop("season", None)
+        params.pop("team_id", None)
+        params.pop("team_ids", None)
+        params[key] = value
+        source["params"] = params
+        spec["data_source"] = source
+        widget.spec = spec
+        db.commit()
+    finally:
+        db.close()
 
 
 def _plant_oversized_params(widget_id: str) -> None:

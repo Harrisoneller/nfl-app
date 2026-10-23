@@ -12,7 +12,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models.widget import Widget
-from ..schemas.widget import MAX_WIDGET_LIMIT, MAX_WIDGET_LIST_ITEMS, WidgetSpec
+from ..schemas.widget import (
+    MAX_WIDGET_LIMIT,
+    MAX_WIDGET_LIST_ITEMS,
+    WidgetQueryError,
+    WidgetSpec,
+    checked_params,
+)
+from ..utils.seasons import SEASON_RANGE_START, current_or_upcoming_season
 from . import comparison_service, news_service, odds_service, scores_service, stats_service
 
 # Keys that must never appear on the anonymous share payload, at any depth.
@@ -129,7 +136,7 @@ def public_spec(spec: dict[str, Any] | None) -> dict[str, Any]:
     raw = spec if isinstance(spec, dict) else {}
     source = raw.get("data_source") if isinstance(raw.get("data_source"), dict) else {}
     display = raw.get("display") if isinstance(raw.get("display"), dict) else {}
-    params = source.get("params") if isinstance(source.get("params"), dict) else {}
+    params = source.get("params", {})
     return {
         "title": _text(raw.get("title")),
         "kind": _text(raw.get("kind")),
@@ -137,7 +144,7 @@ def public_spec(spec: dict[str, Any] | None) -> dict[str, Any]:
         "data_source": {
             "service": _text(source.get("service")),
             "method": _text(source.get("method")),
-            "params": bound_params(strip_private(params)),
+            "params": bound_params(checked_params(strip_private(params))),
         },
         "display": strip_private(bound_display(display)),
     }
@@ -214,24 +221,17 @@ async def render(db: Session, spec: dict[str, Any]) -> dict[str, Any]:
     ds = spec.get("data_source") or {}
     service = ds.get("service")
     method = ds.get("method")
-    params = bound_params(ds.get("params") or {})
+    params = bound_params(checked_params(ds.get("params") or {}))
+    season = _season(params)
 
     if service == "comparison" and method == "compare_teams":
-        return await comparison_service.compare_teams(
-            params.get("team_ids", []), int(params.get("season", 2024))
-        )
+        return await comparison_service.compare_teams(params.get("team_ids", []), season)
     if service == "comparison" and method == "compare_team_to_league":
-        return await comparison_service.compare_team_to_league(
-            params["team_id"], int(params.get("season", 2024))
-        )
+        return await comparison_service.compare_team_to_league(_required_team_id(params), season)
     if service == "comparison" and method == "compare_players":
-        return await comparison_service.compare_players(
-            params.get("names", []), int(params.get("season", 2024))
-        )
+        return await comparison_service.compare_players(params.get("names", []), season)
     if service == "stats" and method == "team_aggregate":
-        return await stats_service.team_aggregate(
-            int(params.get("season", 2024)), params["team_id"]
-        )
+        return await stats_service.team_aggregate(season, _required_team_id(params))
     if service == "scores" and method == "current":
         games = scores_service.list_current_games(db, limit=int(params.get("limit", 16)))
         return {"games": [_game_dict(g) for g in games]}
@@ -243,6 +243,25 @@ async def render(db: Session, spec: dict[str, Any]) -> dict[str, Any]:
         return {"lines": [_odds_dict(l) for l in lines]}
 
     return {"error": f"unknown data_source {service}.{method}"}
+
+
+def _season(params: dict[str, Any]) -> int:
+    """Season already passed ``checked_params``, or the in-range default."""
+    value = params.get("season")
+    if value is None:
+        default = 2024
+        latest = current_or_upcoming_season()
+        if SEASON_RANGE_START <= default <= latest:
+            return default
+        return latest
+    return value
+
+
+def _required_team_id(params: dict[str, Any]) -> str:
+    team_id = params.get("team_id")
+    if not isinstance(team_id, str):
+        raise WidgetQueryError("team_id is required")
+    return team_id
 
 
 def _game_dict(g) -> dict[str, Any]:

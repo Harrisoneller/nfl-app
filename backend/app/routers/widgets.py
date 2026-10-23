@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import get_current_user, get_db
 from ..models.user import User
-from ..schemas.widget import PublicWidgetResponse, WidgetCreate, WidgetOut
+from ..schemas.widget import PublicWidgetResponse, WidgetCreate, WidgetOut, WidgetQueryError
 from ..services import widget_service
 
 router = APIRouter()
@@ -59,8 +59,11 @@ async def read_public_widget(
         raise HTTPException(404, "widget not found")
     # Render the whitelisted spec so owner fields stored beside the
     # definition never become query parameters.
-    spec = widget_service.public_spec(widget.spec if isinstance(widget.spec, dict) else {})
-    data = await widget_service.render(db, spec)
+    try:
+        spec = widget_service.public_spec(widget.spec if isinstance(widget.spec, dict) else {})
+        data = await widget_service.render(db, spec)
+    except WidgetQueryError as exc:
+        raise HTTPException(422, str(exc)) from exc
     response.headers["Cache-Control"] = "public, max-age=60"
     return widget_service.public_view(widget, data)
 
@@ -87,7 +90,10 @@ async def render_widget(
     w = next((x for x in widgets if x.id == widget_id), None)
     if w is None:
         raise HTTPException(404, "widget not found")
-    payload = await widget_service.render(db, w.spec)
+    try:
+        payload = await widget_service.render(db, w.spec)
+    except WidgetQueryError as exc:
+        raise HTTPException(422, str(exc)) from exc
     return {"widget": w.spec, "data": payload}
 
 
@@ -98,4 +104,8 @@ async def render_inline(
     user: User = Depends(get_current_user),
 ):
     """Render a spec without persisting — used by the AI chat preview."""
-    return {"widget": spec, "data": await widget_service.render(db, spec)}
+    try:
+        data = await widget_service.render(db, spec)
+    except WidgetQueryError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"widget": spec, "data": data}
