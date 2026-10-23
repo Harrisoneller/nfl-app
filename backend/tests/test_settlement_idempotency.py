@@ -357,6 +357,46 @@ def test_stale_claim_token_cannot_mark_settled(db, monkeypatch):
     assert db.get(Game, "g1").claim_token == "reclaimed-token"
 
 
+def test_reclaimed_worker_cannot_grade_late_wagers(db, monkeypatch):
+    """A settled game's late bets commit only while the observed token still matches."""
+    from app.services import settlement_service
+
+    user = _user(db)
+    game = _game(db, "g1", "PHI", "DAL", 27, 17)
+    first = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    assert bet_service.settle_user_bets(db, user.id)["settled_bets"] == 1
+    db.expire_all()
+    stored = db.get(Game, "g1")
+    assert stored.settlement_status == "settled"
+    original = stored.claim_token
+    assert original
+
+    late = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    real = bet_service.apply_game_grades
+
+    def steal_claim(session, graded, user_id=None):
+        session.execute(
+            update(Game)
+            .where(Game.id == graded.id)
+            .values(claim_token="reclaimed-token", settlement_status="settling")
+        )
+        session.commit()
+        return real(session, graded, user_id=user_id)
+
+    monkeypatch.setattr(bet_service, "apply_game_grades", steal_claim)
+    outcome = settlement_service.settle_game(db, game, user_id=user.id)
+    assert outcome["rolled_back"] == 1
+    assert outcome["settled_bets"] == 0
+    db.expire_all()
+    assert db.get(Bet, late.id).status == "pending"
+    assert db.get(Bet, late.id).result_units is None
+    assert db.get(Bet, first.id).status == "won"
+    kept = db.get(Game, "g1")
+    assert kept.claim_token == "reclaimed-token"
+    assert kept.settlement_status == "settling"
+    assert kept.claim_token != original
+
+
 def test_sqlite_reclaim_uses_database_clock_for_naive_timestamps(db, monkeypatch):
     """SQLite round-trips datetimes without tzinfo. Do not compare them to an aware clock."""
     from app.services import settlement_service
