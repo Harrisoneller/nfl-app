@@ -13,6 +13,9 @@ historical row from that attempt are gone. The claim from step 1 stays
 than the configured TTL, measured with the database clock, then reclaims
 it and logs a warning. The settled write matches the claim token from
 this attempt, so a worker whose lease was taken over cannot commit.
+A later pass that only grades wagers placed after the game settled
+uses the same token: the commit matches ``claim_token`` while the row
+is still ``settled``, and a reclaimed token rolls those grades back.
 The reset script can clear the claim sooner (dry-run unless ``--apply``;
 it requires an explicit non-production APP_ENV and an allowlisted host).
 
@@ -97,9 +100,11 @@ def _claim_age_sql(dialect: str):
 def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
     """Return ``(status, claim_token)``.
 
-    ``status`` is ``claimed``, ``settled``, or ``stuck``. The token is set
-    only when this call won the claim. It is committed before any grading
-    writes. Lease expiry uses the database clock, not the application clock.
+    ``status`` is ``claimed``, ``settled``, or ``stuck``. A won claim
+    returns the new token, committed before any grading writes. A game
+    that is already ``settled`` returns the token stored on the row, so
+    a later grade of late wagers can refuse to commit if that token
+    changed. Lease expiry uses the database clock, not the application clock.
 
     A claim whose ``claimed_at`` is missing or older than the TTL is
     reclaimed by the same conditional UPDATE. The warning names the game
@@ -107,11 +112,15 @@ def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
     """
     dialect = _dialect_name(db)
     deadline = _lease_deadline(dialect, _ttl_seconds())
-    status, age = db.execute(
-        select(Game.settlement_status, _claim_age_sql(dialect)).where(Game.id == game.id)
+    status, age, observed = db.execute(
+        select(
+            Game.settlement_status,
+            _claim_age_sql(dialect),
+            Game.claim_token,
+        ).where(Game.id == game.id)
     ).one()
     if status == SETTLED:
-        return "settled", None
+        return "settled", observed
 
     token = uuid.uuid4().hex
     res = db.execute(
@@ -148,12 +157,12 @@ def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
         return "claimed", token
 
     db.rollback()
-    status = db.execute(
-        select(Game.settlement_status).where(Game.id == game.id)
-    ).scalar()
+    status, observed = db.execute(
+        select(Game.settlement_status, Game.claim_token).where(Game.id == game.id)
+    ).one()
     db.refresh(game)
     if status == SETTLED:
-        return "settled", None
+        return "settled", observed
     return "stuck", None
 
 
@@ -174,6 +183,27 @@ def mark_settled(db: Session, game_id: str, token: str) -> bool:
             settlement_status=SETTLED,
             settlement_finished_at=func.now(),
         )
+    )
+    return (res.rowcount or 0) == 1
+
+
+def hold_settled_claim(db: Session, game_id: str, token: str) -> bool:
+    """True when ``token`` still owns a game that is already ``settled``.
+
+    Late wagers are graded after the game is settled, so ``mark_settled``
+    (which requires ``settling``) does not apply. This UPDATE matches the
+    stored token without changing it. A rowcount of 1 means this worker
+    may commit those grades. Zero means the token was replaced and the
+    caller must roll the grades back.
+    """
+    if not token:
+        return False
+    res = db.execute(
+        update(Game)
+        .where(Game.id == game_id)
+        .where(Game.settlement_status == SETTLED)
+        .where(Game.claim_token == token)
+        .values(claim_token=token)
     )
     return (res.rowcount or 0) == 1
 
@@ -290,6 +320,10 @@ def settle_game(
             )
 
         if sparky_writes or db.dirty or db.new:
+            if not hold_settled_claim(db, game.id, token or ""):
+                db.rollback()
+                log.warning("settlement_claim_lost", game_id=game.id)
+                return _empty(rolled_back=1)
             db.commit()
         else:
             db.rollback()
