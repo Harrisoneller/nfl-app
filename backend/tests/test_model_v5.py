@@ -126,15 +126,20 @@ def test_qb_prior_slides_with_volume():
 # ---- market prior --------------------------------------------------------------
 
 
-def test_market_ratings_never_read_the_target_week_line():
+def test_features_have_no_market_column():
     pbp = _synthetic_pbp(2025, 14, seed=5)
     sched = _schedule(pbp, 2025)
     sched["spread_line"] = np.where(sched.home_team == "AAA", 7.0, -1.0)
-    a = v5.market_ratings(sched, 2025, 11, TEAMS)
+    rows = v5.attach_points(v5.team_game_rows(pbp, 2025), sched)
+    wm = v5.build_week_model(rows, sched, 2025, 11, TEAMS)
+    f = wm.features("AAA", "DDD")
+    assert "mkt_d" not in f
+    assert "mkt_d" not in v5.MARGIN_COEFS
+    assert wm.predict("AAA", "DDD")["uses_market_prior"] is False
     s2 = sched.copy()
     s2.loc[s2.week >= 11, "spread_line"] = 99.0
-    b = v5.market_ratings(s2, 2025, 11, TEAMS)
-    assert a is not None and a[0] == pytest.approx(b[0])
+    wm2 = v5.build_week_model(rows, s2, 2025, 11, TEAMS)
+    assert wm.predict("AAA", "DDD")["margin"] == pytest.approx(wm2.predict("AAA", "DDD")["margin"])
 
 
 # ---- WeekModel -----------------------------------------------------------------

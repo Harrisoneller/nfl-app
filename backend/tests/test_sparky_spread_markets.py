@@ -175,24 +175,21 @@ def test_same_team_maps_city_nickname_and_id():
 
 
 def test_spread_and_total_legs_are_built_without_a_persisted_dist():
-    """Cold prediction store must not blank the spread/total markets."""
+    """Prices can exist with a cold store. The model centre does not."""
     gi = S._game_inputs(_pred(), _odds())
     assert gi is not None
     assert gi.spread_prices is not None
     assert gi.spread_prices.line == -7.5
-    assert gi.model_spread is not None
+    assert gi.model_spread is None
     assert gi.total_prices is not None
     assert gi.total_prices.line == 52.5
-    assert gi.model_total is not None
+    assert gi.model_total is None
 
     legs = L.build_game_legs(gi)
     markets = {leg.market for leg in legs}
-    assert "spread" in markets
-    assert "total" in markets
+    assert "spread" not in markets
+    assert "total" not in markets
     assert "moneyline" in markets
-    labels = {leg.label for leg in legs if leg.market == "spread"}
-    assert any("KC" in x and "-" in x for x in labels)
-    assert any("SF" in x and "+" in x for x in labels)
 
 
 def test_short_prediction_names_still_produce_spread_legs():
@@ -202,20 +199,16 @@ def test_short_prediction_names_still_produce_spread_legs():
     )
     assert gi is not None
     assert gi.spread_prices is not None
-    assert gi.model_spread is not None
+    assert gi.model_spread is None
     legs = L.build_game_legs(gi)
-    assert any(leg.market == "spread" for leg in legs)
+    assert not any(leg.market == "spread" for leg in legs)
 
 
 def test_market_centered_fallback_puts_cover_prob_near_half():
-    """With no model view the centre sits on the market line, so there is no
-    invented edge — the legs exist so they can be clicked, not so they look +EV.
-    """
+    """With no model view there is no cover probability to invent."""
     gi = S._game_inputs(_pred(), _odds())
-    assert gi.model_spread is not None
-    m = gi.model_spread.normalized()
-    room = m.a + m.b
-    assert m.a / room == pytest.approx(0.5, abs=0.01)
+    assert gi.model_spread is None
+    assert gi.model_total is None
 
 
 def test_persisted_dist_is_preferred_over_the_market_line():
@@ -268,10 +261,10 @@ def test_spread_legs_build_when_totals_are_missing():
     gi = S._game_inputs(_pred(), odds)
     assert gi is not None
     assert gi.spread_prices is not None
-    assert gi.model_spread is not None
+    assert gi.model_spread is None
     assert gi.total_prices is None
     legs = L.build_game_legs(gi)
-    assert any(leg.market == "spread" for leg in legs)
+    assert not any(leg.market == "spread" for leg in legs)
     assert not any(leg.market == "total" for leg in legs)
 
 

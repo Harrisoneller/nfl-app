@@ -106,7 +106,7 @@ class TestApplyMarketBlend:
         assert "market" not in pred
         assert pred["home_win_prob"] == 0.55  # untouched
 
-    def test_blend_moves_headline_toward_market(self):
+    def test_market_quote_does_not_move_the_headline(self):
         pred = _fake_pred()
         market = {
             "consensus_home_prob": 0.70, "spread_home": -6.5, "total": 48.5,
@@ -114,25 +114,15 @@ class TestApplyMarketBlend:
             "sources": {"sportsbooks": 5, "kalshi": False},
         }
         ms.apply_market_blend(pred, market)
-        assert pred["prediction_basis"] == ms.BLEND_VERSION
-        assert 0.55 < pred["home_win_prob"] < 0.70
-        assert -6.5 < pred["predicted_spread"] < -1.7
-        assert 44.0 < pred["predicted_total"] < 48.5
-        # Pure model preserved + edge = model − market.
-        assert pred["model_only"]["home_win_prob"] == 0.55
+        assert pred["prediction_basis"] == "model_only"
+        assert pred["home_win_prob"] == 0.55
+        assert pred["predicted_spread"] == -1.7
+        assert pred["predicted_total"] == 44.0
         assert pred["edge"]["home_win_prob"] == pytest.approx(-0.15, abs=1e-9)
         assert pred["edge"]["spread"] == pytest.approx(4.8)
-        # Scores stay internally consistent with blended spread/total.
-        s = pred["predicted_home_score"] + pred["predicted_away_score"]
-        assert s == pytest.approx(pred["predicted_total"], abs=0.15)
-        m = pred["predicted_home_score"] - pred["predicted_away_score"]
-        assert m == pytest.approx(-pred["predicted_spread"], abs=0.15)
-        # Distribution re-centered on the blended margin.
-        assert pred["distribution"]["expected_margin"] == pytest.approx(
-            -pred["predicted_spread"], abs=0.05,
-        )
+        assert pred["market"]["weight"] == 0.0
 
-    def test_missing_spread_derived_from_blended_prob(self):
+    def test_missing_spread_leaves_the_model_number(self):
         pred = _fake_pred()
         market = {
             "consensus_home_prob": 0.70, "spread_home": None, "total": None,
@@ -140,8 +130,7 @@ class TestApplyMarketBlend:
             "sources": {"sportsbooks": 3, "kalshi": False},
         }
         ms.apply_market_blend(pred, market)
-        # Spread must agree in sign with the blended favorite (home).
-        assert pred["home_win_prob"] > 0.5
-        assert pred["predicted_spread"] < 0
-        # Total absent from market → model total stands.
+        assert pred["home_win_prob"] == 0.55
+        assert pred["predicted_spread"] == -1.7
         assert pred["predicted_total"] == 44.0
+        assert pred["edge"]["spread"] is None

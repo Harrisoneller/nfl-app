@@ -201,42 +201,29 @@ def _distribution(
     market_margin: float | None = None,
     market_total: float | None = None,
 ) -> dist_model.GameDistribution | None:
-    """Rebuild this game's joint outcome distribution.
+    """Rebuild this game's joint outcome distribution from the blind fair.
 
-    Preference order, each step only filling what the previous left None:
+    Preference order:
 
     1. The ``market.dist`` blob ``build_slate`` persisted (means + sigmas + rho).
     2. The ``pred_margin`` / ``pred_total`` columns on the same row.
-    3. Caller-supplied market consensus (the modal spread/total from odds_lines,
-       or the snapshot consensus ``build_slate`` already stored). Used only so
-       a spread/total *price* can still become a clickable leg when the model
-       store was cold at slate-build time. The centre sits on the market line,
-       so the resulting edge is ~zero — honest, not invented value.
+
+    A modal sportsbook number is not a model centre. ``market_margin`` and
+    ``market_total`` are accepted so older callers keep a stable signature and
+    are ignored. The market's own curve for alt-line pricing is
+    ``market_implied_dist``, built separately from the quote.
     """
+    del market_margin, market_total
     blob = (pred.market or {}).get("dist") or {}
     # `.get(key, default)` is wrong here: a blob that exists with
     # ``expected_margin: None`` would shadow the column fallback.
     mu_m = blob.get("expected_margin")
     if mu_m is None:
         mu_m = pred.pred_margin
-    if mu_m is None:
-        mu_m = market_margin
-    if mu_m is None:
-        spread_home = (pred.market or {}).get("spread_home")
-        if spread_home is not None:
-            # Snapshot convention: negative = home favoured. Home expected
-            # margin is the negation.
-            mu_m = -float(spread_home)
 
     mu_t = blob.get("expected_total")
     if mu_t is None:
         mu_t = pred.pred_total
-    if mu_t is None:
-        mu_t = market_total
-    if mu_t is None:
-        total = (pred.market or {}).get("total")
-        if total is not None:
-            mu_t = float(total)
 
     if mu_m is None and mu_t is None:
         return None
@@ -750,40 +737,20 @@ def _game_inputs(
     s_modal = _modal_line(s_grouped)
     t_modal = _modal_line(t_grouped)
 
-    gd = _distribution(
-        pred,
-        market_margin=None if s_modal is None else -float(s_modal),
-        market_total=None if t_modal is None else float(t_modal),
-    )
+    gd = _distribution(pred)
+    has_margin = _pred_has_margin(pred)
+    has_total = _pred_has_total(pred)
 
-    if gd is not None and not (_pred_has_margin(pred) and _pred_has_total(pred)):
-        # Invert only the axes we don't have a model centre for. Sitting the
-        # Normal on `mu = -line` does *not* make the discrete cover 50% —
-        # key-number mass at 3 and 7 pulls it several points off — and that
-        # gap would show up as a fake edge on every no-model spread. Invert
-        # in the same measure we price in so a market-only leg is actually
-        # fair at the number the books hung. A real margin with a missing
-        # total must not get dragged onto the market line just because the
-        # other axis had to be filled in.
-        gd = market_implied_dist(
-            gd,
-            spread_line=s_modal if not _pred_has_margin(pred) else None,
-            spread_fair_home=(
-                0.5 if (not _pred_has_margin(pred) and s_modal is not None) else None
-            ),
-            total_line=t_modal if not _pred_has_total(pred) else None,
-            total_fair_over=(
-                0.5 if (not _pred_has_total(pred) and t_modal is not None) else None
-            ),
-        )
-
-    if gd is not None:
-        if s_modal is not None:
-            spread_prices = _side_prices_at(s_modal, s_grouped[s_modal], is_alt=False)
+    if s_modal is not None:
+        spread_prices = _side_prices_at(s_modal, s_grouped[s_modal], is_alt=False)
+        if gd is not None and has_margin:
             model_spread = ModelTriple(*gd.cover_prob_discrete(s_modal))
-        if t_modal is not None:
-            total_prices = _side_prices_at(t_modal, t_grouped[t_modal], is_alt=False)
+    if t_modal is not None:
+        total_prices = _side_prices_at(t_modal, t_grouped[t_modal], is_alt=False)
+        if gd is not None and has_total:
             model_total = ModelTriple(*_over_under_discrete(gd, t_modal))
+
+    if gd is not None and (has_margin or has_total):
 
         if _p("parlay.alt_lines_enabled") >= 1.0:
             # The market's own centre, needed to price any number it has not
@@ -805,12 +772,12 @@ def _game_inputs(
             max_offset = _p("parlay.alt_line_max_offset")
             min_books = int(_p("parlay.alt_line_min_books_devig"))
             max_alts = int(_p("parlay.alt_lines_per_market"))
-            if s_modal is not None:
+            if s_modal is not None and has_margin:
                 spread_markets = _spread_markets(
                     gd, mkt, s_grouped, s_modal, max_offset=max_offset,
                     min_books_devig=min_books, max_alts=max_alts,
                 )
-            if t_modal is not None:
+            if t_modal is not None and has_total:
                 total_markets = _total_markets(
                     gd, mkt, t_grouped, t_modal, max_offset=max_offset,
                     min_books_devig=min_books, max_alts=max_alts,

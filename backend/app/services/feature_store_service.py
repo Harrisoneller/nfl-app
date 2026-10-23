@@ -102,6 +102,10 @@ def store_game_feature_frame(
                         "travel_proxy": _safe_float(row.get("away_travel_proxy")) if side == "away" else 0.0,
                         "weather_class_code": _safe_int(row.get("weather_class_code")),
                         "weather_is_bad": _safe_int(row.get("weather_is_bad")),
+                    },
+                    # Quotes live beside the design, never inside it. Grading
+                    # and edge code may read eval_only; the model must not.
+                    "eval_only": {
                         "market_spread_home": _safe_float(row.get("market_spread_home")),
                         "market_home_win_prob": _safe_float(row.get("market_home_win_prob")),
                         "market_available": _safe_int(row.get("market_available")),
