@@ -441,10 +441,10 @@ def test_owner_can_revoke_public_share(api, monkeypatch):
 
 
 def test_is_public_migration_defaults_existing_rows_to_true():
-    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0020_widget_is_public.py"
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0021_widget_is_public.py"
     text = path.read_text()
-    assert 'revision: str = "0020_widget_is_public"' in text
-    assert 'down_revision: Union[str, None] = "0019_context_layer"' in text
+    assert 'revision: str = "0021_widget_is_public"' in text
+    assert 'down_revision: Union[str, None] = "0020_settlement_status"' in text
     assert 'server_default=sa.text("true")' in text
     assert "nullable=False" in text
 
