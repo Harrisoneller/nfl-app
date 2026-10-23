@@ -1,0 +1,166 @@
+{
+  "model": "v6-blind plus qb-transition",
+  "holdout_scored": false,
+  "scored_seasons_max": 2023,
+  "qb_k_grid": [
+    300.0,
+    400.0
+  ],
+  "tie_break": "higher k",
+  "selected_qb_k": 300.0,
+  "frozen_w_margin": 8.961043,
+  "frozen_w_total": 36.612236,
+  "walk_forward_margin_crps": 7.337633526359313,
+  "candidates": [
+    {
+      "qb_k": 300.0,
+      "walk_forward_margin_crps": 7.337633526359313,
+      "by_season": [
+        {
+          "season": 2016,
+          "n": 230,
+          "w_margin": 0.0,
+          "crps": 7.0030783374317345,
+          "v6_crps": 7.04026667335912
+        },
+        {
+          "season": 2017,
+          "n": 221,
+          "w_margin": -53.843318,
+          "crps": 7.772793642265281,
+          "v6_crps": 7.757537563170284
+        },
+        {
+          "season": 2018,
+          "n": 228,
+          "w_margin": -34.46934,
+          "crps": 7.174735854961716,
+          "v6_crps": 7.1534831934205005
+        },
+        {
+          "season": 2019,
+          "n": 221,
+          "w_margin": -14.945028,
+          "crps": 7.468013125744008,
+          "v6_crps": 7.4561917117325125
+        },
+        {
+          "season": 2020,
+          "n": 224,
+          "w_margin": -2.60301,
+          "crps": 7.186809052771764,
+          "v6_crps": 7.195092176159492
+        },
+        {
+          "season": 2021,
+          "n": 228,
+          "w_margin": -11.320331,
+          "crps": 8.097432702936112,
+          "v6_crps": 8.071309747751396
+        },
+        {
+          "season": 2022,
+          "n": 233,
+          "w_margin": 1.962119,
+          "crps": 6.563976918027926,
+          "v6_crps": 6.56384074238765
+        },
+        {
+          "season": 2023,
+          "n": 230,
+          "w_margin": 3.207483,
+          "crps": 7.467705461220495,
+          "v6_crps": 7.462016929607838
+        }
+      ],
+      "frozen_w_margin": 8.961043,
+      "frozen_w_total": 36.612236,
+      "knowable_games_2016_23": 1815,
+      "unknowable_games_2016_23": 376,
+      "transition_knowable_games_2016_23": 102,
+      "selected": true
+    },
+    {
+      "qb_k": 400.0,
+      "walk_forward_margin_crps": 7.3385356984108014,
+      "by_season": [
+        {
+          "season": 2016,
+          "n": 230,
+          "w_margin": 0.0,
+          "crps": 7.0030783374317345,
+          "v6_crps": 7.04026667335912
+        },
+        {
+          "season": 2017,
+          "n": 221,
+          "w_margin": -58.686189,
+          "crps": 7.776713163016872,
+          "v6_crps": 7.757537563170284
+        },
+        {
+          "season": 2018,
+          "n": 228,
+          "w_margin": -36.243534,
+          "crps": 7.176199956444119,
+          "v6_crps": 7.1534831934205005
+        },
+        {
+          "season": 2019,
+          "n": 221,
+          "w_margin": -16.223681,
+          "crps": 7.467701373901107,
+          "v6_crps": 7.4561917117325125
+        },
+        {
+          "season": 2020,
+          "n": 224,
+          "w_margin": -4.695162,
+          "crps": 7.185785233920879,
+          "v6_crps": 7.195092176159492
+        },
+        {
+          "season": 2021,
+          "n": 228,
+          "w_margin": -13.138495,
+          "crps": 8.099517848830937,
+          "v6_crps": 8.071309747751396
+        },
+        {
+          "season": 2022,
+          "n": 233,
+          "w_margin": 0.954291,
+          "crps": 6.564343588224942,
+          "v6_crps": 6.56384074238765
+        },
+        {
+          "season": 2023,
+          "n": 230,
+          "w_margin": 2.457998,
+          "crps": 7.468465453434911,
+          "v6_crps": 7.462016929607838
+        }
+      ],
+      "frozen_w_margin": 8.626883,
+      "frozen_w_total": 35.482641,
+      "knowable_games_2016_23": 1815,
+      "unknowable_games_2016_23": 376,
+      "transition_knowable_games_2016_23": 102,
+      "selected": false
+    }
+  ],
+  "features_sha256": "68a4065109b24a587c788d062e317f9672991cd70d2d748b6c93fd114a572957",
+  "bootstrap": {
+    "draws": 10000,
+    "seed": 20241023,
+    "quantiles": [
+      0.05,
+      0.95
+    ]
+  },
+  "formula": "pred_margin = v6_margin - pass_coef * (old_dh * home_transition - old_da * away_transition) + w_margin * f_margin; pred_total replaces the same sides on the sum",
+  "training_seasons": "knowable 2016-2023; 2015 excluded",
+  "walk_forward_2016": "weight 0, no prior season in the training window",
+  "pass_coef_source": "coefs.json by_season; 2024-2026 use the frozen full-sample pass coefficient",
+  "note": "2024 and later are not scored in this file."
+}

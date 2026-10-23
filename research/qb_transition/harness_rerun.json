@@ -1,0 +1,123 @@
+{
+  "kind": "harness-fix re-run",
+  "retuned": false,
+  "qb_k": 300.0,
+  "frozen_w_margin": 8.961043,
+  "frozen_w_total": 36.612236,
+  "harness_rows": 3300,
+  "schedule_rows": 3300,
+  "max_abs_margin_diff_vs_stored": 0.0,
+  "max_abs_total_diff_vs_stored": 0.0,
+  "verdict_changed": false,
+  "verdict": {
+    "ats_52_5_on_400": {
+      "pass": false,
+      "ats": 0.48917748917748916,
+      "n_ats": 462,
+      "need_ats": 0.525,
+      "need_n": 400
+    },
+    "bootstrap_90_lo_above_50": {
+      "pass": false,
+      "lo": 0.45021645021645024,
+      "hi": 0.525974025974026
+    },
+    "clv": {
+      "pass": null,
+      "status": "unavailable",
+      "opener_n": 0
+    },
+    "no_crps_regression_vs_v6": {
+      "pass": true,
+      "ablation": 7.236022141165451,
+      "v6": 7.237441510844276
+    },
+    "p_below_0_01": {
+      "pass": false,
+      "p_value": 0.695568768561565
+    },
+    "overall_pass": false
+  },
+  "blocks": {
+    "2024\u201325 holdout, knowable games": {
+      "n": 466,
+      "n_ats": 462,
+      "wins": 226,
+      "ats": 0.48917748917748916,
+      "bootstrap_90_lo": 0.45021645021645024,
+      "bootstrap_90_hi": 0.525974025974026,
+      "p_value": 0.695568768561565,
+      "margin_crps": 7.236022141165451,
+      "v6_margin_crps": 7.237441510844276,
+      "close_margin_crps": 6.975517298941785,
+      "margin_rmse": 12.900195216814375,
+      "v6_margin_rmse": 12.90532468513482,
+      "close_margin_rmse": 12.3985367058517,
+      "totals_crps": 7.622407213899552,
+      "v6_totals_crps": 7.593597910272925,
+      "close_totals_crps": 7.373220512036876,
+      "clv": null,
+      "opener_n": 0
+    },
+    "2024\u201325 transition games only": {
+      "n": 45,
+      "n_ats": 45,
+      "wins": 22,
+      "ats": 0.4888888888888889,
+      "bootstrap_90_lo": 0.35555555555555557,
+      "bootstrap_90_hi": 0.6,
+      "p_value": 0.6170040878776035,
+      "margin_crps": 8.658942241412237,
+      "v6_margin_crps": 8.67364060297519,
+      "close_margin_crps": 7.5060360104265875,
+      "margin_rmse": 15.414708555751828,
+      "v6_margin_rmse": 15.45910703168362,
+      "close_margin_rmse": 13.132233456482394,
+      "totals_crps": 8.115325334079355,
+      "v6_totals_crps": 7.816988989856955,
+      "close_totals_crps": 7.954553471925635,
+      "clv": null,
+      "opener_n": 0
+    },
+    "2026 live check, knowable games": {
+      "n": 76,
+      "n_ats": 72,
+      "wins": 37,
+      "ats": 0.5138888888888888,
+      "bootstrap_90_lo": 0.4166666666666667,
+      "bootstrap_90_hi": 0.6111111111111112,
+      "p_value": 0.4531471623515405,
+      "margin_crps": 6.533440558928402,
+      "v6_margin_crps": 6.533532508616467,
+      "close_margin_crps": 6.412659814586047,
+      "margin_rmse": 11.47063405970492,
+      "v6_margin_rmse": 11.471174248196965,
+      "close_margin_rmse": 11.224092977069226,
+      "totals_crps": 8.30019966853064,
+      "v6_totals_crps": 8.301779605978423,
+      "close_totals_crps": 7.410321012282979,
+      "clv": null,
+      "opener_n": 0
+    },
+    "2026 transition games only": {
+      "n": 12,
+      "n_ats": 12,
+      "wins": 4,
+      "ats": 0.3333333333333333,
+      "bootstrap_90_lo": 0.08333333333333333,
+      "bootstrap_90_hi": 0.5833333333333334,
+      "p_value": 0.927001953125,
+      "margin_crps": 8.73540090406419,
+      "v6_margin_crps": 8.735983252088596,
+      "close_margin_crps": 7.727693187480124,
+      "margin_rmse": 14.907415614951027,
+      "v6_margin_rmse": 14.910047910346856,
+      "close_margin_rmse": 13.342444803458372,
+      "totals_crps": 6.157801848381663,
+      "v6_totals_crps": 6.167808118884292,
+      "close_totals_crps": 5.328257456620642,
+      "clv": null,
+      "opener_n": 0
+    }
+  }
+}
