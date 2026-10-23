@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import create_engine, event, select, update
+from sqlalchemy import create_engine, event, select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models.bet import Bet, BetLeg
@@ -355,6 +357,187 @@ def test_stale_claim_token_cannot_mark_settled(db, monkeypatch):
     db.expire_all()
     assert db.get(Game, "g1").settlement_status == "settled"
     assert db.get(Game, "g1").claim_token == "reclaimed-token"
+
+
+def test_reclaimed_worker_cannot_grade_late_wagers(db, monkeypatch):
+    """A settled game's late bets commit only while the observed token still matches."""
+    from app.services import settlement_service
+
+    user = _user(db)
+    game = _game(db, "g1", "PHI", "DAL", 27, 17)
+    first = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    assert bet_service.settle_user_bets(db, user.id)["settled_bets"] == 1
+    db.expire_all()
+    stored = db.get(Game, "g1")
+    assert stored.settlement_status == "settled"
+    original = stored.claim_token
+    assert original
+
+    late = _straight(db, user, "g1", "PHI", "PHI", "DAL")
+    real = bet_service.apply_game_grades
+
+    def steal_claim(session, graded, user_id=None):
+        session.execute(
+            update(Game)
+            .where(Game.id == graded.id)
+            .values(claim_token="reclaimed-token", settlement_status="settling")
+        )
+        session.commit()
+        return real(session, graded, user_id=user_id)
+
+    monkeypatch.setattr(bet_service, "apply_game_grades", steal_claim)
+    outcome = settlement_service.settle_game(db, game, user_id=user.id)
+    assert outcome["rolled_back"] == 1
+    assert outcome["settled_bets"] == 0
+    db.expire_all()
+    assert db.get(Bet, late.id).status == "pending"
+    assert db.get(Bet, late.id).result_units is None
+    assert db.get(Bet, first.id).status == "won"
+    kept = db.get(Game, "g1")
+    assert kept.claim_token == "reclaimed-token"
+    assert kept.settlement_status == "settling"
+    assert kept.claim_token != original
+
+
+# Local-only role. CI has no Postgres and falls back to a file database.
+_PG_URL = "postgresql+psycopg://settletest:settletest@127.0.0.1:5432/settletest"
+
+
+def _concurrent_engine(tmp_path):
+    """Postgres when this machine has it, otherwise a file SQLite database.
+
+    Memory SQLite is one connection, so two sessions cannot see each other's
+    commits. A file database (or Postgres) can.
+    """
+    url = os.environ.get("SETTLEMENT_CONCURRENCY_URL", _PG_URL)
+    if url.startswith("sqlite"):
+        return _sqlite_engine(url)
+    engine = None
+    try:
+        engine = create_engine(
+            url,
+            future=True,
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": 2},
+        )
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return engine
+    except Exception:  # noqa: BLE001 — any connect failure falls back to SQLite
+        if engine is not None:
+            engine.dispose()
+        return _sqlite_engine(f"sqlite:///{tmp_path / 'late-wager.db'}")
+
+
+def _sqlite_engine(url: str):
+    engine = create_engine(
+        url,
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+        conn.exec_driver_sql("PRAGMA busy_timeout=30000")
+    return engine
+
+
+def test_overlapping_late_wagers_are_graded_once(tmp_path, monkeypatch):
+    """Two runners that both see a late bet as pending settle it once.
+
+    Neither runner overwrites the claim token by hand. The winning commit
+    rotates it, so the other commit matches zero rows.
+    """
+    from app.services import settlement_service
+
+    engine = _concurrent_engine(tmp_path)
+    tables = [
+        User.__table__,
+        Team.__table__,
+        Game.__table__,
+        Bet.__table__,
+        BetLeg.__table__,
+        OddsSnapshot.__table__,
+    ]
+    try:
+        for table in reversed(tables):
+            table.drop(bind=engine, checkfirst=True)
+        for table in tables:
+            table.create(bind=engine)
+        Session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False, future=True
+        )
+        setup = Session()
+        for tid, name, full in (
+            ("PHI", "Eagles", "Philadelphia Eagles"),
+            ("DAL", "Cowboys", "Dallas Cowboys"),
+        ):
+            setup.add(Team(id=tid, name=name, full_name=full))
+        setup.commit()
+        user = _user(setup)
+        _game(setup, "g1", "PHI", "DAL", 27, 17)
+        _straight(setup, user, "g1", "PHI", "PHI", "DAL")
+        assert bet_service.settle_user_bets(setup, user.id)["settled_bets"] == 1
+        late = _straight(setup, user, "g1", "PHI", "PHI", "DAL")
+        setup.expire_all()
+        original = setup.get(Game, "g1").claim_token
+        assert original
+        late_id = late.id
+        user_id = user.id
+        setup.close()
+
+        barrier = threading.Barrier(2)
+        real_grade = bet_service._grade_leg
+        saw_pending = []
+
+        def grade_after_both_see_pending(session, leg):
+            if leg.bet_id == late_id:
+                status = session.execute(
+                    select(Bet.status).where(Bet.id == late_id)
+                ).scalar()
+                saw_pending.append(status)
+                # Both transactions have read the late bet. Neither has committed.
+                barrier.wait(timeout=15)
+            return real_grade(session, leg)
+
+        monkeypatch.setattr(bet_service, "_grade_leg", grade_after_both_see_pending)
+        results: list[dict | None] = [None, None]
+        errors: list[BaseException | None] = [None, None]
+
+        def run(index: int) -> None:
+            session = Session()
+            try:
+                game = session.get(Game, "g1")
+                results[index] = settlement_service.settle_game(
+                    session, game, user_id=user_id
+                )
+            except BaseException as exc:  # noqa: BLE001 — surface a thread failure
+                errors[index] = exc
+            finally:
+                session.close()
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in (0, 1)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == [None, None]
+        assert saw_pending == ["pending", "pending"]
+        assert results[0] is not None and results[1] is not None
+        assert results[0]["settled_bets"] + results[1]["settled_bets"] == 1
+
+        check = Session()
+        try:
+            stored = check.get(Bet, late_id)
+            assert stored is not None
+            assert stored.status == "won"
+            assert stored.result_units == pytest.approx(3.0)
+            assert check.get(Game, "g1").claim_token not in (None, original)
+            assert check.query(BetLeg).filter(BetLeg.bet_id == late_id).count() == 1
+        finally:
+            check.close()
+    finally:
+        engine.dispose()
 
 
 def test_sqlite_reclaim_uses_database_clock_for_naive_timestamps(db, monkeypatch):

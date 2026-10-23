@@ -2,8 +2,11 @@
 
 Settlement is idempotent and per game: it only grades legs that are still
 pending, rolls a bet up once, and commits each final game in its own
-transaction. A failure rolls that game back instead of leaving partial rows.
-Re-running does not grade a settled bet again. Safe to call repeatedly.
+transaction. The leg and bet writes are conditional (``leg_result`` /
+``status`` still pending) and count the rowcount, so a second runner that
+already lost the row does not grade it again. A failure rolls that game
+back instead of leaving partial rows. Re-running does not grade a settled
+bet again. Safe to call repeatedly.
 """
 from __future__ import annotations
 
@@ -12,8 +15,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from ..models.bet import LOST, PENDING, PUSH, WON, Bet, BetLeg
 from ..models.game import Game
@@ -400,6 +404,40 @@ def _grade_leg(db: Session, leg: BetLeg) -> str | None:
     return None
 
 
+def _write_pending_leg(db: Session, leg: BetLeg, result: str) -> bool:
+    """Persist ``result`` only while the leg is still pending.
+
+    Returns False when another transaction already graded the leg. The
+    in-memory leg is aligned with that write without a second UPDATE, so
+    commit does not emit an unconditional ``leg_result`` assignment.
+    """
+    settled_at = _now()
+    values: dict[str, Any] = {"leg_result": result, "settled_at": settled_at}
+    insp = inspect(leg)
+    for attr in (
+        "clv_pct",
+        "clv_line",
+        "closing_line",
+        "closing_odds_american",
+        "beat_close",
+    ):
+        if insp.attrs[attr].history.has_changes():
+            values[attr] = getattr(leg, attr)
+    res = db.execute(
+        update(BetLeg)
+        .where(BetLeg.id == leg.id)
+        .where(BetLeg.leg_result == PENDING)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if (res.rowcount or 0) != 1:
+        db.expire(leg)
+        return False
+    for key, value in values.items():
+        set_committed_value(leg, key, value)
+    return True
+
+
 def apply_game_grades(
     db: Session, game: Game, *, user_id: uuid.UUID | None = None
 ) -> dict[str, int]:
@@ -452,13 +490,13 @@ def apply_game_grades(
                     changed = True
             result = _grade_leg(db, leg)
             if result is not None:
-                leg.leg_result = result
-                leg.settled_at = _now()
+                if not _write_pending_leg(db, leg, result):
+                    continue
                 graded_legs += 1
                 changed = True
         if not touched:
             continue
-        if _rollup_ready(bet):
+        if _rollup_ready(db, bet):
             settled_bets += 1
             changed = True
         elif changed:
@@ -505,8 +543,13 @@ def apply_clv_for_open_legs(db: Session, user_id: uuid.UUID) -> int:
     return changed_bets
 
 
-def _rollup_ready(bet: Bet) -> bool:
-    """Roll a pending bet up when every leg is graded. Returns True if it settled."""
+def _rollup_ready(db: Session, bet: Bet) -> bool:
+    """Roll a pending bet up when every leg is graded.
+
+    The bet row is updated only while ``status`` is still pending. Returns
+    False when another transaction already settled it, so this runner does
+    not count the bet a second time.
+    """
     if bet.status != PENDING:
         return False
     legs = _ordered_legs(bet)
@@ -522,14 +565,30 @@ def _rollup_ready(bet: Bet) -> bool:
         status, payout, result = grading.settle_straight(
             leg_results[0], leg_decimals[0], bet.stake_units
         )
-    bet.status = status
-    bet.payout_units = round(payout, 4)
-    bet.result_units = round(result, 4)
+    clv_pct, beat_close = _rollup_clv(bet)
+    values: dict[str, Any] = {
+        "status": status,
+        "payout_units": round(payout, 4),
+        "result_units": round(result, 4),
+        "settled_at": _now(),
+        "clv_pct": clv_pct,
+        "beat_close": beat_close,
+    }
     if bet.stake_dollars:
         ratio = result / bet.stake_units if bet.stake_units else 0.0
-        bet.result_dollars = round(ratio * bet.stake_dollars, 2)
-    bet.settled_at = _now()
-    bet.clv_pct, bet.beat_close = _rollup_clv(bet)
+        values["result_dollars"] = round(ratio * bet.stake_dollars, 2)
+    res = db.execute(
+        update(Bet)
+        .where(Bet.id == bet.id)
+        .where(Bet.status == PENDING)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if (res.rowcount or 0) != 1:
+        db.expire(bet)
+        return False
+    for key, value in values.items():
+        set_committed_value(bet, key, value)
     return True
 
 

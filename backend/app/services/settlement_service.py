@@ -13,6 +13,11 @@ historical row from that attempt are gone. The claim from step 1 stays
 than the configured TTL, measured with the database clock, then reclaims
 it and logs a warning. The settled write matches the claim token from
 this attempt, so a worker whose lease was taken over cannot commit.
+A later pass that only grades wagers placed after the game settled
+rotates that token: ``UPDATE ... SET claim_token=:new WHERE
+claim_token=:observed AND settlement_status='settled'``. A second
+runner that read the same token waits, then matches zero rows and
+rolls its grades back.
 The reset script can clear the claim sooner (dry-run unless ``--apply``;
 it requires an explicit non-production APP_ENV and an allowlisted host).
 
@@ -97,9 +102,11 @@ def _claim_age_sql(dialect: str):
 def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
     """Return ``(status, claim_token)``.
 
-    ``status`` is ``claimed``, ``settled``, or ``stuck``. The token is set
-    only when this call won the claim. It is committed before any grading
-    writes. Lease expiry uses the database clock, not the application clock.
+    ``status`` is ``claimed``, ``settled``, or ``stuck``. A won claim
+    returns the new token, committed before any grading writes. A game
+    that is already ``settled`` returns the token stored on the row, so
+    a later grade of late wagers can refuse to commit if that token
+    changed. Lease expiry uses the database clock, not the application clock.
 
     A claim whose ``claimed_at`` is missing or older than the TTL is
     reclaimed by the same conditional UPDATE. The warning names the game
@@ -107,11 +114,15 @@ def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
     """
     dialect = _dialect_name(db)
     deadline = _lease_deadline(dialect, _ttl_seconds())
-    status, age = db.execute(
-        select(Game.settlement_status, _claim_age_sql(dialect)).where(Game.id == game.id)
+    status, age, observed = db.execute(
+        select(
+            Game.settlement_status,
+            _claim_age_sql(dialect),
+            Game.claim_token,
+        ).where(Game.id == game.id)
     ).one()
     if status == SETTLED:
-        return "settled", None
+        return "settled", observed
 
     token = uuid.uuid4().hex
     res = db.execute(
@@ -148,12 +159,12 @@ def claim_game(db: Session, game: Game) -> tuple[str, str | None]:
         return "claimed", token
 
     db.rollback()
-    status = db.execute(
-        select(Game.settlement_status).where(Game.id == game.id)
-    ).scalar()
+    status, observed = db.execute(
+        select(Game.settlement_status, Game.claim_token).where(Game.id == game.id)
+    ).one()
     db.refresh(game)
     if status == SETTLED:
-        return "settled", None
+        return "settled", observed
     return "stuck", None
 
 
@@ -174,6 +185,29 @@ def mark_settled(db: Session, game_id: str, token: str) -> bool:
             settlement_status=SETTLED,
             settlement_finished_at=func.now(),
         )
+    )
+    return (res.rowcount or 0) == 1
+
+
+def hold_settled_claim(db: Session, game_id: str, token: str) -> bool:
+    """Rotate the settled claim token if this worker still holds it.
+
+    Late wagers are graded after the game is settled, so ``mark_settled``
+    (which requires ``settling``) does not apply. Two runners can both
+    read the same stored token. Setting a new token makes the second
+    runner's predicate fail: on Postgres it waits for this row lock,
+    re-evaluates after this transaction commits, gets rowcount 0, and
+    rolls its grades back. Writing the same token back would still match.
+    """
+    if not token:
+        return False
+    rotated = uuid.uuid4().hex
+    res = db.execute(
+        update(Game)
+        .where(Game.id == game_id)
+        .where(Game.settlement_status == SETTLED)
+        .where(Game.claim_token == token)
+        .values(claim_token=rotated)
     )
     return (res.rowcount or 0) == 1
 
@@ -289,8 +323,21 @@ def settle_game(
                 sparky_unchanged=sparky_unchanged,
             )
 
-        if sparky_writes or db.dirty or db.new:
+        # Core grade writes do not mark the session dirty. A positive grade
+        # count still has to take the token lock before it commits.
+        if (
+            sparky_writes
+            or grades["graded_legs"]
+            or grades["settled_bets"]
+            or db.dirty
+            or db.new
+        ):
+            if not hold_settled_claim(db, game.id, token or ""):
+                db.rollback()
+                log.warning("settlement_claim_lost", game_id=game.id)
+                return _empty(rolled_back=1)
             db.commit()
+            db.refresh(game)
         else:
             db.rollback()
         return _empty(
