@@ -783,14 +783,144 @@ def evaluate() -> None:
     print(f"wrote {RESULTS_PATH}", flush=True)
 
 
+def _load_harness():
+    path = ROOT / "backtest" / "harness_model" / "model.py"
+    spec = importlib.util.spec_from_file_location("v6_harness_rerun", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def harness_rerun() -> None:
+    """Re-score the frozen ablation from the fixed harness. Does not refit k or either weight."""
+    if not FROZEN_PATH.exists() or not FEATURES_PATH.exists():
+        raise SystemExit("frozen file missing")
+    frozen = json.loads(FROZEN_PATH.read_text())
+    digest = hashlib.sha256(FEATURES_PATH.read_bytes()).hexdigest()
+    if digest != frozen["features_sha256"]:
+        raise SystemExit("features.csv does not match the frozen sha")
+    w_m = float(frozen["frozen_w_margin"])
+    w_t = float(frozen["frozen_w_total"])
+    qb_k = float(frozen["selected_qb_k"])
+    features = pd.read_csv(FEATURES_PATH)
+    features = features[features["qb_k"] == qb_k].copy()
+    schedule = pd.read_csv(
+        _load_backtest().DATA / "games.csv",
+        usecols=[
+            "game_id", "season", "week", "gameday", "home_team", "away_team",
+            "home_score", "away_score", "game_type", "location",
+            "result", "total", "spread_line", "total_line",
+        ],
+        low_memory=False,
+    )
+    target = schedule[schedule["game_id"].isin(set(features["game_id"]))].drop_duplicates("game_id")
+    if len(target) != features["game_id"].nunique():
+        raise SystemExit(
+            f"schedule rows {len(target)} != feature games {features['game_id'].nunique()}"
+        )
+    target = target.rename(columns={"gameday": "date", "total": "actual_total"})
+    hist = target[[
+        "game_id", "date", "home_team", "away_team", "home_score", "away_score", "season",
+    ]].copy()
+    harness = _load_harness()
+    pred = harness.predict(hist, target)
+    if len(pred) != len(target):
+        raise SystemExit(f"harness returned {len(pred)} rows for {len(target)} games")
+    stored = pd.read_csv(PREDS)
+    compared = pred.merge(stored[["game_id", "margin", "total"]], on="game_id", how="inner")
+    margin_diff = float((compared["pred_margin"] - compared["margin"]).abs().max())
+    total_diff = float((compared["pred_total"] - compared["total"]).abs().max())
+    df = features.merge(pred[["game_id", "pred_margin", "pred_total"]], on="game_id", how="inner")
+    df = df.rename(columns={"pred_margin": "margin", "pred_total": "total"})
+    df = df.merge(
+        target[["game_id", "result", "actual_total", "spread_line", "total_line"]],
+        on="game_id", how="left",
+    )
+    for col in ("result", "actual_total", "spread_line", "total_line", "margin", "total"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = attach_pass_coefs(df)
+    hold = df[df["season"].between(2024, 2025) & (df["unknowable"] == 0) & df["result"].notna()]
+    trans = hold[hold["transition"] == 1]
+    live = df[(df["season"] == 2026) & (df["unknowable"] == 0) & df["result"].notna()]
+    live_trans = live[live["transition"] == 1]
+    blocks = {
+        "2024–25 holdout, knowable games": grade_block(hold, w_m, w_t),
+        "2024–25 transition games only": grade_block(trans, w_m, w_t),
+        "2026 live check, knowable games": grade_block(live, w_m, w_t),
+        "2026 transition games only": grade_block(live_trans, w_m, w_t),
+    }
+    verdict = bar_verdict(blocks["2024–25 holdout, knowable games"])
+    previous = json.loads((OUT_DIR / "verdict.json").read_text())["verdict"]
+    changed = verdict["overall_pass"] != previous["overall_pass"]
+    unknowable_hold = int(((df["season"].between(2024, 2025)) & (df["unknowable"] == 1) & df["result"].notna()).sum())
+    unknowable_2026 = int(((df["season"] == 2026) & (df["unknowable"] == 1) & df["result"].notna()).sum())
+    labels = {
+        "ats_52_5_on_400": "ATS ≥ 52.5% on ≥ 400 plays",
+        "bootstrap_90_lo_above_50": "bootstrap 90% CI lower bound > 50%",
+        "clv": "CLV > 0 where openers exist",
+        "no_crps_regression_vs_v6": "no margin-CRPS regression versus v6-blind",
+        "p_below_0_01": "one-sided binomial p < 0.01",
+    }
+    lines = [
+        "# Harness-fix re-run",
+        "",
+        "This is a harness-fix re-run, not a re-tune. k and both weights are the values frozen in PREREG.md.",
+        "The v6 margin and total come from `backtest/harness_model/model.py` on the raw nflverse schedule, including `LA`, `OAK`, `SD` and `STL` and the grading columns. No coefficient was refit.",
+        "",
+        f"Frozen: qb k {qb_k:g}, margin weight {w_m:.6f}, total weight {w_t:.6f}.",
+        f"Harness rows {len(pred)} equal schedule rows {len(target)}.",
+        f"Max absolute gap versus the stored v6 predictions: margin {margin_diff:.6g}, total {total_diff:.6g}.",
+        f"UNKNOWABLE scored games excluded: {unknowable_hold} in 2024–25, {unknowable_2026} in 2026.",
+        "",
+        f"Verdict versus the first holdout score: **{'CHANGED' if changed else 'UNCHANGED'}**.",
+        "",
+        "## Bar, 2024–25 knowable games versus the close",
+        "",
+        "| Check | Result |",
+        "| --- | --- |",
+    ]
+    for key, label in labels.items():
+        item = verdict[key]
+        status = "UNAVAILABLE" if key == "clv" else ("PASS" if item["pass"] else "FAIL")
+        lines.append(f"| {label} | {status} |")
+    lines.append("")
+    lines.append(f"Overall: **{'PASS' if verdict['overall_pass'] else 'FAIL'}**.")
+    lines.append("")
+    for name, summary in blocks.items():
+        lines.extend(_fmt_grade(name, summary))
+    lines.append("k and both weights were not changed after this re-run.")
+    lines.append("")
+    report = ROOT / "REPORT.md"
+    report.write_text("\n".join(lines) + "\n")
+    (OUT_DIR / "harness_rerun.json").write_text(json.dumps({
+        "kind": "harness-fix re-run",
+        "retuned": False,
+        "qb_k": qb_k,
+        "frozen_w_margin": w_m,
+        "frozen_w_total": w_t,
+        "harness_rows": int(len(pred)),
+        "schedule_rows": int(len(target)),
+        "max_abs_margin_diff_vs_stored": margin_diff,
+        "max_abs_total_diff_vs_stored": total_diff,
+        "verdict_changed": changed,
+        "verdict": verdict,
+        "blocks": blocks,
+    }, indent=2) + "\n")
+    print(json.dumps({"verdict_changed": changed, "overall_pass": verdict["overall_pass"], "margin_diff": margin_diff}, indent=2))
+    print(f"wrote {report}", flush=True)
+
+
 def main() -> None:
     mode = sys.argv[1] if len(sys.argv) > 1 else "select"
     if mode == "select":
         select()
     elif mode == "evaluate":
         evaluate()
+    elif mode == "harness-rerun":
+        harness_rerun()
     else:
-        raise SystemExit("mode must be select or evaluate")
+        raise SystemExit("mode must be select, evaluate, or harness-rerun")
 
 
 if __name__ == "__main__":
