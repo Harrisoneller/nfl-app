@@ -23,7 +23,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.services import v6_blind as v6  # noqa: E402
+from app.services import v6_blind as v6
 
 _ALIASES = {
     "JAC": "JAX", "WSH": "WAS", "ARZ": "ARI", "LA": "LAR",
@@ -274,8 +274,8 @@ def build_starters(sched: pd.DataFrame) -> tuple[dict[tuple[int, int, str], str 
     dated = pd.concat(dated_frames, ignore_index=True) if dated_frames else pd.DataFrame()
     inj = pd.concat(inj_frames, ignore_index=True) if inj_frames else pd.DataFrame()
     audit = {
-        "depth_rows": int(len(depth) + len(dated)),
-        "injury_rows": int(len(inj)),
+        "depth_rows": len(depth) + len(dated),
+        "injury_rows": len(inj),
         "injury_date_modified_nonnull": float(inj["date_modified"].notna().mean()) if len(inj) else 0.0,
         "depth_has_timestamp_column": bool(len(dated)),
         "dated_depth_seasons": [2025, 2026] if len(dated) else [],
@@ -921,9 +921,11 @@ def markdown_report(payload: dict) -> str:
         f"- Missing depth chart (QB delta left at 0): {payload['starter_audit'].get('missing_depth_chart')}",
         f"- QB1 replaced because the T-24h report said Out: {payload['starter_audit'].get('injury_overrides_of_qb1')}",
         "",
-        "2014–2024 depth charts have no captured_at, so the weekly file is the proxy for those seasons. "
-        "2025–2026 charts are timestamped and are cut at kickoff minus 24 hours. "
-        "Injury files in 2025–2026 have no date_modified, so they are not applied.",
+        (
+            "2014–2024 depth charts have no captured_at, so the weekly file is the proxy for those seasons. "
+            "2025–2026 charts are timestamped and are cut at kickoff minus 24 hours. "
+            "Injury files in 2025–2026 have no date_modified, so they are not applied."
+        ),
         "",
         "## Snapshot",
         "",
@@ -1237,7 +1239,7 @@ def _grade_predicted(sl: pd.DataFrame) -> dict:
     pred_t = sl["total"].to_numpy(dtype=float)
     tok = np.isfinite(tot_y) & np.isfinite(tot_line) & np.isfinite(pred_t)
     return {
-        "n": int(len(y)),
+        "n": len(y),
         "n_ats": n_ats,
         "ats": (wins / n_ats) if n_ats else None,
         "wilson_lo": lo,
