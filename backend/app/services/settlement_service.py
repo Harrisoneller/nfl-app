@@ -14,8 +14,10 @@ than the configured TTL, measured with the database clock, then reclaims
 it and logs a warning. The settled write matches the claim token from
 this attempt, so a worker whose lease was taken over cannot commit.
 A later pass that only grades wagers placed after the game settled
-uses the same token: the commit matches ``claim_token`` while the row
-is still ``settled``, and a reclaimed token rolls those grades back.
+rotates that token: ``UPDATE ... SET claim_token=:new WHERE
+claim_token=:observed AND settlement_status='settled'``. A second
+runner that read the same token waits, then matches zero rows and
+rolls its grades back.
 The reset script can clear the claim sooner (dry-run unless ``--apply``;
 it requires an explicit non-production APP_ENV and an allowlisted host).
 
@@ -188,22 +190,24 @@ def mark_settled(db: Session, game_id: str, token: str) -> bool:
 
 
 def hold_settled_claim(db: Session, game_id: str, token: str) -> bool:
-    """True when ``token`` still owns a game that is already ``settled``.
+    """Rotate the settled claim token if this worker still holds it.
 
     Late wagers are graded after the game is settled, so ``mark_settled``
-    (which requires ``settling``) does not apply. This UPDATE matches the
-    stored token without changing it. A rowcount of 1 means this worker
-    may commit those grades. Zero means the token was replaced and the
-    caller must roll the grades back.
+    (which requires ``settling``) does not apply. Two runners can both
+    read the same stored token. Setting a new token makes the second
+    runner's predicate fail: on Postgres it waits for this row lock,
+    re-evaluates after this transaction commits, gets rowcount 0, and
+    rolls its grades back. Writing the same token back would still match.
     """
     if not token:
         return False
+    rotated = uuid.uuid4().hex
     res = db.execute(
         update(Game)
         .where(Game.id == game_id)
         .where(Game.settlement_status == SETTLED)
         .where(Game.claim_token == token)
-        .values(claim_token=token)
+        .values(claim_token=rotated)
     )
     return (res.rowcount or 0) == 1
 
@@ -319,12 +323,21 @@ def settle_game(
                 sparky_unchanged=sparky_unchanged,
             )
 
-        if sparky_writes or db.dirty or db.new:
+        # Core grade writes do not mark the session dirty. A positive grade
+        # count still has to take the token lock before it commits.
+        if (
+            sparky_writes
+            or grades["graded_legs"]
+            or grades["settled_bets"]
+            or db.dirty
+            or db.new
+        ):
             if not hold_settled_claim(db, game.id, token or ""):
                 db.rollback()
                 log.warning("settlement_claim_lost", game_id=game.id)
                 return _empty(rolled_back=1)
             db.commit()
+            db.refresh(game)
         else:
             db.rollback()
         return _empty(
