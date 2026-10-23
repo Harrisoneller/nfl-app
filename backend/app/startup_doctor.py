@@ -4,12 +4,16 @@
 table should not take the API down in development.
 
 ``enforce_production_auth`` is the exception. When the process is in
-production it refuses to start unless auth is configured and
-``SECRET_KEY`` is not the placeholder. Development and tests skip it.
+production it refuses to start unless multi-user auth has an admin
+allowlist and ``SECRET_KEY`` is a long, non-placeholder random value.
+Single-user mode is never a passing production posture. Development
+and tests skip the check.
 """
 from __future__ import annotations
 
+import math
 import os
+from collections import Counter
 
 from sqlalchemy import inspect, text
 
@@ -23,6 +27,11 @@ log = get_logger(__name__)
 # that starts with this prefix is the placeholder, including the bare
 # ``change-me``.
 _SECRET_PLACEHOLDER_PREFIX = "change-me"
+# Production secrets must be long and not a repeated or tiny alphabet.
+# ``secrets.token_urlsafe(64)`` clears both bars by a wide margin.
+_MIN_SECRET_CHARS = 32
+_MIN_UNIQUE_CHARS = 10
+_MIN_SHANNON_BITS = 3.0
 
 # Tables we expect to exist after `alembic upgrade head` ran successfully.
 EXPECTED_TABLES = [
@@ -47,19 +56,37 @@ class ProductionConfigError(RuntimeError):
     """Production startup refused because auth would fail open."""
 
 
+def _env_blank(name: str) -> bool:
+    raw = os.environ.get(name)
+    return raw is None or not raw.strip()
+
+
 def is_production_runtime(settings: Settings | None = None) -> bool:
     """True when this process should fail closed.
 
-    Production is ``APP_ENV=production`` (``settings.app_env``). Railway
-    also sets ``RAILWAY_ENVIRONMENT=production`` on the production
-    environment; that counts even if ``APP_ENV`` was left at its
-    development default. Dev and pytest leave both unset / development.
+    Production is any of:
+
+    * ``APP_ENV=production`` (``settings.app_env``).
+    * ``RAILWAY_ENVIRONMENT`` or ``RAILWAY_ENVIRONMENT_NAME`` equal to
+      ``production`` (any case), even when ``APP_ENV`` is explicitly
+      ``development``.
+    * ``APP_ENV`` unset or blank, and either Railway variable set to any
+      non-empty value. Railway names preview environments something other
+      than ``production``; those still must not boot as "everyone is admin".
+
+    Dev and pytest set ``APP_ENV=development`` and leave the Railway
+    variables unset, so they stay permissive.
     """
     s = settings if settings is not None else get_settings()
     if s.app_env == "production":
         return True
-    railway = os.environ.get("RAILWAY_ENVIRONMENT", "").strip().lower()
-    return railway == "production"
+    railway_values = (
+        os.environ.get("RAILWAY_ENVIRONMENT", ""),
+        os.environ.get("RAILWAY_ENVIRONMENT_NAME", ""),
+    )
+    if any(value.strip().lower() == "production" for value in railway_values):
+        return True
+    return _env_blank("APP_ENV") and any(value.strip() for value in railway_values)
 
 
 def _secret_is_placeholder(secret: str | None) -> bool:
@@ -69,18 +96,49 @@ def _secret_is_placeholder(secret: str | None) -> bool:
     return value.lower().startswith(_SECRET_PLACEHOLDER_PREFIX)
 
 
+def _shannon_bits(value: str) -> float:
+    counts = Counter(value)
+    n = len(value)
+    return -sum((count / n) * math.log2(count / n) for count in counts.values())
+
+
+def _secret_boot_problem(secret: str | None) -> str | None:
+    """Why this secret cannot boot production. Never includes the value."""
+    value = (secret or "").strip()
+    if _secret_is_placeholder(value):
+        return (
+            "SECRET_KEY is missing or equals 'change-me' "
+            "(any value starting with 'change-me' is the placeholder). "
+            "Set a random string of at least 32 characters, the same value "
+            "on every service: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+        )
+    low_entropy = (
+        len(set(value)) < _MIN_UNIQUE_CHARS
+        or _shannon_bits(value) < _MIN_SHANNON_BITS
+    )
+    if len(value) < _MIN_SECRET_CHARS or low_entropy:
+        return (
+            "SECRET_KEY must be at least 32 characters and pass a basic "
+            "entropy check (at least 10 distinct characters, and not a "
+            "repeated or low-entropy pattern). "
+            "Set a random string, the same value on every service: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+        )
+    return None
+
+
 def production_boot_problems(settings: Settings | None = None) -> list[str]:
     """Reasons production must not serve traffic. Empty outside production.
 
-    A passing boot is one of:
+    The only passing posture is real multi-user auth: ``MULTI_USER_MODE=true``
+    and a non-empty ``ADMIN_EMAILS`` list, plus a ``SECRET_KEY`` of at least
+    32 characters that is not the ``change-me`` placeholder and is not
+    low-entropy. Single-user mode makes every caller the seeded system admin
+    when the allowlist is empty, and makes admin unreachable when the
+    allowlist is set (the login token is ignored). Neither is allowed in
+    production.
 
-    * Multi-user auth: ``MULTI_USER_MODE=true`` and ``ADMIN_EMAILS`` a
-      comma-separated list of admin emails.
-    * Single-user admin mode (the allowlist equivalent): ``MULTI_USER_MODE``
-      false and ``ADMIN_EMAILS`` empty, so the seeded system user is the
-      admin.
-
-    Plus a ``SECRET_KEY`` that is set and is not the ``change-me`` placeholder.
     The messages name the variables and the expected shape. They never
     include the secret value.
     """
@@ -89,32 +147,34 @@ def production_boot_problems(settings: Settings | None = None) -> list[str]:
         return []
 
     problems: list[str] = []
-    if _secret_is_placeholder(s.secret_key):
-        problems.append(
-            "SECRET_KEY is missing or equals 'change-me' "
-            "(any value starting with 'change-me' is the placeholder). "
-            "Set a long random string, the same value on every service: "
-            "python -c \"import secrets; print(secrets.token_urlsafe(64))\""
-        )
+    secret_problem = _secret_boot_problem(s.secret_key)
+    if secret_problem:
+        problems.append(secret_problem)
 
-    # Auth posture. Multi-user without an allowlist has no admin at boot.
-    # An allowlist with single-user mode ignores bearer tokens and then
-    # rejects system@local, so nobody can authenticate as admin.
-    if s.multi_user_mode:
-        if not s.admin_email_set:
-            problems.append(
-                "Auth isn't configured: MULTI_USER_MODE=true but no admin "
-                "list is set. Set ADMIN_EMAILS to a comma-separated list of "
-                "admin emails (for example admin@example.com,other@example.com), "
-                "or set MULTI_USER_MODE=false with ADMIN_EMAILS empty to use "
-                "single-user admin mode."
-            )
-    elif s.admin_email_set:
+    # Single-user mode is never a production admin mode. An empty allowlist
+    # means every caller is system@local with is_admin. A non-empty allowlist
+    # ignores bearer tokens and then 403s that same account.
+    if not s.multi_user_mode and s.admin_email_set:
         problems.append(
             "Auth isn't configured: ADMIN_EMAILS is set but MULTI_USER_MODE "
-            "is false, so login tokens are ignored and the single-user "
-            "account is not on the allowlist. Set MULTI_USER_MODE=true, or "
-            "clear ADMIN_EMAILS to use single-user admin mode."
+            "is false, so login tokens are ignored and every caller is "
+            "system@local, which is not on the allowlist. Production does not "
+            "allow single-user mode. Set MULTI_USER_MODE=true and keep "
+            "ADMIN_EMAILS as a comma-separated list of admin emails."
+        )
+    elif not s.multi_user_mode:
+        problems.append(
+            "Auth isn't configured: MULTI_USER_MODE is false and ADMIN_EMAILS "
+            "is empty, so every caller is the seeded system admin. Production "
+            "does not allow that. Set MULTI_USER_MODE=true and ADMIN_EMAILS "
+            "to a comma-separated list of admin emails "
+            "(for example admin@example.com)."
+        )
+    elif not s.admin_email_set:
+        problems.append(
+            "Auth isn't configured: MULTI_USER_MODE=true but no admin list "
+            "is set. Set ADMIN_EMAILS to a comma-separated list of admin "
+            "emails (for example admin@example.com,other@example.com)."
         )
     return problems
 
@@ -225,8 +285,9 @@ def run() -> None:
         elif s.cors_allows_only_localhost and s.cors_allow_vercel_regex:
             log.info(
                 "doctor_cors_vercel_regex_fallback",
-                hint="CORS_ORIGINS is localhost-only but *.vercel.app is allowed via regex. "
-                "Add your canonical Vercel URL to CORS_ORIGINS for custom domains.",
+                hint="CORS_ORIGINS is localhost-only. Preview hosts for "
+                "CORS_VERCEL_PROJECT are allowed via regex. Set CORS_ORIGINS or "
+                "CORS_PRODUCTION_ORIGINS to the canonical site.",
             )
     if s.app_env == "production" and s.app_role == "worker":
         log.info("doctor_worker_role", boot_warmup=s.boot_warmup_level)

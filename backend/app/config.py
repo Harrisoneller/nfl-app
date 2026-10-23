@@ -6,6 +6,7 @@ directly so test overrides stay localized.
 """
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -191,9 +192,15 @@ class Settings(BaseSettings):
     player_props_lookahead_days: int = 7    # only pull props for games this close
 
     # CORS — browser Origin must match allow_origins and/or cors_origin_regex (see main.py).
-    # Production: set CORS_ORIGINS to your Vercel URL(s), comma-separated, no trailing slash.
+    # Production: set CORS_ORIGINS to extra frontend URLs, comma-separated, no trailing slash.
     cors_origins: str = "http://localhost:3000"
-    # Also allow https://<anything>.vercel.app (production + preview deploys).
+    # This project's own sites. Merged into the allowlist (www/apex pairs expanded).
+    # Override with CORS_PRODUCTION_ORIGINS. Empty string disables the extra list.
+    cors_production_origins: str = "https://statletics.io"
+    # Credentialed browser calls are limited to this Vercel project's hosts:
+    # https://<slug>.vercel.app and https://<slug>-<preview>.vercel.app.
+    # Not every *.vercel.app site. Empty slug disables the regex.
+    cors_vercel_project: str = "nfl-app"
     cors_allow_vercel_regex: bool = True
 
     @field_validator("cors_origins", mode="before")
@@ -218,14 +225,29 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        raw = [u.strip().rstrip("/") for u in self.cors_origins.split(",") if u.strip()]
-        return expand_cors_origins(raw)
+        configured = [u.strip().rstrip("/") for u in self.cors_origins.split(",") if u.strip()]
+        production = [
+            u.strip().rstrip("/")
+            for u in self.cors_production_origins.split(",")
+            if u.strip()
+        ]
+        return expand_cors_origins([*configured, *production])
 
     @property
     def cors_origin_regex(self) -> str | None:
+        """Preview hosts for this Vercel project only.
+
+        Starlette matches with ``fullmatch``, so a sibling project on
+        ``*.vercel.app`` does not get credentialed access.
+        """
         if not self.cors_allow_vercel_regex:
             return None
-        return r"https://.*\.vercel\.app"
+        slug = (self.cors_vercel_project or "").strip().lower()
+        # One DNS label: letters, digits, hyphens. Reject anything that could
+        # widen the pattern (dots, stars, slashes).
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", slug):
+            return None
+        return rf"https://{re.escape(slug)}(?:-[a-z0-9-]+)?\.vercel\.app"
 
     @property
     def cors_allows_only_localhost(self) -> bool:

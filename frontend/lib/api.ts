@@ -1,6 +1,7 @@
 // Typed API client — every call goes through here.
 
 import { getStoredToken } from "./auth-storage";
+import { mergeRequestInit } from "./request-headers";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
@@ -96,17 +97,6 @@ export type Widget = {
   created_at: string;
 };
 
-function buildHeaders(extra?: HeadersInit): Record<string, string> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  const token = getStoredToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (extra) {
-    const raw = extra instanceof Headers ? Object.fromEntries(extra.entries()) : extra;
-    Object.assign(headers, raw as Record<string, string>);
-  }
-  return headers;
-}
-
 async function parseApiError(res: Response): Promise<string> {
   const text = await res.text();
   try {
@@ -134,12 +124,14 @@ async function req<T>(path: string, init?: RequestInit, policy?: FetchPolicy): P
   const resolvedCache = policy
     ? (policy.cache ?? (policy.revalidate != null ? undefined : "no-store"))
     : "no-store";
-  const res = await fetch(`${BASE}${path}`, {
-    ...(resolvedCache ? { cache: resolvedCache } : {}),
-    headers: buildHeaders(init?.headers),
-    next: nextConfig,
-    ...init,
-  });
+  const res = await fetch(`${BASE}${path}`, mergeRequestInit(
+    {
+      ...(resolvedCache ? { cache: resolvedCache } : {}),
+      next: nextConfig,
+    },
+    init,
+    getStoredToken(),
+  ));
   if (!res.ok) throw new Error(await parseApiError(res));
   return res.json();
 }
@@ -1666,11 +1658,10 @@ export type BetProfile = {
 };
 
 async function reqVoid(path: string, init?: RequestInit): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
-    headers: buildHeaders(init?.headers),
-    ...init,
-  });
+  const res = await fetch(
+    `${BASE}${path}`,
+    mergeRequestInit({ cache: "no-store" }, init, getStoredToken()),
+  );
   if (!res.ok) throw new Error(await parseApiError(res));
 }
 

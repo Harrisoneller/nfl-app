@@ -39,8 +39,11 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
    RATE_LIMIT_DEFAULT=30/minute
    RATE_LIMIT_AI=10/hour
 
-   # Fill in AFTER you've deployed the frontend in step 2:
-   CORS_ORIGINS=https://<your-vercel-domain>.vercel.app
+   # Canonical site. www is added automatically. statletics.io is also the default
+   # of CORS_PRODUCTION_ORIGINS. Preview hosts for CORS_VERCEL_PROJECT (default
+   # nfl-app) are allowed as https://nfl-app.vercel.app and https://nfl-app-<preview>.vercel.app.
+   CORS_ORIGINS=https://statletics.io
+   CORS_VERCEL_PROJECT=nfl-app
    ```
 7. **Add a worker service** (Phase A — stops OOM crash-loops on the public URL):
    - In the same Railway project: **+ New → GitHub Repo** → same repo, root directory `backend`.
@@ -72,29 +75,35 @@ Steady-state cost: **~$5–10/mo**. Setup time: **~20 minutes**.
 
 #### Fail-closed production boot
 
-The API detects production when `APP_ENV=production`. `RAILWAY_ENVIRONMENT=production` also counts, even if `APP_ENV` was left at `development`, so a Railway production service cannot skip the check by omitting `APP_ENV`. Development and pytest (`APP_ENV=development`, `RAILWAY_ENVIRONMENT` unset) stay permissive and still boot with the placeholder secret.
+The API detects production when any of these is true:
+
+- `APP_ENV=production`.
+- `RAILWAY_ENVIRONMENT` or `RAILWAY_ENVIRONMENT_NAME` is `production` (any case), even if `APP_ENV` is explicitly `development`.
+- `APP_ENV` is unset or blank, and `RAILWAY_ENVIRONMENT` or `RAILWAY_ENVIRONMENT_NAME` is set to any non-empty value. A Railway preview whose name is not `production` still fails closed. An explicit `APP_ENV=development` opts out of that "any Railway name" rule.
+
+Development and pytest (`APP_ENV=development`, Railway variables unset) stay permissive and still boot with the placeholder secret.
 
 If the check fails, the process logs `production_auth_refused` and exits during startup with `Refusing to start in production:` plus one line per problem. It does not serve traffic. Web and worker both run the check. The log line names the variable; it never prints `SECRET_KEY`.
 
-The boot check passes only when every bullet below is true:
+Production never treats every caller as admin. The only passing posture is multi-user auth with an allowlist:
 
-- `SECRET_KEY` is a non-empty random string, the same value on web and worker. The value `change-me`, a blank value, and anything that starts with `change-me` (including the `.env.example` placeholder `change-me-to-a-long-random-string`) are refused.
-- Auth is one of these two postures:
-  - **Multi-user (use this on a public URL).** `MULTI_USER_MODE=true` and `ADMIN_EMAILS` is a comma-separated list of admin emails, for example `ADMIN_EMAILS=you@example.com,other@example.com`. Matching is case-insensitive. Anonymous admin calls get 401. A signed-in email that is not on the list gets 403, even if that row has `is_admin` set.
-  - **Single-user equivalent.** `MULTI_USER_MODE=false` and `ADMIN_EMAILS` empty or unset. Every caller is the seeded `system@local` admin, and admin routes are not token-gated. Do not use this on a public URL.
+- `MULTI_USER_MODE=true`.
+- `ADMIN_EMAILS` is a comma-separated list of admin emails, for example `ADMIN_EMAILS=you@example.com,other@example.com`. Matching is case-insensitive. Anonymous admin calls get 401. A signed-in email that is not on the list gets 403, even if that row has `is_admin` set.
+- `SECRET_KEY` is at least 32 characters, the same value on web and worker, and it passes a basic entropy check (at least 10 distinct characters, not a repeated or low-entropy pattern). The value `change-me`, a blank value, and anything that starts with `change-me` (including the `.env.example` placeholder `change-me-to-a-long-random-string`) are refused. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(64))"`.
 
-These postures refuse to boot (auth isn't configured):
+These postures refuse to boot:
 
-- `MULTI_USER_MODE=true` with `ADMIN_EMAILS` empty — no admin list.
+- `MULTI_USER_MODE=false` with `ADMIN_EMAILS` empty — every caller is the seeded `system@local` admin.
 - `ADMIN_EMAILS` set while `MULTI_USER_MODE` is false — bearer tokens are ignored, and `system@local` is not on the allowlist, so nobody can reach admin routes.
+- `MULTI_USER_MODE=true` with `ADMIN_EMAILS` empty — no admin list.
 
 | Variable | Required in production | Format |
 |---|---|---|
-| `APP_ENV` | Yes, unless `RAILWAY_ENVIRONMENT=production` | `production` |
-| `RAILWAY_ENVIRONMENT` | Set by Railway on the production environment | `production` |
-| `SECRET_KEY` | Yes | non-empty random string; not `change-me` and not a `change-me…` prefix |
-| `MULTI_USER_MODE` | Yes, as part of one posture above | `true` or `false` |
-| `ADMIN_EMAILS` | Yes when `MULTI_USER_MODE=true`; must be empty when it is `false` | comma-separated emails, no spaces required |
+| `APP_ENV` | Set to `production`, or leave unset on Railway | `production`, or unset when a Railway environment variable is present |
+| `RAILWAY_ENVIRONMENT` / `RAILWAY_ENVIRONMENT_NAME` | Set by Railway | any non-empty name counts when `APP_ENV` is unset; the value `production` always counts |
+| `SECRET_KEY` | Yes | at least 32 characters, not a `change-me` prefix, not low-entropy |
+| `MULTI_USER_MODE` | Yes | `true` |
+| `ADMIN_EMAILS` | Yes | comma-separated emails, no spaces required |
 
 ### 2. Frontend on Vercel
 
@@ -107,7 +116,7 @@ These postures refuse to boot (auth isn't configured):
    ```
    This value is **baked in at build time**. If you add or change it after the first deploy, you **must redeploy** the frontend or every page will still call `localhost:8000` and look empty.
 5. Deploy. Vercel gives you a URL like `https://nfl-app-yourname.vercel.app`.
-6. **Go back to Railway** and update `CORS_ORIGINS` with that exact URL. Restart the backend service so it picks up the new value. (Required for **team/player** pages — they fetch from the browser; CORS does not affect the homepage server render.)
+6. **Go back to Railway** and set `CORS_ORIGINS` to the canonical site (`https://statletics.io`; `https://www.statletics.io` is added automatically). Set `CORS_VERCEL_PROJECT` to the Vercel project slug if it is not `nfl-app`. Restart the backend web service. Credentialed browser calls are allowed from those production origins and from that project's preview hosts (`https://<slug>.vercel.app` and `https://<slug>-<preview>.vercel.app`). Other `*.vercel.app` sites are not allowed. (Required for **team/player** pages — they fetch from the browser; CORS does not affect the homepage server render.)
 
 ### 3. Post-deploy bootstrap
 
@@ -115,7 +124,7 @@ Once both are up:
 
 Admin routes need an admin bearer token. The warmup script reads it from `ADMIN_BEARER_TOKEN` or from `ADMIN_BEARER_TOKEN_FILE` (a file whose only contents are the raw token). It writes a mode-600 header file and calls curl with `-H @file`, so the token is not placed on the curl command line. Do not commit the token, and do not pass it as an argument.
 
-Mint the token with `POST /auth/login` as an email on `ADMIN_EMAILS` (multi-user). In single-user mode the token is ignored and every caller is the system admin.
+Mint the token with `POST /auth/login` as an email on `ADMIN_EMAILS`. Production requires `MULTI_USER_MODE=true`, so a token is required and single-user mode will not boot.
 
 ```bash
 chmod +x scripts/warmup-production.sh
@@ -288,7 +297,7 @@ Once you're past friends-testing and want to put this on the open internet:
 
 | Item | What | How |
 |---|---|---|
-| Auth | Enable real signups | Set `MULTI_USER_MODE=true` and `ADMIN_EMAILS` on **both** the web and worker services. Public pages stay browseable anonymously; per-user features (bets, widgets) become private per account. Admin is granted by `ADMIN_EMAILS` (allowlisted email = admin, everyone else = normal user). The built-in email/password `/auth` flow already issues Bearer tokens the frontend sends; wiring a provider like Clerk is optional. Production refuses to boot if this posture is incomplete — see [Fail-closed production boot](#fail-closed-production-boot). ⚠️ If `ADMIN_EMAILS` is set while `MULTI_USER_MODE=false`, **no one** can reach admin routes, and production will not start. |
+| Auth | Enable real signups | Set `MULTI_USER_MODE=true` and `ADMIN_EMAILS` on **both** the web and worker services. Public pages stay browseable anonymously; per-user features (bets, widgets) become private per account. Admin is granted by `ADMIN_EMAILS` (allowlisted email = admin, everyone else = normal user). The built-in email/password `/auth` flow already issues Bearer tokens the frontend sends; wiring a provider like Clerk is optional. Production refuses to boot in single-user mode, whether or not `ADMIN_EMAILS` is set, and also refuses multi-user mode with an empty allowlist. See [Fail-closed production boot](#fail-closed-production-boot). |
 | Sentry | Error tracking | Sign up at sentry.io, drop the DSN into `SENTRY_DSN` env var. |
 | Backups | Postgres dumps | Railway has a one-click backup feature, or schedule `scripts/backup_db.sh` to S3. |
 | Tighten cost caps | Lower per-user budget | Drop `AI_PER_USER_DAILY_BUDGET_USD` to 0.10 or gate AI behind auth-only. |
@@ -301,7 +310,7 @@ Once you're past friends-testing and want to put this on the open internet:
 ## Common gotchas
 
 - **Site loads but everything is empty (no scores, metrics, schedule, predictions)** — (1) Vercel `NEXT_PUBLIC_API_BASE` missing or set after first build → set to Railway URL and **Redeploy** frontend. (2) Fresh Railway DB never warmed → run `scripts/warmup-production.sh`. (3) Team pages still blank → fix `CORS_ORIGINS` + restart backend. Open DevTools → Network: failed calls to `localhost:8000` mean (1); blocked calls to Railway with CORS errors mean (3).
-- **CORS error in browser console after deploy** — Preflight returns **400** when the browser `Origin` is not allowed. Fix: set `CORS_ORIGINS` to your site URL (e.g. `https://statletics.io` — the API auto-adds `https://www.statletics.io`), no trailing slash, redeploy the **web** service. By default the API also allows `https://*.vercel.app` via regex. Check `GET /health` → `cors_origins` lists both apex and www.
+- **CORS error in browser console after deploy** — Preflight returns **400** when the browser `Origin` is not allowed. Fix: set `CORS_ORIGINS` or `CORS_PRODUCTION_ORIGINS` to the site URL (e.g. `https://statletics.io` — the API auto-adds `https://www.statletics.io`), no trailing slash, and set `CORS_VERCEL_PROJECT` to the Vercel project slug (default `nfl-app`). Preview hosts for that slug are allowed; other `*.vercel.app` sites are not. Redeploy the **web** service. Check `GET /health` → `cors_origins` lists both apex and www.
 - **Deploy fails: `Connection refused` on localhost:5432, healthcheck `/live` times out** — the backend service has no `DATABASE_URL`. Add a PostgreSQL database to the project, then **reference** its `DATABASE_URL` on the backend service (step 1.5 above). Redeploy.
 - **Backend can't connect to Postgres on Railway** — Railway injects `DATABASE_URL` as `postgresql://…`. The app auto-rewrites that to `postgresql+psycopg://…`. If you overrode `DATABASE_URL` manually, use the `+psycopg` form or delete your override so the Postgres reference wins.
 - **Backend 500s with `relation "team_elo_ratings" does not exist`** — the Procfile/railway.toml runs `alembic upgrade head`, but if the build fails or you bypassed it, run it manually via `railway run alembic upgrade head` from the Railway CLI.
