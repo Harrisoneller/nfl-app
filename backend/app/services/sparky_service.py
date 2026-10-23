@@ -1364,6 +1364,78 @@ def _actual_winner_from_game(g: Game) -> str | None:
     return None  # tie (very rare)
 
 
+def _dedupe_predictions(
+    preds: list[SparkyGamePrediction],
+) -> tuple[list[SparkyGamePrediction], int]:
+    """One prediction per event_id. The latest slate wins.
+
+    ``uq_sparky_result_event`` is unique on event_id, but a game can have a
+    prediction row on more than one slate date. Inserting both in one
+    transaction (autoflush is off, so the second SELECT misses the first
+    pending row) raises a duplicate-key error and rolls the whole batch back.
+    """
+    by_event: dict[str, SparkyGamePrediction] = {}
+    collapsed = 0
+    for pred in preds:
+        prev = by_event.get(pred.event_id)
+        if prev is None:
+            by_event[pred.event_id] = pred
+            continue
+        collapsed += 1
+        prev_day = prev.slate_date or date.min
+        new_day = pred.slate_date or date.min
+        if new_day >= prev_day:
+            by_event[pred.event_id] = pred
+    ordered = sorted(
+        by_event.values(),
+        key=lambda pred: (pred.slate_date or date.min, pred.event_id),
+    )
+    return ordered, collapsed
+
+
+def _kickoff_key(start: datetime | None, commence: datetime, game_id: str) -> tuple[float, str]:
+    """Closest kickoff, then game id. Naive timestamps are UTC (SQLite)."""
+    if start is None:
+        return (float("inf"), game_id)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = start.astimezone(timezone.utc)
+    kick = commence if commence.tzinfo is None else commence.astimezone(timezone.utc)
+    if kick.tzinfo is None:
+        kick = kick.replace(tzinfo=timezone.utc)
+    return (abs((start - kick).total_seconds()), game_id)
+
+
+def _resolve_prediction_game(db: Session, pred: SparkyGamePrediction) -> Game | None:
+    """Match a prediction to a Game by event id, then teams + kickoff window.
+
+    When several games sit in the window, the closest kickoff wins and an
+    equal distance uses the smaller game id.
+    """
+    game = db.get(Game, pred.event_id)
+    if game is not None or pred.commence_time is None:
+        return game
+    candidates = (
+        db.query(Game)
+        .filter(
+            ((Game.home_team_id == pred.home_team_id) & (Game.away_team_id == pred.away_team_id))
+            | ((Game.home_team_id == pred.away_team_id) & (Game.away_team_id == pred.home_team_id))
+        )
+        .filter(Game.start_time.between(
+            pred.commence_time - timedelta(hours=4),
+            pred.commence_time + timedelta(hours=4),
+        ))
+        .all()
+    )
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda game: _kickoff_key(game.start_time, pred.commence_time, game.id),
+    )
+
+
 def settle_sparky_results(
     db: Session, *, lookback_days: int = 14
 ) -> dict[str, Any]:
@@ -1371,15 +1443,18 @@ def settle_sparky_results(
 
     For every recent SparkyGamePrediction whose corresponding Game row is "final"
     with scores, we record the actual winner + correctness into SparkyHistoricalResult.
+    One event is written at most once per run, via ``INSERT ... ON CONFLICT
+    (event_id)``. A stored result that still matches is not written again.
+
+    Each game commits on its own. A failure rolls that game back and leaves its
+    claim ``settling`` so the 30s scores job does not retry the insert.
 
     For every persisted 3-leg parlay slate (SparkyParlayRanking) where all three
-    legs have now settled, we determine which of the 8 ranked combinations actually
-    hit and record rank_1_hit / top-3 containment etc into SparkyParlayResult.
-
-    This is the production path that turns the accuracy dashboard from "demo only"
-    into a live, trustworthy performance report (the backfill_demo path is for
-    offseason exploration).
+    legs have now settled, we determine which ranked combination actually hit
+    and record it into SparkyParlayResult. An unchanged slate is not rewritten.
     """
+    from .settlement_service import settle_game
+
     cutoff = date.today() - timedelta(days=lookback_days)
 
     preds = (
@@ -1387,36 +1462,23 @@ def settle_sparky_results(
         .filter(SparkyGamePrediction.slate_date >= cutoff)
         .all()
     )
+    deduped, collapsed = _dedupe_predictions(preds)
+    if collapsed:
+        log.info("sparky_duplicate_events_collapsed", collapsed=collapsed)
 
     settled_picks = 0
     settled_parlays = 0
     skipped = 0
+    already_stored = 0
+    games_rolled_back = 0
     event_to_actual: dict[str, str] = {}
 
-    # --- Individual pick settlement ---
-    for p in preds:
+    for p in deduped:
         if not p.predicted_winner or not p.home_team_id or not p.away_team_id:
             skipped += 1
             continue
 
-        # Direct match by event_id (The Odds API + ESPN ids align in this stack)
-        game = db.get(Game, p.event_id)
-
-        # Fallback: fuzzy match by teams + time window (handles any id skew)
-        if game is None and p.commence_time is not None:
-            game = (
-                db.query(Game)
-                .filter(
-                    ((Game.home_team_id == p.home_team_id) & (Game.away_team_id == p.away_team_id))
-                    | ((Game.home_team_id == p.away_team_id) & (Game.away_team_id == p.home_team_id))
-                )
-                .filter(Game.start_time.between(
-                    p.commence_time - timedelta(hours=4),
-                    p.commence_time + timedelta(hours=4),
-                ))
-                .first()
-            )
-
+        game = _resolve_prediction_game(db, p)
         if game is None:
             skipped += 1
             continue
@@ -1431,34 +1493,21 @@ def settle_sparky_results(
             skipped += 1
             continue
 
-        event_to_actual[p.event_id] = actual
-        correct = p.predicted_winner == actual
-
-        # Upsert (unique constraint on event_id)
-        row = (
-            db.query(SparkyHistoricalResult)
-            .filter(SparkyHistoricalResult.event_id == p.event_id)
-            .first()
+        outcome = settle_game(
+            db,
+            game,
+            user_id=None,
+            prediction=p,
+            actual_winner=actual,
         )
-        if row is None:
-            row = SparkyHistoricalResult(
-                event_id=p.event_id,
-                slate_date=p.slate_date,
-                sport="NFL",
-            )
-            db.add(row)
+        if outcome["rolled_back"] or outcome["stuck"]:
+            skipped += 1
+            games_rolled_back += int(outcome["rolled_back"])
+            continue
 
-        row.predicted_winner = p.predicted_winner
-        row.actual_winner = actual
-        row.prediction_correct = correct
-        row.confidence_score = p.confidence_score
-        row.classification = p.classification
-        row.signal_keys = [s.get("key") for s in (p.signals or []) if isinstance(s, dict)]
-        row.settled_at = datetime.now(timezone.utc)
-        row.game_id = game.id
-        settled_picks += 1
-
-    db.flush()
+        event_to_actual[p.event_id] = actual
+        settled_picks += int(outcome["sparky_writes"])
+        already_stored += int(outcome["sparky_unchanged"])
 
     # --- Parlay slate settlement (only for slates whose 3 legs are all now known) ---
     recent_rankings = (
@@ -1470,65 +1519,98 @@ def settle_sparky_results(
     for r in recent_rankings:
         by_slate[r.slate_id].append(r)
 
-    for slate_id, rows in by_slate.items():
+    for slate_id in sorted(by_slate):
+        rows = by_slate[slate_id]
         if not rows:
             continue
-        # Use the legs JSON from the first row (all rows for a slate share the same 3 events)
-        sample_legs = rows[0].legs or []
-        leg_ids = [str(leg.get("event_id")) for leg in sample_legs if leg.get("event_id")]
-        if len(leg_ids) != 3:
-            continue
-        if any(eid not in event_to_actual for eid in leg_ids):
-            continue  # not fully settled yet
-
-        # Find which ranked combination actually hit
-        winning_rank: int | None = None
-        for r in sorted(rows, key=lambda x: x.rank or 99):
-            hit = True
-            for leg in (r.legs or []):
-                eid = str(leg.get("event_id") or "")
-                chosen = leg.get("team_id")
-                if event_to_actual.get(eid) != chosen:
-                    hit = False
-                    break
-            if hit:
-                winning_rank = r.rank
-                break
-
-        # Upsert parlay result row
-        pr = (
-            db.query(SparkyParlayResult)
-            .filter(SparkyParlayResult.slate_id == slate_id)
-            .first()
-        )
-        if pr is None:
-            pr = SparkyParlayResult(
-                slate_id=slate_id,
-                slate_date=rows[0].slate_date,
-                sport="NFL",
+        try:
+            wrote = _settle_one_parlay_slate(db, slate_id, rows, event_to_actual)
+            if wrote:
+                db.commit()
+                settled_parlays += 1
+            else:
+                db.rollback()
+        except Exception as exc:  # noqa: BLE001 — one slate must not retry the whole job
+            db.rollback()
+            log.warning(
+                "parlay_settlement_rolled_back",
+                slate_id=slate_id[:80],
+                error=str(exc)[:200],
             )
-            db.add(pr)
-
-        pr.n_parlays = len(rows)
-        pr.winning_combo_rank = winning_rank
-        pr.rank_1_hit = (winning_rank == 1) if winning_rank is not None else False
-        pr.top_3_containment = (winning_rank is not None and winning_rank <= 3)
-        pr.top_4_containment = (winning_rank is not None and winning_rank <= 4)
-        pr.settled_at = datetime.now(timezone.utc)
-        settled_parlays += 1
-
-    db.commit()
 
     log.info(
         "sparky_settlement_complete",
         picks=settled_picks,
         parlays=settled_parlays,
         skipped=skipped,
+        already_stored=already_stored,
+        rolled_back=games_rolled_back,
         lookback=lookback_days,
     )
     return {
         "settled_picks": settled_picks,
         "settled_parlays": settled_parlays,
         "skipped": skipped,
+        "already_stored": already_stored,
+        "games_rolled_back": games_rolled_back,
         "lookback_days": lookback_days,
     }
+
+
+def _settle_one_parlay_slate(
+    db: Session,
+    slate_id: str,
+    rows: list[SparkyParlayRanking],
+    event_to_actual: dict[str, str],
+) -> bool:
+    """Write one parlay result if it is new or the winning rank changed.
+
+    Returns False when there is nothing to write (not ready, or already stored
+    with the same outcome). Caller commits or rolls back.
+    """
+    rows = sorted(rows, key=lambda row: (row.rank if row.rank is not None else 99, row.id or 0))
+    sample_legs = rows[0].legs or []
+    leg_ids = [str(leg.get("event_id")) for leg in sample_legs if leg.get("event_id")]
+    if len(leg_ids) != 3:
+        return False
+    if any(eid not in event_to_actual for eid in leg_ids):
+        return False
+
+    winning_rank: int | None = None
+    for ranking in rows:
+        hit = True
+        for leg in (ranking.legs or []):
+            eid = str(leg.get("event_id") or "")
+            chosen = leg.get("team_id")
+            if event_to_actual.get(eid) != chosen:
+                hit = False
+                break
+        if hit:
+            winning_rank = ranking.rank
+            break
+
+    values = {
+        "n_parlays": len(rows),
+        "winning_combo_rank": winning_rank,
+        "rank_1_hit": (winning_rank == 1) if winning_rank is not None else False,
+        "top_3_containment": winning_rank is not None and winning_rank <= 3,
+        "top_4_containment": winning_rank is not None and winning_rank <= 4,
+    }
+    pr = (
+        db.query(SparkyParlayResult)
+        .filter(SparkyParlayResult.slate_id == slate_id)
+        .first()
+    )
+    if pr is not None and all(getattr(pr, key) == value for key, value in values.items()):
+        return False
+    if pr is None:
+        pr = SparkyParlayResult(
+            slate_id=slate_id,
+            slate_date=rows[0].slate_date,
+            sport="NFL",
+        )
+        db.add(pr)
+    for key, value in values.items():
+        setattr(pr, key, value)
+    pr.settled_at = datetime.now(timezone.utc)
+    return True

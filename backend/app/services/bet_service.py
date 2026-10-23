@@ -1,9 +1,9 @@
 """Bet tracker service — create, list, settle, and profile aggregation.
 
-Settlement is idempotent: it only touches pending legs/bets, grades any whose
-game has gone final, computes CLV against the odds_snapshots closing capture,
-and rolls leg results up into the bet outcome. Safe to call repeatedly (e.g. on
-a schedule or when the user opens their profile).
+Settlement is idempotent and per game: it only grades legs that are still
+pending, rolls a bet up once, and commits each final game in its own
+transaction. A failure rolls that game back instead of leaving partial rows.
+Re-running does not grade a settled bet again. Safe to call repeatedly.
 """
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ def list_bets(db: Session, user_id: uuid.UUID, status: str | None = None) -> lis
     stmt = select(Bet).where(Bet.user_id == user_id)
     if status:
         stmt = stmt.where(Bet.status == status)
-    stmt = stmt.order_by(Bet.placed_at.desc())
+    stmt = stmt.order_by(Bet.placed_at.desc(), Bet.id.asc())
     return list(db.execute(stmt).scalars().all())
 
 
@@ -139,8 +139,26 @@ def delete_bet(db: Session, user_id: uuid.UUID, bet_id: uuid.UUID) -> bool:
 # --------------------------------------------------------------------------- #
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _ordered_legs(bet: Bet) -> list[BetLeg]:
+    """Leg id order, so a parlay's price is the same product every time."""
+    return sorted(bet.legs, key=lambda leg: (leg.id is None, leg.id or 0))
+
+
 def _find_game(db: Session, leg: BetLeg) -> Game | None:
-    """Resolve the Game row for a leg (direct event_id, then team+time fuzzy)."""
+    """Resolve the Game row for a leg (direct event_id, then team+time fuzzy).
+
+    Several games can sit in the kickoff window. The closest kickoff wins,
+    and an equal distance uses the smaller game id, so the same leg always
+    resolves to the same game.
+    """
     if leg.event_id:
         g = db.get(Game, leg.event_id)
         if g is not None:
@@ -150,7 +168,7 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
         if g is not None:
             return g
     if leg.home_team_id and leg.away_team_id and leg.commence_time:
-        return (
+        candidates = (
             db.query(Game)
             .filter(
                 ((Game.home_team_id == leg.home_team_id) & (Game.away_team_id == leg.away_team_id))
@@ -162,8 +180,19 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
                     leg.commence_time + timedelta(hours=6),
                 )
             )
-            .first()
+            .all()
         )
+        if not candidates:
+            return None
+        commence = _as_utc(leg.commence_time)
+
+        def distance(game: Game) -> tuple[float, str]:
+            start = _as_utc(game.start_time)
+            if start is None or commence is None:
+                return (float("inf"), game.id)
+            return (abs((start - commence).total_seconds()), game.id)
+
+        return min(candidates, key=distance)
     return None
 
 
@@ -371,59 +400,150 @@ def _grade_leg(db: Session, leg: BetLeg) -> str | None:
     return None
 
 
-def settle_user_bets(db: Session, user_id: uuid.UUID) -> dict[str, int]:
-    """Idempotently settle all of a user's pending bets. Returns counts."""
-    pending = list_bets(db, user_id, status=PENDING)
+def apply_game_grades(
+    db: Session, game: Game, *, user_id: uuid.UUID | None = None
+) -> dict[str, int]:
+    """Grade pending legs that resolve to ``game``. Does not commit.
+
+    Legs that are already graded are left alone, so a second pass cannot
+    double-count profit. The bet is rolled up only while it is still pending.
+    """
+    stmt = (
+        select(Bet)
+        .where(Bet.status == PENDING)
+        .order_by(Bet.placed_at.asc(), Bet.id.asc())
+    )
+    if user_id is not None:
+        stmt = stmt.where(Bet.user_id == user_id)
+    bets = list(db.execute(stmt).scalars().unique().all())
+
     settled_bets = 0
     graded_legs = 0
-
-    for bet in pending:
+    for bet in bets:
         changed = False
-        for leg in bet.legs:
+        touched = False
+        for leg in _ordered_legs(bet):
             if leg.leg_result != PENDING:
                 continue
-            # CLV can be computed as soon as a closing snapshot exists, even
-            # before the game is final.
+            resolved = _find_game(db, leg)
+            if resolved is None or resolved.id != game.id:
+                continue
+            touched = True
+            # CLV can be computed as soon as a closing snapshot exists. It
+            # commits or rolls back with this game, and a no-op must not
+            # mark the bet dirty.
             if leg.clv_pct is None and leg.clv_line is None:
+                before = (
+                    leg.clv_pct,
+                    leg.clv_line,
+                    leg.closing_line,
+                    leg.closing_odds_american,
+                    leg.beat_close,
+                )
                 _apply_clv(db, leg)
+                after = (
+                    leg.clv_pct,
+                    leg.clv_line,
+                    leg.closing_line,
+                    leg.closing_odds_american,
+                    leg.beat_close,
+                )
+                if after != before:
+                    changed = True
             result = _grade_leg(db, leg)
             if result is not None:
                 leg.leg_result = result
                 leg.settled_at = _now()
                 graded_legs += 1
                 changed = True
-
-        # Roll up the bet if every leg is now graded.
-        leg_results = [leg.leg_result for leg in bet.legs]
-        if leg_results and all(r != PENDING for r in leg_results):
-            leg_decimals = [leg.odds_decimal for leg in bet.legs]
-            if bet.bet_type == "parlay":
-                status, payout, result = grading.settle_parlay(
-                    leg_results, leg_decimals, bet.stake_units
-                )
-            else:
-                status, payout, result = grading.settle_straight(
-                    leg_results[0], leg_decimals[0], bet.stake_units
-                )
-            bet.status = status
-            bet.payout_units = round(payout, 4)
-            bet.result_units = round(result, 4)
-            if bet.stake_dollars:
-                ratio = result / bet.stake_units if bet.stake_units else 0.0
-                bet.result_dollars = round(ratio * bet.stake_dollars, 2)
-            bet.settled_at = _now()
-            bet.clv_pct, bet.beat_close = _rollup_clv(bet)
+        if not touched:
+            continue
+        if _rollup_ready(bet):
             settled_bets += 1
             changed = True
         elif changed:
-            # Legs updated (e.g. CLV filled) but bet still pending.
             bet.clv_pct, bet.beat_close = _rollup_clv(bet)
-
         if changed:
             db.add(bet)
+    return {"settled_bets": settled_bets, "graded_legs": graded_legs}
 
-    db.commit()
-    return {"settled_bets": settled_bets, "graded_legs": graded_legs, "pending_scanned": len(pending)}
+
+def apply_clv_for_open_legs(db: Session, user_id: uuid.UUID) -> int:
+    """Fill CLV on legs whose games are not final yet. Does not commit.
+
+    Returns the number of bets whose CLV rollup changed.
+    """
+    changed_bets = 0
+    for bet in list_bets(db, user_id, status=PENDING):
+        changed = False
+        for leg in _ordered_legs(bet):
+            if leg.leg_result != PENDING:
+                continue
+            game = _find_game(db, leg)
+            if game is not None and (game.status or "").lower() in _FINAL:
+                continue
+            if leg.clv_pct is None and leg.clv_line is None:
+                before = (
+                    leg.clv_pct,
+                    leg.clv_line,
+                    leg.closing_line,
+                    leg.closing_odds_american,
+                )
+                _apply_clv(db, leg)
+                after = (
+                    leg.clv_pct,
+                    leg.clv_line,
+                    leg.closing_line,
+                    leg.closing_odds_american,
+                )
+                if after != before:
+                    changed = True
+        if changed:
+            bet.clv_pct, bet.beat_close = _rollup_clv(bet)
+            db.add(bet)
+            changed_bets += 1
+    return changed_bets
+
+
+def _rollup_ready(bet: Bet) -> bool:
+    """Roll a pending bet up when every leg is graded. Returns True if it settled."""
+    if bet.status != PENDING:
+        return False
+    legs = _ordered_legs(bet)
+    leg_results = [leg.leg_result for leg in legs]
+    if not leg_results or any(r == PENDING for r in leg_results):
+        return False
+    leg_decimals = [leg.odds_decimal for leg in legs]
+    if bet.bet_type == "parlay":
+        status, payout, result = grading.settle_parlay(
+            leg_results, leg_decimals, bet.stake_units
+        )
+    else:
+        status, payout, result = grading.settle_straight(
+            leg_results[0], leg_decimals[0], bet.stake_units
+        )
+    bet.status = status
+    bet.payout_units = round(payout, 4)
+    bet.result_units = round(result, 4)
+    if bet.stake_dollars:
+        ratio = result / bet.stake_units if bet.stake_units else 0.0
+        bet.result_dollars = round(ratio * bet.stake_dollars, 2)
+    bet.settled_at = _now()
+    bet.clv_pct, bet.beat_close = _rollup_clv(bet)
+    return True
+
+
+def settle_user_bets(db: Session, user_id: uuid.UUID) -> dict[str, int]:
+    """Idempotently settle all of a user's pending bets, one game at a time.
+
+    Each final game commits on its own. An error rolls that game back and
+    does not grade it again until the claim lease expires or the stuck
+    claim is reset. Pending bets on an already settled game are graded in
+    placed_at, then bet id, order. Returns counts.
+    """
+    from .settlement_service import settle_pending_bets
+
+    return settle_pending_bets(db, user_id)
 
 
 def _rollup_clv(bet: Bet) -> tuple[float | None, bool | None]:

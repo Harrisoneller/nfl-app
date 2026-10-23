@@ -225,8 +225,21 @@ function freshnessLabel(status: OddsStatus): string {
     const days = status.lookahead_days ?? 10;
     return `${asOf} · offseason — pulls pause until a game is within ~${days} days${nextHint}`;
   }
-  if (attemptStatus === "error") {
-    return `${asOf} · last refresh failed${nextHint}`;
+  if (
+    attemptStatus === "error" ||
+    attemptStatus === "degraded" ||
+    attemptStatus === "rate_limited" ||
+    attemptStatus === "unauthorized"
+  ) {
+    const why =
+      attemptStatus === "rate_limited"
+        ? "last refresh was rate-limited"
+        : attemptStatus === "degraded"
+          ? "last refresh returned no lines"
+          : attemptStatus === "unauthorized"
+            ? "last refresh was rejected"
+            : "last refresh failed";
+    return `${asOf} · ${why}${nextHint}`;
   }
   if (attemptStatus === "disabled") {
     return `${asOf} · refresh disabled (no ODDS_API_KEY set)`;

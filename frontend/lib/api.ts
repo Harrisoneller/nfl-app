@@ -95,6 +95,7 @@ export type Widget = {
   sort_order: number;
   last_rendered_at: string | null;
   created_at: string;
+  is_public: boolean;
 };
 
 async function parseApiError(res: Response): Promise<string> {
@@ -1779,7 +1780,8 @@ export const api = {
       last_updated: string | null;
       // Cron attempt metadata — present once the worker has fired at least once.
       // `status` is one of "ok" | "skipped_fresh" | "skipped_offseason" | "error"
-      // | "disabled". In offseason the cron fires every 12h but skips, so
+      // | "degraded" | "rate_limited" | "unauthorized" | "disabled".
+      // In offseason the cron fires every 12h but skips, so
       // `last_attempt.at` advances while `last_updated` does not.
       last_attempt?: {
         at: string | null;
@@ -1993,6 +1995,13 @@ export const api = {
 
   // widgets
   listWidgets: (policy?: FetchPolicy) => req<Widget[]>("/widgets", undefined, policy),
+  /** Anonymous share read. Server components have no stored token, so this
+   *  must not go through the authenticated list or render routes. */
+  getPublicWidget: (id: string) =>
+    req<{
+      widget: { id: string; title: string; kind: string; spec: Record<string, unknown> };
+      data: Record<string, unknown>;
+    }>(`/widgets/${encodeURIComponent(id)}/public`),
   renderWidget: (id: string) =>
     req<{ widget: Record<string, unknown>; data: Record<string, unknown> }>(
       `/widgets/${id}/render`,
@@ -2003,6 +2012,10 @@ export const api = {
       body: JSON.stringify(spec),
     }),
   deleteWidget: (id: string) => req<{ ok: boolean }>(`/widgets/${id}`, { method: "DELETE" }),
+  revokeWidget: (id: string) =>
+    req<{ ok: boolean; is_public: boolean }>(`/widgets/${encodeURIComponent(id)}/revoke`, {
+      method: "POST",
+    }),
 
   // sparky — betting prediction & parlay intelligence
   sparkySlate: (

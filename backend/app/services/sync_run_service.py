@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from ..logging_config import get_logger
+from ..logging_config import get_logger, redact_secrets
 from ..models.data_sync_run import DataSyncRun
 
 log = get_logger(__name__)
@@ -81,9 +81,18 @@ async def run_job(
             message=_status_message(result),
         )
         return result
-    except Exception as e:  # noqa: BLE001
-        finish(db, run, status="error", message=str(e)[:4000])
-        log.warning("sync_job_failed", domain=domain, error=str(e)[:200])
+    except Exception as e:
+        # Every failed job is stored as "error". Freshness only counts "ok",
+        # and the other writers (model reruns, lifecycle) already use "error".
+        # APScheduler logs "executed successfully" only when this returns;
+        # re-raising keeps the job on the error path.
+        safe = redact_secrets(str(e))
+        finish(db, run, status="error", message=safe[:4000])
+        payload: dict[str, Any] = {"domain": domain, "error": safe[:200], "status": "error"}
+        error_code = getattr(e, "error_code", None)
+        if error_code:
+            payload["error_code"] = error_code
+        log.error("sync_job_failed", **payload)
         raise
     finally:
         db.close()

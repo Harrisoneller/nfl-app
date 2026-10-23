@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .config import get_settings
-from .logging_config import get_logger
+from .logging_config import get_logger, scrub_sentry_event
 
 log = get_logger(__name__)
 
@@ -24,6 +24,7 @@ def init_sentry() -> bool:
         dsn=s.sentry_dsn,
         environment=s.app_env,
         traces_sample_rate=s.sentry_traces_sample_rate,
+        before_send=scrub_sentry_event,
         integrations=[
             FastApiIntegration(),
             StarletteIntegration(),

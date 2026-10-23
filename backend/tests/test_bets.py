@@ -21,22 +21,24 @@ def client(monkeypatch):
     from app.db import engine
     from app.models.bet import Bet, BetLeg
     from app.models.game import Game
+    from app.models.odds_snapshot import OddsSnapshot
     from app.models.user import User
 
-    for table in (BetLeg.__table__, Bet.__table__):
+    for table in (OddsSnapshot.__table__, BetLeg.__table__, Bet.__table__, Game.__table__):
         table.drop(bind=engine, checkfirst=True)
     User.__table__.drop(bind=engine, checkfirst=True)
     User.__table__.create(bind=engine, checkfirst=True)
+    Game.__table__.create(bind=engine, checkfirst=True)
     Bet.__table__.create(bind=engine, checkfirst=True)
     BetLeg.__table__.create(bind=engine, checkfirst=True)
-    Game.__table__.create(bind=engine, checkfirst=True)
+    OddsSnapshot.__table__.create(bind=engine, checkfirst=True)
 
     from app.main import create_app
 
     with TestClient(create_app()) as c:
         yield c
 
-    for table in (BetLeg.__table__, Bet.__table__):
+    for table in (OddsSnapshot.__table__, BetLeg.__table__, Bet.__table__, Game.__table__):
         table.drop(bind=engine, checkfirst=True)
     User.__table__.drop(bind=engine, checkfirst=True)
     get_settings.cache_clear()

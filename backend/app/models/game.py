@@ -32,6 +32,27 @@ class Game(Base, TimestampMixin):
     venue: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     broadcast: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # NULL = not started. "settling" is a committed claim whose grading
+    # transaction did not finish (scripts/reset_stuck_settlements.py clears it).
+    # "settled" means this final score was graded and must not be rewritten.
+    settlement_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True
+    )
+    settlement_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Lease start for the current ``settling`` claim. Refreshed when an
+    # expired claim is taken over. Distinct from ``settlement_started_at``,
+    # which stays at the first attempt.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Set when the claim is taken. The settled write matches this value, so a
+    # worker whose lease was reclaimed cannot overwrite the new owner.
+    claim_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    settlement_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class GameStat(Base, TimestampMixin):
