@@ -97,3 +97,13 @@ def test_sentry_event_scrub():
     except RuntimeError: logging.getLogger("x").exception("boom")
     sentry_sdk.flush()
     assert events and not any(K in e for e in events), "sentry event leaked"
+
+def test_structlog_exception_kwarg(capsys):
+    out = _structlog_out(capsys, lambda l: l.warning("odds_fail", error=RuntimeError(URL)))
+    assert K not in out, "structlog exception kwarg leaked"
+    assert "apiKey=REDACTED" in out
+
+def test_structlog_httpx_url_kwarg(capsys):
+    out = _structlog_out(capsys, lambda l: l.warning("odds_fail", url=httpx.URL(URL)))
+    assert K not in out, "structlog httpx.URL kwarg leaked"
+    assert "apiKey=REDACTED" in out

@@ -179,7 +179,14 @@ def _scrub(value: object, seen: set[int] | None = None) -> object:
     if isinstance(value, tuple):
         seen.add(marker)
         return tuple(_scrub(item, seen) for item in value)
-    return value
+    # structlog renders leftover kwargs with str() after this processor.
+    # Stringify first so an exception message or an httpx.URL cannot skip
+    # redaction. Numbers and containers are handled above.
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001 — str() can raise anything; leave the value
+        return value
+    return redact_secrets(text)
 
 
 def scrub_sentry_event(event: dict[str, Any] | None, hint: dict[str, Any] | None) -> Any:
