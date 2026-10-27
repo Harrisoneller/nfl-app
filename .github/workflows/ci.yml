@@ -23,6 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
+      # F-codes only. Non-blocking: F401 and F841 still fail this command
+      # outside the backtest fix. Sibling PR #36 moves the full ruff step
+      # into a separate backend-lint job; keep this step on the test job.
+      - name: Ruff F checks
+        working-directory: backend
+        continue-on-error: true
+        run: ruff check --select F app
+
       - name: Lint with ruff
         working-directory: backend
         run: ruff check app
