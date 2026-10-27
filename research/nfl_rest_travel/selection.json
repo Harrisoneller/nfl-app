@@ -1,0 +1,53 @@
+{
+  "window": "2016-2023 REG",
+  "holdout": "not run",
+  "prereg_sha256": "57e9d87833f3ac9550da7657cab4a52e1c899fe24b994e8eebdaa968b27ac55c",
+  "venue_sha256": "d6f426dd638aeeef90600b1fe8a83cf0ab77cb776859863e6f5f8c5030c1fcf3",
+  "sigma_margin": 13.5,
+  "selection": {
+    "n": 2095,
+    "mean": -0.03544568860934574,
+    "sd": 0.8008017704954843,
+    "z": -2.0259578558056655,
+    "n_h": 544,
+    "power": 0.0013842394014109694,
+    "mde": 0.09618988645928302
+  },
+  "verdict": "NO-SHIP",
+  "levels": {
+    "v5_blind_crps": 7.3357529619841015,
+    "augmented_crps": 7.371198650593446,
+    "live_v5_crps": 7.2465535030808015
+  },
+  "versus_live_v5": {
+    "n": 2095,
+    "mean": -0.12464514751264534,
+    "sd": 1.2971832448523724,
+    "z": -4.398109715648414
+  },
+  "feature_audit": {
+    "n": 2095,
+    "thursday_share": 0.06634844868735083,
+    "intl_share": 0.013842482100238664,
+    "mean_abs_travel_d": 777.7448426385092,
+    "bye_nonzero": 214,
+    "rest_d_sd": 2.465326888025252,
+    "body_d_sd": 1.429328174666001
+  },
+  "allowlist": [
+    "epa_d",
+    "pts_d",
+    "st_d",
+    "qb_d",
+    "hfa",
+    "rest_d",
+    "bye_d",
+    "thursday",
+    "intl",
+    "travel_d",
+    "tz_east_d",
+    "tz_cross_d",
+    "body_d"
+  ],
+  "go_rule": "paired z >= 2 and projected holdout power >= 0.50"
+}
