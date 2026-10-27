@@ -9,16 +9,15 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-# Repo root holds features/nfl/defs.py. Backend tests put backend/ on sys.path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from features.nfl.defs import CONTRACT, REQUIRED
+# features.nfl is a backend package. Pytest also puts backend/ on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.cache import cache
 from app.services import nfl_feature_adapter as features
 from app.services import nfl_feature_placeholder as placeholder
 from app.services import team_efficiency_service as svc
 from app.utils.seasons import current_or_upcoming_season, latest_completed_season
+from features.nfl.defs import CONTRACT, PBP_INPUT_COLUMNS, REQUIRED
 
 REAL_FILTERS = {
     "implemented": True,
@@ -126,7 +125,7 @@ def test_defs_contract_is_the_page_source_and_has_no_market_columns():
     assert "10%" in filters["description"] and "90%" in filters["description"]
 
 
-def test_adapter_strips_market_columns_before_build_features():
+def test_adapter_passes_only_allowlisted_columns_into_build_features():
     seen: dict[str, list[str]] = {}
 
     class _Fake:
@@ -135,35 +134,36 @@ def test_adapter_strips_market_columns_before_build_features():
 
         def build_features(self, plays: pd.DataFrame):
             seen["cols"] = list(plays.columns)
-            if features.market_columns(plays.columns):
-                raise ValueError("market columns reached build_features")
+            extra = [col for col in plays.columns if col not in PBP_INPUT_COLUMNS]
+            if extra:
+                raise ValueError(f"columns outside the allowlist reached build_features: {extra}")
             game = pd.DataFrame({"team": ["AAA"], "week": [1], "epa_play_last4": [0.1]})
-            season = pd.DataFrame({"team": ["AAA"], "epa_off_adj": [0.2], "total_home_score": [24]})
+            season = pd.DataFrame({"team": ["AAA"], "epa_off_adj": [0.2]})
             return game, season
 
     features.use_module(_Fake())
     plays = pd.DataFrame({
         "posteam": ["AAA"],
         "epa": [0.1],
+        "wp": [0.55],
         "spread": [-3.0],
+        "vegas_wp": [0.6],
         "moneyline": [-110],
         "total_line": [44.5],
         "total": [47],
         "price": [-105],
         "opener": [3],
+        "play_id": ["p1"],
         "total_home_score": [21],
     })
     game, season = features.build(plays)
+    assert seen["cols"] == ["posteam", "epa", "wp"]
     assert "spread" not in seen["cols"]
-    assert "moneyline" not in seen["cols"]
-    assert "total_line" not in seen["cols"]
-    assert "total" not in seen["cols"]
-    assert "price" not in seen["cols"]
-    assert "opener" not in seen["cols"]
-    assert "total_home_score" in seen["cols"]
-    assert "epa" in seen["cols"]
+    assert "vegas_wp" not in seen["cols"]
+    assert "total_home_score" not in seen["cols"]
+    assert "play_id" not in seen["cols"]
     assert list(game.columns) == ["team", "week", "epa_play_last4"]
-    assert "total_home_score" in season.columns
+    assert "epa_off_adj" in season.columns
     assert features.filters()["garbage_time_excluded"] is True
 
 
@@ -457,6 +457,10 @@ def test_pbp_projection_covers_the_feature_contract():
     missing = [col for col in REQUIRED if col != "season" and col not in PBP_COLUMNS]
     assert missing == []
     assert "season" not in PBP_COLUMNS
+    # season is injected after the parquet read. Every other allowlisted input
+    # has to be in the projection or build_features never sees it.
+    not_loaded = [col for col in PBP_INPUT_COLUMNS if col != "season" and col not in PBP_COLUMNS]
+    assert not_loaded == []
     optional = (
         "fumble", "fumble_forced", "fumble_recovery_1_team", "pass_attempt",
         "pass_defense_1_player_id", "pass_defense_2_player_id",
@@ -520,11 +524,7 @@ def test_build_features_imports_with_backend_pythonpath_only():
     """Railway's root is /backend. The import must work with only that path."""
     backend = Path(__file__).resolve().parents[1]
     packaged = backend / "features" / "nfl" / "defs.py"
-    if not packaged.is_file():
-        pytest.skip(
-            "backend/features/nfl/defs.py is not in this checkout yet. "
-            "Rebase onto features/nfl-defs once #31 places the module there."
-        )
+    assert packaged.is_file()
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend)
     env["PYTHONDONTWRITEBYTECODE"] = "1"

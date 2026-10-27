@@ -1,14 +1,14 @@
-"""Load ``features.nfl.defs`` and keep market columns out of the play frame.
+"""Load ``features.nfl.defs`` and pass it only its play-column allowlist.
 
-``build_features(plays)`` returns ``(team_game, team_season)``. Market columns
-raise inside that module, so they are removed here before the call. A missing
-module is an error. This adapter does not substitute the placeholder.
+``build_features(plays)`` returns ``(team_game, team_season)``. The module
+lives in the backend package (``features*`` in pyproject; Railway's root is
+``/backend``). A missing import is an error. This adapter does not substitute
+the placeholder, and it does not hand ``build_features`` a column that is
+outside ``PBP_INPUT_COLUMNS``.
 """
 from __future__ import annotations
 
 import importlib
-import sys
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -17,11 +17,6 @@ from ..logging_config import get_logger
 from . import nfl_feature_placeholder as placeholder
 
 log = get_logger(__name__)
-
-# backend/app/services/<this file> -> repo root. The packaged copy lives at
-# backend/features (Railway's root is /backend). The repo-root path is only
-# the checkout layout from before that move.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class FeatureDefsUnavailable(RuntimeError):
@@ -45,30 +40,19 @@ def use_module(module: Any) -> None:
 
 
 def _import_defs() -> Any:
-    """Import the feature module from the backend package, then the repo root.
+    """Import ``features.nfl.defs`` from the backend package.
 
-    ``pip install`` of the backend project, and ``PYTHONPATH=backend``, both
-    resolve ``features.nfl.defs`` once that package lives under ``backend/``.
-    Inserting the repo root is the pre-move checkout only. Either miss raises.
+    No repo-root fallback. ``PYTHONPATH=backend`` and an editable install both
+    resolve this module because pyproject includes ``features*``.
     """
     try:
         return importlib.import_module("features.nfl.defs")
-    except ImportError as first:
-        root = str(_REPO_ROOT)
-        if root not in sys.path:
-            sys.path.insert(0, root)
-        try:
-            return importlib.import_module("features.nfl.defs")
-        except ImportError as exc:
-            log.error(
-                "feature_defs_import_failed",
-                error=str(exc),
-                first_error=str(first),
-            )
-            raise FeatureDefsUnavailable(
-                "features.nfl.defs could not be imported. "
-                "Team efficiency ratings are unavailable until that package is installed."
-            ) from exc
+    except ImportError as exc:
+        log.error("feature_defs_import_failed", error=str(exc))
+        raise FeatureDefsUnavailable(
+            "features.nfl.defs could not be imported. "
+            "Team efficiency ratings are unavailable until that package is installed."
+        ) from exc
 
 
 def module() -> Any:
@@ -125,6 +109,23 @@ def market_columns(columns: Any) -> list[str]:
     return [str(name) for name in columns if is_market_column(str(name))]
 
 
+def input_allowlist() -> set[str]:
+    """Columns ``build_features`` accepts. A test double may not declare them."""
+    cols = getattr(module(), "PBP_INPUT_COLUMNS", None)
+    if not cols:
+        cols = _import_defs().PBP_INPUT_COLUMNS
+    return {str(col) for col in cols}
+
+
+def project_inputs(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep only allowlisted play columns, in their original order."""
+    if not isinstance(frame, pd.DataFrame):
+        return pd.DataFrame()
+    allowed = input_allowlist()
+    keep = [col for col in frame.columns if str(col) in allowed]
+    return frame.loc[:, keep].copy()
+
+
 def drop_market(frame: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(frame, pd.DataFrame):
         return pd.DataFrame()
@@ -178,8 +179,12 @@ def _as_frame(value: Any) -> pd.DataFrame:
 
 
 def build(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Team-game and team-season frames. Market columns never reach defs."""
-    clean = drop_market(plays if isinstance(plays, pd.DataFrame) else pd.DataFrame())
+    """Team-game and team-season frames.
+
+    Only ``PBP_INPUT_COLUMNS`` are passed in. Market columns and any other
+    extra play fields stay out, including ones the market guard would ignore.
+    """
+    clean = project_inputs(plays if isinstance(plays, pd.DataFrame) else pd.DataFrame())
     fn = getattr(module(), "build_features", None)
     if fn is None:
         return _as_frame(module().team_game(clean)), _as_frame(module().team_season(clean))
