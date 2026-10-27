@@ -1,6 +1,7 @@
 // Typed API client — every call goes through here.
 
 import { getStoredToken } from "./auth-storage";
+import type { EfficiencyProfile } from "./team-profile";
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
@@ -1721,6 +1722,8 @@ export const api = {
     req<Record<string, unknown>>(`/teams/${id}/stats?season=${season}`),
   getTeamProfile: (id: string, season?: number) =>
     req<TeamProfile>(`/teams/${id}/profile${season ? `?season=${season}` : ""}`),
+  getTeamEfficiency: (id: string, season?: number) =>
+    req<EfficiencyProfile>(`/teams/${id}/efficiency${season ? `?season=${season}` : ""}`),
   getTeamTrend: (id: string, metric: string, start?: number, end?: number) => {
     const qs = new URLSearchParams({ metric });
     if (start) qs.set("start", String(start));

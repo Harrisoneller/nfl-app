@@ -57,11 +57,13 @@ DEFAULT_TIMEOUT_S = 45.0  # First-call parquet downloads can be slow.
 # couple dozen columns, so we project to just those at load time. This is the
 # single biggest lever on the backend's resident memory (the rest of the app is
 # small). Keep this list a superset of every column referenced in
-# analytics_service._team_pbp_aggregates and ml_predictions_service.
+# analytics_service, the team-efficiency feature adapter (the frame is passed
+# through to features/nfl/defs.py, which needs ydstogo, season_type, and wp),
+# and ml_predictions_service.
 PBP_COLUMNS: list[str] = [
-    "game_id", "week", "posteam", "defteam", "home_team", "away_team",
+    "game_id", "week", "season_type", "posteam", "defteam", "home_team", "away_team",
     "play_type", "epa", "success", "yards_gained", "yardline_100",
-    "touchdown", "drive", "down", "first_down", "posteam_score",
+    "touchdown", "drive", "down", "ydstogo", "first_down", "posteam_score",
     "wp", "qtr", "interception", "fumble_lost", "sack",
     # Adjusted-EPA core (epa_adjust_service): QB accuracy over expectation,
     # pass-rate over expected, and clock context for neutral-situation pace.

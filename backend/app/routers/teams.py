@@ -8,7 +8,15 @@ from ..schemas.game import GameOut
 from ..schemas.news import NewsItemOut
 from ..schemas.player import PlayerOut
 from ..schemas.team import TeamOut
-from ..services import analytics_service, news_service, players_service, scores_service, teams_service, weather_service
+from ..services import (
+    analytics_service,
+    news_service,
+    players_service,
+    scores_service,
+    team_efficiency_service,
+    teams_service,
+    weather_service,
+)
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 
 router = APIRouter()
@@ -49,6 +57,23 @@ async def get_team_profile(team_id: str, response: Response, season: int | None 
     season = season or latest_completed_season()
     response.headers["X-Cache-Status"] = "miss"
     return await analytics_service.team_profile(team_id.upper(), season)
+
+
+@router.get("/{team_id}/efficiency")
+async def get_team_efficiency(
+    team_id: str,
+    response: Response,
+    season: int | None = None,
+):
+    """Efficiency profile for one team.
+
+    Rates come from the NFL feature contract (``features/nfl/defs.py``) via
+    the feature adapter. This handler does not compute EPA or success rate.
+    The league bundle is cached; the response is one team sliced out of it.
+    """
+    season = season or latest_completed_season()
+    response.headers["X-Cache-Status"] = team_efficiency_service.cache_status(season)
+    return await team_efficiency_service.efficiency_profile(team_id.upper(), season)
 
 
 @router.get("/{team_id}/trend")
