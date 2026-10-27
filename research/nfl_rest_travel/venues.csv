@@ -1,0 +1,70 @@
+stadium_id,stadium_name,lat,lon,tz,country,label
+ATL00,*,33.7577,-84.4008,America/New_York,US,Georgia Dome
+ATL97,*,33.7554,-84.4010,America/New_York,US,Mercedes-Benz Stadium
+BAL00,*,39.2780,-76.6227,America/New_York,US,M&T Bank Stadium
+BOS00,*,42.0909,-71.2643,America/New_York,US,Gillette Stadium
+BOS99,*,42.0933,-71.2640,America/New_York,US,Foxboro Stadium
+BRG00,*,30.4121,-91.1838,America/Chicago,US,Tiger Stadium (LSU)
+BUF00,*,42.7738,-78.7870,America/New_York,US,Highmark Stadium
+BUF01,*,43.6414,-79.3895,America/Toronto,CA,Rogers Centre
+CAR00,*,35.2258,-80.8528,America/New_York,US,Bank of America Stadium
+CHI98,*,41.8623,-87.6167,America/Chicago,US,Soldier Field
+CHI99,*,40.0992,-88.2359,America/Chicago,US,Memorial Stadium (Champaign)
+CIN00,*,39.0955,-84.5161,America/New_York,US,Paycor Stadium
+CIN99,*,39.0975,-84.5086,America/New_York,US,Cinergy Field
+CLE00,*,41.5061,-81.6995,America/New_York,US,Cleveland Browns Stadium
+DAL00,*,32.7473,-97.0945,America/Chicago,US,AT&T Stadium
+DAL99,*,32.8407,-96.9109,America/Chicago,US,Texas Stadium
+DEN00,*,39.7439,-105.0201,America/Denver,US,Empower Field at Mile High
+DEN99,*,39.7459,-105.0217,America/Denver,US,Mile High Stadium
+DET00,*,42.3400,-83.0456,America/New_York,US,Ford Field
+DET99,*,42.6456,-83.2549,America/New_York,US,Pontiac Silverdome
+FRA00,*,50.0686,8.6455,Europe/Berlin,DE,Deutsche Bank Park
+GER00,*,48.2188,11.6247,Europe/Berlin,DE,Allianz Arena
+GNB00,*,44.5013,-88.0622,America/Chicago,US,Lambeau Field
+HOU00,*,29.6847,-95.4107,America/Chicago,US,NRG Stadium
+IND00,*,39.7601,-86.1639,America/Indiana/Indianapolis,US,Lucas Oil Stadium
+IND99,*,39.7635,-86.1634,America/Indiana/Indianapolis,US,RCA Dome
+JAX00,*,30.3239,-81.6373,America/New_York,US,EverBank Stadium
+JAX00,Tottenham Hotspur Stadium,51.6042,-0.0662,Europe/London,GB,Tottenham Hotspur Stadium
+KAN00,*,39.0489,-94.4839,America/Chicago,US,Arrowhead Stadium
+LAX01,*,33.9534,-118.3390,America/Los_Angeles,US,SoFi Stadium
+LAX97,*,33.8644,-118.2611,America/Los_Angeles,US,StubHub Center
+LAX99,*,34.0141,-118.2879,America/Los_Angeles,US,Los Angeles Memorial Coliseum
+LON00,*,51.5560,-0.2796,Europe/London,GB,Wembley Stadium
+LON01,*,51.4559,-0.3415,Europe/London,GB,Twickenham Stadium
+LON02,*,51.6042,-0.0662,Europe/London,GB,Tottenham Hotspur Stadium
+MAD01,*,40.4531,-3.6883,Europe/Madrid,ES,Santiago Bernabeu
+MEL00,*,-37.8200,144.9834,Australia/Melbourne,AU,Melbourne Cricket Ground
+MEX00,*,19.3029,-99.1505,America/Mexico_City,MX,Estadio Azteca
+MEX00,Estadio Banorte,19.3029,-99.1505,America/Mexico_City,MX,Estadio Banorte
+MIA00,*,25.9580,-80.2389,America/New_York,US,Hard Rock Stadium
+MIN00,*,44.9739,-93.2581,America/Chicago,US,Hubert H. Humphrey Metrodome
+MIN01,*,44.9737,-93.2577,America/Chicago,US,U.S. Bank Stadium
+MIN98,*,44.9766,-93.2250,America/Chicago,US,TCF Bank Stadium
+MUN01,*,48.2188,11.6247,Europe/Berlin,DE,Allianz Arena
+NAS00,*,36.1665,-86.7713,America/Chicago,US,Nissan Stadium
+NOR00,*,29.9511,-90.0812,America/Chicago,US,Caesars Superdome
+NYC00,*,40.8114,-74.0769,America/New_York,US,Giants Stadium
+NYC01,*,40.8135,-74.0745,America/New_York,US,MetLife Stadium
+OAK00,*,37.7516,-122.2005,America/Los_Angeles,US,Oakland Coliseum
+PAR00,*,48.9245,2.3601,Europe/Paris,FR,Stade de France
+PHI00,*,39.9008,-75.1675,America/New_York,US,Lincoln Financial Field
+PHI99,*,39.9014,-75.1713,America/New_York,US,Veterans Stadium
+PHO00,*,33.5276,-112.2626,America/Phoenix,US,State Farm Stadium
+PHO99,*,33.4265,-111.9325,America/Phoenix,US,Sun Devil Stadium
+PIT00,*,40.4468,-80.0158,America/New_York,US,Acrisure Stadium
+PIT99,*,40.4469,-80.0127,America/New_York,US,Three Rivers Stadium
+RIO00,*,-22.9122,-43.2302,America/Sao_Paulo,BR,Maracana
+SAN00,*,29.4169,-98.4788,America/Chicago,US,Alamodome
+SAO00,*,-23.5454,-46.4741,America/Sao_Paulo,BR,Arena Corinthians
+SDG00,*,32.7831,-117.1195,America/Los_Angeles,US,Qualcomm Stadium
+SEA00,*,47.5952,-122.3316,America/Los_Angeles,US,Lumen Field
+SEA98,*,47.5952,-122.3316,America/Los_Angeles,US,Seattle Kingdome
+SEA99,*,47.6503,-122.3015,America/Los_Angeles,US,Husky Stadium
+SFO00,*,37.7136,-122.3863,America/Los_Angeles,US,Candlestick Park
+SFO01,*,37.4030,-121.9697,America/Los_Angeles,US,Levi's Stadium
+STL00,*,38.6328,-90.1884,America/Chicago,US,Edward Jones Dome
+TAM00,*,27.9759,-82.5033,America/New_York,US,Raymond James Stadium
+VEG00,*,36.0909,-115.1833,America/Los_Angeles,US,Allegiant Stadium
+WAS00,*,38.9076,-76.8645,America/New_York,US,Northwest Stadium
