@@ -1,0 +1,46 @@
+{
+  "window": "2016-2023 REG",
+  "holdout": "not run",
+  "prereg_sha256": "9281fb0b4bcb56d4b092b64eeebf9863fc550f7c6eaa4399a9628b945ab83b93",
+  "defs_rev": "b68470fa18119e7b443c13cdf2278bcadebfd686",
+  "sigma_margin": 13.5,
+  "selection": {
+    "n": 2095,
+    "mean": 0.003339918394787504,
+    "sd": 0.5717141711299153,
+    "z": 0.2673923093706041,
+    "n_h": 544,
+    "power": 0.034098132467743736,
+    "mde": 0.0686725769526252
+  },
+  "verdict": "NO-SHIP",
+  "levels": {
+    "v5_blind_crps": 7.3357529619841015,
+    "augmented_crps": 7.332413043589313,
+    "live_v5_crps": 7.2465535030808015
+  },
+  "versus_live_v5": {
+    "n": 2095,
+    "mean": -0.0858595405085121,
+    "sd": 1.093947393662791,
+    "z": -3.5923954337572126
+  },
+  "feature_audit": {
+    "n": 2095,
+    "sr_d_sd": 0.03758637164371807,
+    "xpl_d_sd": 0.012651992264329903,
+    "havoc_d_sd": 0.02255140834904834
+  },
+  "allowlist": [
+    "epa_d",
+    "pts_d",
+    "st_d",
+    "qb_d",
+    "hfa",
+    "sr_d",
+    "xpl_d",
+    "havoc_d"
+  ],
+  "pressure_rate": "not in the nflverse play-by-play schema; qb_hit was not substituted",
+  "go_rule": "paired z >= 2 and projected holdout power >= 0.50"
+}
