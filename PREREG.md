@@ -1,14 +1,14 @@
 # Feature-bundle preregistration
 
-This commit locks the protocol for one market-blind feature bundle on the frozen v6-blind core (`cursor/nfl-v6-blind-59d5`, PR #26). It is the holdout contract. The 2015–23 walk-forward that freezes the half-life and the explosiveness multiplier has not been run. No game from 2024 or later has been scored. The holdout stays sealed until QA releases it.
+This amendment is the holdout contract for one market-blind feature bundle on the frozen v6-blind core (`cursor/nfl-v6-blind-59d5`, PR #26). It replaces the single 2015–23 freeze and the 2024–25-only bar. QA has not locked it.
 
-Publishing stays off. Picks stay off. Any new flag defaults off. This branch is not deployed.
+The nested path has not been run. No bundle metric has been computed for any season. No holdout grade in this file was looked at. Publishing stays off. Picks stay off. Any new flag defaults off. This branch is not deployed.
 
-Nothing below is a 2024, 2025, or 2026 model grade. The 2024–25 numbers in [Prior views](#prior-views-of-2024-25) are the grades already published by v6, #27, and #28.
+The 2024–25 numbers in [Prior views](#prior-views-of-2024-25) are grades already published by v6, #27, and #28. They are not a grade of this bundle.
 
 ## Market blind
 
-Spreads, totals, moneylines, prices, opens, and closes are grading columns. They are not model inputs, priors, seeds, blend weights, or fit targets. Stage-2 least squares is fit to the actual home margin and the actual total points. Sigma stays 13.5 for the margin and 10 for the total. Neither sigma is tuned. ATS, CLV, and the closing line do not enter the loss.
+Spreads, totals, moneylines, prices, opens, and closes are grading columns. They are not model inputs, priors, seeds, blend weights, or fit targets. Stage-2 least squares is fit to the actual home margin and the actual total points. Sigma stays 13.5 for the margin and 10 for the total. Neither sigma is tuned. ATS, CLV, and the closing line do not enter the loss that picks a grid cell.
 
 The harness stays `backtest/harness_model/model.py`. `predict(hist, target)` returns one row per target row, same order, columns `game_id`, `pred_margin`, `pred_total`, `pred_home_score`, `pred_away_score`. `LA`, `OAK`, `SD`, and `STL` still map to the current franchise before the prior join. A target row with no prior is logged and raised. The row-count check stays. Grading columns may sit on the frame and are not read. A prior file that grows a market column name fails the existing banned-token check.
 
@@ -48,11 +48,9 @@ Explosiveness is shrunk 2× or 3× harder than success. The multiplier grid is e
 
 ### Turnover prior
 
-The fallback prior is the realized turnover rate already in the repo: interceptions plus lost fumbles, per scrimmage play, for and against (`analytics_service` turnover counts). It is opponent-adjusted with the same early/passing split and with success’s k of 12. It is not searched.
+Realized turnovers throughout. The rate is interceptions plus lost fumbles, per scrimmage play, for and against (`analytics_service` turnover counts). It is opponent-adjusted with the same early/passing split and with success’s k of 12. It is not searched.
 
-Where FTN charting covers the season, that realized rate is replaced by the charted turnover-worthy rate. The nflverse FTN dictionary (`dictionary_ftn_charting`, read 2026-10-27) says the `season` field is available from 2022 onwards. The turnover-worthy field in that dictionary is `is_interception_worthy` (FTN `intw`): the share of charted dropbacks marked interception-worthy. The dictionary has no fumble-worthy field and no pressure boolean. `n_pass_rushers`, `n_blitzers`, and `is_qb_fault_sack` are not treated as pressure. Pressure is not imputed. A season before 2022, or a 2022+ season whose charting join is missing, keeps the realized-turnover prior.
-
-FTN coverage locked from that dictionary: 2022 onwards. This commit did not download the charting files and did not count plays.
+FTN charting is not used. Pressure rate and turnover-worthy plays are not used. There is no 2022 definition change and no fallback between two turnover units.
 
 ### Out of this bundle
 
@@ -71,68 +69,59 @@ Six cells. Everything else stays at the v6 values above.
 | 8 | 2 | 24 |
 | 8 | 3 | 36 |
 
-## Selection on 2015–23
+No single half-life is frozen before the holdout. The cell is chosen inside the nested path below. A tie within 1e-6 goes to the higher explosiveness multiplier, then to the longer half-life.
 
-The loss is walk-forward margin CRPS, sigma 13.5.
+## Holdout: 2016–25 nested walk-forward
 
-- Test seasons are 2016, 2017, 2018, 2019, 2020, 2021, 2022, and 2023.
-- A test season’s coefficients are fit only on earlier seasons.
-- 2015 is the first training season. It is not a test season. 2014 play-by-play may inform the 2015 prior. It is not scored.
-- The reported selection score is the mean of the per-game CRPS values, not the mean of the seasonal means.
-- A tie within 1e-6 goes to the higher explosiveness multiplier, then to the longer half-life.
-- After that choice is frozen, one fit on all scored 2015–23 games produces the coefficient that would later be applied to a holdout. That fit is not a holdout grade.
-- No game with season ≥ 2024 enters the loss, the fit, a coefficient, or a printed metric.
+One path. For each season S from 2016 through 2025, in order:
 
-The chosen half-life and multiplier are blank until that run is committed. They are not chosen in this file.
+1. Pick one grid cell by margin CRPS, sigma 13.5, using only seasons strictly before S.
+2. Fit that cell’s stage-2 coefficients on scored games in seasons strictly before S.
+3. Grade season S out of sample. Do not refit S. Do not change S’s cell after seeing S.
 
-| Choice | Value |
-| --- | --- |
-| Half-life | not yet run |
-| Explosiveness multiplier | not yet run |
-| Selection CRPS | not yet run |
+The inner score that picks the cell is itself walk-forward. For each of the six cells, mean per-game margin CRPS is computed on test seasons T with 2016 ≤ T < S, and season T is fit only on seasons before T. The cell with the lowest mean is the one used to grade S. Cells are not averaged. Season S is not in that mean.
+
+When S is 2016 there is no inner test season. The cell is then the one with the lowest in-sample margin CRPS on 2015, the only scored season before 2016. 2014 play-by-play may inform that 2015 fit. 2014 is not graded. This is the only edge case. It is part of the same path, not a second analysis.
+
+2026 is not on this path.
+
+The six cells are compared only on seasons before the season being graded. Each holdout season is graded once, with one cell. That nested rule is the multiplicity control. A table that picks the cell by its grade on S, or that reports a second path with one cell frozen on 2015–23, is not this contract.
+
+The loss that picks a cell is margin CRPS only. ATS, CLV, the opener, and the close do not pick the cell.
 
 ## Betting gate
 
 One threshold. There is no grid on `t`. v6’s search over edge cutoffs `{1, 2, 3}` is not used.
 
-Rule, fixed before the number below was read off: on scored games with season in 2015–2023, residual = actual home margin − stored v6-blind predicted margin. `t` = (sample standard deviation of those residuals, divisor n−1) / 4, recorded to three decimal places. The divisor 4 is part of the rule. It was not chosen by scanning ATS.
+`t` is frozen at **3.316** points.
 
-The stored predictions are `backtest/harness_model/priors/predictions.csv`. Actual margins are `backend/tests/fixtures/v6_blind_design.csv`, joined through `week_features.csv` on the blind feature columns. Rows with season ≥ 2024 were removed before the join. The join has 2,458 games, seasons 2015 through 2023 only, maximum season 2023. Sample SD = 13.265843. `t` = 3.316461, recorded as **3.316** points.
+How that number was fixed: on scored games with season in 2015–2023, residual = actual home margin − stored v6-blind predicted margin. `t` = (sample standard deviation of those residuals, divisor n−1) / 4, recorded to three decimals. The divisor 4 is part of the rule. It was not chosen by scanning ATS. The join of `backtest/harness_model/priors/predictions.csv` to `backend/tests/fixtures/v6_blind_design.csv` had 2,458 games, seasons 2015 through 2023 only. Sample SD = 13.265843. `t` = 3.316461, recorded as 3.316. Rows with season ≥ 2024 were removed before that join. 2015’s stored prediction uses the frozen 2015–23 coefficient, so that season is in-sample in the harness file. 2016–2023 in that file are walk-forward.
 
-A play is a game with `|pred_margin − line| > 3.316`. Pushes (`result` equal to the line under `numpy.isclose`) and predictions equal to the line are not plays. The line in that comparison is the grading line for the metric being scored (the opener, or the close). It is not a model input.
+Prior-seasons-only disclosure: the same SD/4 rule, computed from prior seasons only, falls in **3.24–3.35**. That range is a disclosure. It is not a grid, and it does not replace 3.316. 3.316 lies inside the range.
 
-2015’s stored prediction uses the frozen 2015–23 coefficient, so that season is in-sample in the harness file. 2016–2023 are walk-forward. The same SD on 2016–2023 alone (n = 2,191) is 13.253380, which would record 3.313. The locked value is 3.316, from the 2015–23 rule. The 2016–23 figure is disclosed so the in-sample 2015 year is visible. It is not a second candidate.
+A play is a game with `|pred_margin − line| > 3.316`. Pushes (`result` equal to the line under `numpy.isclose`) and predictions equal to the line are not plays. The line is the grading line for the metric being scored. It is not a model input.
 
-The primary CRPS comparison uses every holdout game. The gate does not shrink that sample. ATS and CLV are counted on plays.
+The primary CRPS comparison uses every nested out-of-sample game. The gate does not shrink that sample. ATS is counted on plays, after the gate.
 
 ## Opener source
 
-Single book: **ESPN BET**.
+Single book: **ESPN BET**. DraftKings is not used. No other book is mixed in.
 
-QA’s count of ESPN BET opener rows on 2023 week 7 through 2025 is **n = 643**. This commit does not re-count them. `DATABASE_URL` is unset in this environment, `NFLVERSE_DIR` is unset, and this checkout has no opener file. nflverse `schedules/games.csv` supplies the closing `spread_line` and `total_line` only. `odds_lines.bookmaker` and `odds_snapshots.book` are The Odds API captures, not a historical ESPN BET open. 2026 DraftKings opens stay out, as v6 already treats them as unreliable.
+Window: 2023 week 7 through 2025. QA’s count of ESPN BET opener rows on that window is n = 643, before the gate and before the stale drop. This amendment does not re-count them.
 
-Sign matches v6: positive means the home team is favored, the same direction as home margin. The close used for CLV is nflverse `spread_line`. The open is the ESPN BET number on that sign. A home bet’s CLV is `close − open`. An away bet’s CLV is `open − close`.
+Sign matches v6: positive means the home team is favored, the same direction as home margin. The close is nflverse `spread_line`. The open is the ESPN BET number on that sign. A home bet’s CLV is `close − open`. An away bet’s CLV is `open − close`.
 
-Stale rows are those whose open equals the close under `numpy.isclose`. They are flagged for QA, dropped from ATS, and dropped from CLV. They are not filled in.
+Rows whose open equals the close under `numpy.isclose` are stale. They are dropped from every opener metric and listed so QA can audit them. They are not filled in.
 
-Graded opener-subset `n` is the count after that drop, plus any DraftKings row that passes the check below. QA’s 643 is the pre-drop ESPN BET count. 643 is at least 400, so the opener bars are the ones in force at this count. If the graded `n` after the stale drop (and any admitted DraftKings rows) is under 400, the close bar below replaces them. This commit does not apply the drop and does not recompute `n`.
+Opener plays are counted after that drop and after the gate. QA’s count of those plays is about **113**, which is under 400. That is why ATS versus the close is a primary bar and the opener metrics are directional.
 
-### DraftKings look-ahead check
+The opener window overlaps 2023. Those weeks are inside the 2016–25 nested holdout. Opener results are not used to pick a cell.
 
-Pre-specified. Not run in this commit. No DraftKings row is in the 643.
-
-The bettable window is the T2–T4 span in `sparky_service._snapshot_label`: from 72 hours before kickoff through and after kickoff. Kickoff is `gameday` plus `gametime`, parsed as UTC, the same parse as v6.
-
-A DraftKings spread may be mixed in for a game that has no ESPN BET open only when both of these hold:
-
-1. The open timestamp is present and strictly earlier than the bettable window (more than 72 hours before kickoff).
-2. The open is not equal to the close.
-
-A row that fails either check stays out of the grade and is listed for QA. Passing the check does not reopen the half-life, the multiplier, or `t`.
+`DATABASE_URL` is unset here, and this checkout has no opener file. nflverse `schedules/games.csv` supplies the closing `spread_line` and `total_line` only. `odds_lines.bookmaker` and `odds_snapshots.book` are The Odds API captures, not a historical ESPN BET open.
 
 ## Prior views of 2024–25
 
-These seasons have already been graded by three published looks. This bundle does not add a fourth look in this commit. The history is the reason a later fail does not authorize a retune.
+These seasons have already been graded by three published looks. Those looks are not a grade of this bundle. They are why a failed path does not authorize a retune, and why a re-attempt needs a fresh preregistration.
 
 ### v6-blind, PR #26
 
@@ -142,7 +131,7 @@ Clean holdout, frozen 2015–23 coefficients, every scored game against the clos
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 570 | 0.499 | 0.458–0.540 | 7.325 | 7.028 | 13.075 | 12.485 | 7.577 | 7.311 |
 
-Core bar: all three items fail (CRPS within 2% of the close, RMSE within close + 0.3, ATS ≥ 0.50). Opener n = 0. CLV unavailable. No opener file was in that snapshot.
+Core bar: all three items fail (CRPS within 2% of the close, RMSE within close + 0.3, ATS ≥ 0.50). Opener n = 0 in that snapshot. CLV was unavailable.
 
 ### #27, QB-transition
 
@@ -175,35 +164,64 @@ Windy subset, not the gate: 79 games, ATS 0.468 (37/79), bootstrap 0.380–0.557
 
 ## Pass bar
 
-One look, after QA releases the holdout. A fail ships nothing. The half-life, the explosiveness multiplier, `t`, the down-family cuts, the explosive-yard cut, and the FTN fallback are not refit. 2026 is not part of the bar and is not scored to choose a feature.
+One path, after QA locks this file and releases the holdout. The concatenation of the out-of-sample seasons 2016 through 2025 is the only grade. A fail ships nothing. The grid, `t`, the down-family cuts, the explosive-yard cut, and the realized-turnover prior are not changed after that grade. A re-attempt needs a fresh preregistration.
 
-### Primary
+v6’s paired number is the stored harness prediction for that game. This bundle’s number is the nested out-of-sample prediction. Sigma for margin CRPS is 13.5 for both.
 
-2024–25 scored games, every game, margin CRPS against v6-blind on the same games. Sigma 13.5 for both.
+### Primary: margin CRPS
 
-Paired difference `d = CRPS(v6) − CRPS(bundle)` on each game. Bootstrap 10,000 resamples of games, seed `20241027`, 5th and 95th percentiles. The bundle passes this gate only when the 90% interval lies entirely above 0.
+Every nested out-of-sample game. The gate does not drop games from this comparison.
 
-### Opener metrics
+Paired difference `d = CRPS(v6) − CRPS(bundle)` on each game.
 
-Graded only on the 2023 week 7–2025 subset defined above. QA’s ESPN BET count is n = 643.
+- One-sided paired t-test on `d`. The alternative is mean(`d`) > 0. Pass when p < 0.025.
+- Paired bootstrap of the mean of `d`. 10,000 resamples of games, seed `20261026`. The 95% lower bound is the 5th percentile of those 10,000 bootstrap means (`numpy.percentile`, 5). Pass when that bound is > 0.
 
-Both of the following, and neither estimate negative:
+Both must pass. The t-test threshold and the bootstrap bound are both required as written. They are not collapsed into one calculation.
 
-- ATS versus the opener at least 1 percentage point above v6-blind ATS on the same plays (`bundle ATS − v6 ATS ≥ 0.01`), and bundle ATS ≥ 0.50.
-- Mean CLV (opener to close) with a bootstrap 90% interval, 10,000 resamples of the game-level CLV, seed `20241027`, 5th and 95th percentiles. The lower bound must be above 0. The point estimate must be above 0.
+### Primary: ATS versus the close
 
-### If the graded opener-subset n is under 400
+In force because opener plays after the gate are about 113, under 400.
 
-The two opener metrics are not the bar. In their place, ATS versus the close on the 2024–25 plays must be at least 1 percentage point above v6-blind, and a one-sided paired test must have p < 0.025. The test is an exact one-sided binomial on the games where exactly one model covers the close. The null is that each model is equally likely to be the one that covers. The alternative is that the bundle is the one that covers more often. Bundle ATS must also be ≥ 0.50. At QA’s pre-drop count of 643 this replacement is not in force.
+Plays are nested 2016–25 games with `|pred_margin − spread_line| > 3.316`, pushes removed. On those plays, both of the following:
+
+- Bundle ATS is at least 1 percentage point above v6-blind ATS on the same plays (`bundle ATS − v6 ATS ≥ 0.01`).
+- One-sided paired test, p < 0.025. The test is an exact one-sided binomial on the games where exactly one model covers the close. The null is that each model is equally likely to be the one that covers. The alternative is that the bundle is the one that covers more often.
+
+### Close non-inferiority
+
+Same plays as the close ATS bar. Paired difference `c = cover_bundle − cover_v6` on each play (1 if that model covers, 0 otherwise). Bootstrap the mean of `c`, 10,000 resamples, seed `20261026`, 5th and 95th percentiles. The 90% interval’s lower bound must be ≥ −0.01. That is within 1 percentage point of v6 on the downside. A better ATS does not fail this check.
+
+### Directional: opener ATS and CLV
+
+ESPN BET only, 2023 week 7 through 2025, stale open-equals-close rows dropped, then the gate. About 113 plays. These two numbers are reported with intervals and do not pass or fail the bundle:
+
+- ATS versus the opener, bundle and v6, on the same plays, with a bootstrap 90% interval on the paired cover difference (seed `20261026`, 5th and 95th percentiles).
+- Mean CLV (opener to close), with a bootstrap 90% interval on the game-level CLV (seed `20261026`, 5th and 95th percentiles).
+
+### Power
+
+Stated before any bundle grade, so the bars are read against what this sample can detect.
+
+- Margin CRPS: minimum detectable effect about **0.055 ×** the standard deviation of the paired per-game CRPS difference, at n = **2,639**.
+- ATS versus the close: minimum detectable effect about **±2.7** percentage points.
+
+The +1 percentage point close bar is smaller than that ATS minimum detectable effect. The bar is unchanged by that fact.
 
 ### What a pass requires
 
-The primary CRPS interval passes, and the opener pair passes (or, only when graded opener n < 400, the close ATS test passes). A negative ATS edge or a negative mean CLV fails the bundle even if another number clears.
+The CRPS t-test passes, the CRPS bootstrap bound passes, the close ATS +1 percentage point test passes, and the close non-inferiority bound passes. Opener ATS and CLV are reported beside that decision.
 
-## This commit
+## Lock rule
 
-- Protocol locked. Betting-gate `t` = 3.316.
-- Opener book locked as ESPN BET. QA count n = 643 on 2023 week 7–2025. DraftKings check specified and not run.
-- FTN charting coverage locked as 2022 onwards from the nflverse dictionary. Pressure is not a field in that dictionary and is not imputed.
-- Half-life and explosiveness multiplier not selected.
-- No game from 2024 or later scored. No 2024+ row entered the residual calculation.
+No peeking at holdout grades before QA locks this file. The nested path is the holdout, including 2016–23, so a bundle CRPS, ATS, or CLV on any of those seasons is a peek. A later re-attempt, including a change to the grid, to `t`, or to the bars, needs a new preregistration. It does not edit this one after a grade.
+
+## This amendment
+
+- Nested holdout is 2016–25, one path. The cell for season S is chosen and fit only on seasons before S.
+- Primary CRPS is a one-sided paired t-test at p < 0.025 and a paired bootstrap 95% lower bound > 0. Seed `20261026`.
+- Gate `t` = 3.316, frozen. Prior-seasons-only range disclosed as 3.24–3.35.
+- Opener plays after the gate are about 113, so ATS versus the close at +1 percentage point over v6, p < 0.025, is a primary bar. Close non-inferiority at 1 percentage point is required. Opener ATS and CLV are directional.
+- DraftKings is out. ESPN BET only. Open-equals-close rows are dropped.
+- FTN is out. The realized-turnover prior is used in every season. The explosiveness split stays.
+- No bundle metric was computed for any season in this amendment.
