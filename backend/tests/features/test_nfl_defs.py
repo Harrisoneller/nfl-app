@@ -20,10 +20,13 @@ from features.nfl.defs import (
     K_ONE_SCORE,
     K_RZ,
     ONE_SCORE_EXPECTED,
+    PBP_INPUT_COLUMNS,
+    REQUIRED,
     RIDGE_EPS,
     TEAM_GAME_COLUMNS,
     TEAM_SEASON_COLUMNS,
     assert_no_market_columns,
+    assert_output_columns,
     build_features,
     field_goal_expected_make,
     ridge_team,
@@ -117,15 +120,78 @@ def _hand_plays() -> pd.DataFrame:
     ])
 
 
-def test_market_columns_are_rejected_and_score_totals_are_not():
-    assert_no_market_columns(["epa", "total_home_score", "total_away_score", "yardline_100"])
-    for name in ("spread_line", "total", "total_line", "home_moneyline", "over_odds", "closing_spread"):
-        with pytest.raises(ValueError, match="market columns"):
-            assert_no_market_columns(["epa", name])
+# Names a spread/odds/moneyline token list misses, plus the lines it already
+# catches. ``*_odds`` and ``*moneyline`` stand in for any such column.
+_MARKET_NAMES = (
+    "vegas_wp",
+    "vegas_home_wp",
+    "spread_line",
+    "total_line",
+    "total",
+    "over_odds",
+    "home_spread_odds",
+    "team_odds",
+    "home_moneyline",
+    "away_moneyline",
+    "moneyline",
+    "foo_moneyline",
+    "closing_spread",
+    "over_under",
+    "spread",
+)
+
+
+def test_score_totals_and_model_wp_are_not_market_columns():
+    assert_no_market_columns(["epa", "wp", "total_home_score", "total_away_score", "yardline_100", "play_id"])
+    game, season = build_features(_hand_plays())
+    assert_output_columns(game.columns, TEAM_GAME_COLUMNS)
+    assert_output_columns(season.columns, TEAM_SEASON_COLUMNS)
+
+
+@pytest.mark.parametrize("name", _MARKET_NAMES)
+def test_market_like_column_rejected_on_input_and_both_outputs(name: str):
+    with pytest.raises(ValueError, match="market columns"):
+        assert_no_market_columns(["epa", "wp", name])
     plays = _hand_plays()
-    plays["total_line"] = 44.5
+    plays[name] = 1.0
     with pytest.raises(ValueError, match="market columns"):
         build_features(plays)
+    with pytest.raises(ValueError, match="market columns"):
+        assert_output_columns([*TEAM_GAME_COLUMNS, name], TEAM_GAME_COLUMNS)
+    with pytest.raises(ValueError, match="market columns"):
+        assert_output_columns([*TEAM_SEASON_COLUMNS, name], TEAM_SEASON_COLUMNS)
+
+
+def test_pbp_allowlist_is_the_columns_defs_reads():
+    assert set(REQUIRED) <= set(PBP_INPUT_COLUMNS)
+    assert "fumble_forced" in PBP_INPUT_COLUMNS
+    assert "fumble_lost" not in PBP_INPUT_COLUMNS
+    for name in ("vegas_wp", "vegas_home_wp", "spread_line", "total_line", "home_moneyline", "over_odds"):
+        assert name not in PBP_INPUT_COLUMNS
+    if not FIXTURE.exists():
+        pytest.fail(f"missing pinned fixture {FIXTURE}")
+    plays = pd.read_parquet(FIXTURE)
+    assert set(plays.columns) <= set(PBP_INPUT_COLUMNS)
+
+
+def test_forced_fumble_counts_without_recovery_and_ignores_lost():
+    """fumble_forced == 1 counts even when the offense keeps the ball.
+
+    A row that is only fumble_lost, and an unforced fumble, do not count once
+    fumble_forced is on the frame.
+    """
+    plays = pd.DataFrame([
+        _play(epa=1.0, fumble=1, fumble_forced=1, fumble_lost=0, fumble_recovery_1_team="KC"),
+        _play(epa=0.2, fumble=0, fumble_forced=0, fumble_lost=1, fumble_recovery_1_team="DEN"),
+        _play(epa=0.3, fumble=1, fumble_forced=0, fumble_lost=1, fumble_recovery_1_team="DEN"),
+    ])
+    _, season = build_features(plays)
+    kc = season[season["team"] == "KC"].iloc[0]
+    den = season[season["team"] == "DEN"].iloc[0]
+    assert kc["fumble_n"] == 1
+    assert den["fumble_n"] == 1
+    assert kc["fumble_rec_luck"] == pytest.approx(shrink(1.0 - FUMBLE_EXPECTED, 1, K_FUMBLE))
+    assert den["fumble_rec_luck"] == pytest.approx(shrink(0.0 - FUMBLE_EXPECTED, 1, K_FUMBLE))
 
 
 def test_garbage_band_families_and_separate_explosiveness():

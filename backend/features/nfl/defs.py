@@ -71,6 +71,22 @@ REQUIRED = (
     "qb_kneel", "qb_spike", "special_teams_play",
 )
 
+# Exact play-by-play columns this module reads. The market guard is this
+# allowlist: a column that is not on it and is market-like is rejected.
+# ``wp`` is the nflverse model win probability. ``vegas_wp`` and
+# ``vegas_home_wp`` are not on the list. ``fumble_lost`` is not read.
+PBP_INPUT_COLUMNS: tuple[str, ...] = (
+    "game_id", "season", "week", "season_type",
+    "posteam", "defteam", "home_team", "away_team",
+    "epa", "success", "pass", "rush", "down", "ydstogo", "yards_gained", "wp",
+    "qb_kneel", "qb_spike", "special_teams_play",
+    "home_score", "away_score",
+    "interception", "fumble", "fumble_forced", "fumble_recovery_1_team",
+    "pass_attempt", "pass_defense_1_player_id", "pass_defense_2_player_id",
+    "field_goal_attempt", "field_goal_result", "kick_distance",
+    "yardline_100", "touchdown", "drive", "fixed_drive",
+)
+
 # Raw offensive rates. Each produces ``{name}_season`` and ``{name}_last4``.
 RATE_SPECS: tuple[tuple[str, str, str], ...] = (
     ("epa_play", "epa/play", "Offensive EPA per scrimmage play inside the WP band"),
@@ -169,7 +185,7 @@ def _contract() -> dict[str, tuple[type, str, str]]:
     for name, unit, desc in ridge:
         out[name] = (float, unit, desc + "." + asof)
     luck = (
-        ("fumble_rec_luck", "Fumble recovery rate minus 0.5, shrunk with k = 50 fumbles. Positive means more recoveries than half"),
+        ("fumble_rec_luck", "Fumble recovery rate minus 0.5, shrunk with k = 50. When fumble_forced is present the count is forced fumbles, including ones the offense recovered. fumble_lost is not read. Positive means more recoveries than half"),
         ("int_luck", "Pass-attempt INT rate below the passes-defensed expectation, shrunk with k = 200 attempts. Positive means fewer interceptions than expected"),
         ("rz_td_luck", "Red-zone trip TD rate minus the league rate, shrunk with k = 30 trips. Positive means more red-zone TDs than expected"),
         ("one_score_luck", "Win rate in games decided by 8 points or fewer, minus 0.5, shrunk with k = 16 games"),
@@ -178,7 +194,7 @@ def _contract() -> dict[str, tuple[type, str, str]]:
     for name, desc in luck:
         out[name] = (float, "shrunk residual", desc + "." + asof)
     for name, desc in (
-        ("fumble_n", "Fumbles in the team's games"),
+        ("fumble_n", "Forced fumbles when fumble_forced is present, otherwise fumbles. Counted whether or not the ball was lost"),
         ("int_n", "Pass attempts"),
         ("rz_n", "Red-zone offensive trips"),
         ("one_score_n", "One-score games"),
@@ -212,23 +228,75 @@ TEAM_SEASON_COLUMNS = ("season", "team", "games") + tuple(
 )
 
 
+# Final scores. They contain "total" and are not a betting total.
+_SCORE_COLUMNS = frozenset({"total_home_score", "total_away_score"})
+
+
 def assert_no_market_columns(columns: Iterable[str]) -> None:
-    """Raise if a frame carries a spread, a total, an odds column, or a moneyline.
+    """Raise if a frame carries a market column outside the pbp input allowlist.
+
+    Allowed inputs are ``PBP_INPUT_COLUMNS`` — the columns ``build_features``
+    reads. Anything else that is market-like is rejected. That includes
+    ``vegas_wp`` and ``vegas_home_wp``, which a spread/odds/moneyline token
+    list does not catch, plus ``spread_line``, ``total_line``, any ``*_odds``
+    column, and any moneyline column. The same rule is applied to output
+    frames: none of the contract columns are market-like, so a leaked market
+    name fails here too.
 
     ``total_home_score`` and ``total_away_score`` are final scores, not a
     betting total, and are allowed. A column named ``total`` or ``total_line``
-    is rejected.
+    is rejected. Non-market columns this module does not read (a play id, a
+    description) may sit on the input and are ignored.
     """
-    bad = [str(col) for col in columns if _is_market(str(col))]
+    allowed = set(PBP_INPUT_COLUMNS)
+    bad = [
+        str(col) for col in columns
+        if str(col) not in allowed and _is_market_like(str(col))
+    ]
     if bad:
         raise ValueError(f"market columns are not features: {bad}")
 
 
-def _is_market(name: str) -> bool:
+def assert_output_columns(columns: Iterable[str], allowed: Sequence[str]) -> None:
+    """Closed check for a team-game or team-season frame.
+
+    Output columns must be the contract allowlist. A market-like name is
+    rejected on these frames the same way it is rejected on input, including
+    the college-football market names (``vegas_wp``, ``vegas_home_wp``,
+    ``spread``, ``over_under``, moneylines, and ``*_odds``) that a short
+    NFL token list misses.
+    """
+    allow = {str(col) for col in allowed}
+    market = [str(col) for col in columns if _is_market_like(str(col))]
+    if market:
+        raise ValueError(f"market columns are not features: {market}")
+    extra = [str(col) for col in columns if str(col) not in allow]
+    if extra:
+        raise ValueError(f"output columns outside the allowlist: {extra}")
+
+
+def _is_market_like(name: str) -> bool:
+    """True for NFL and college-football market columns that are not inputs.
+
+    Detection is only applied to names outside the allowlist. ``wp`` is an
+    allowed model win probability. ``vegas_wp`` is not.
+    """
     key = name.lower()
-    if any(tok in key for tok in ("spread", "moneyline", "odds")):
+    if key in _SCORE_COLUMNS:
+        return False
+    if "vegas" in key:
+        return True
+    if "moneyline" in key or key == "ml" or key.endswith("_ml"):
+        return True
+    if "odds" in key:
+        return True
+    if "spread" in key:
+        return True
+    if "over_under" in key or key in {"ou", "overunder"}:
         return True
     if key in {"total", "total_line"} or key.endswith("_total") or "total_line" in key:
+        return True
+    if key.endswith("_line") and "yardline" not in key:
         return True
     return False
 
@@ -379,6 +447,25 @@ def _spine(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["season", "week", "game_id", "team"]).reset_index(drop=True)
 
 
+def _fumble_rows(scr: pd.DataFrame) -> pd.DataFrame:
+    """Fumbles inside the WP band. Recovery is not required.
+
+    When ``fumble_forced`` is on the frame, the event is ``fumble_forced == 1``.
+    A forced fumble the offense keeps still counts. ``fumble_lost`` is not read.
+    The pinned slim fixture has no ``fumble_forced`` column, so that frame
+    falls back to ``fumble == 1``.
+    """
+    if len(scr) == 0:
+        return scr
+    if "fumble_forced" in scr.columns:
+        flag = pd.to_numeric(scr["fumble_forced"], errors="coerce").fillna(0).eq(1)
+        return scr.loc[flag]
+    if "fumble" in scr.columns:
+        flag = pd.to_numeric(scr["fumble"], errors="coerce").fillna(0).eq(1)
+        return scr.loc[flag]
+    return scr.iloc[0:0]
+
+
 def _player_present(value: object) -> bool:
     """True when a player-id cell names someone. Not a team code."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -464,8 +551,8 @@ def _luck_counts(df: pd.DataFrame, scr: pd.DataFrame) -> pd.DataFrame:
             rows[key] = found
         return found
 
-    if len(scr) and "fumble" in scr.columns:
-        fum = scr[pd.to_numeric(scr["fumble"], errors="coerce").fillna(0) == 1]
+    fum = _fumble_rows(scr)
+    if len(fum):
         for rec in fum.itertuples(index=False):
             for team in (rec.posteam, rec.defteam):
                 if team is not None:
@@ -879,6 +966,8 @@ def _build_features(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     season = _season_frame(season_base, panels, teams, ti)
     assert_no_market_columns(team_game.columns)
     assert_no_market_columns(season.columns)
+    assert_output_columns(team_game.columns, TEAM_GAME_COLUMNS)
+    assert_output_columns(season.columns, TEAM_SEASON_COLUMNS)
     return team_game, season
 
 
