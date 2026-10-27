@@ -346,8 +346,21 @@ def _missing_defs() -> None:
     raise ImportError("features.nfl.defs is not installed")
 
 
+def _capture_error_logs(monkeypatch) -> list[str]:
+    events: list[str] = []
+
+    def _record(event: str, **kwargs: object) -> None:
+        del kwargs
+        events.append(str(event))
+
+    monkeypatch.setattr(features.log, "error", _record)
+    monkeypatch.setattr(svc.log, "error", _record)
+    return events
+
+
 @pytest.mark.asyncio
 async def test_missing_defs_is_loud_and_does_not_download(monkeypatch):
+    events = _capture_error_logs(monkeypatch)
     monkeypatch.setattr(features, "_import_defs", _missing_defs)
     features.reset()
 
@@ -362,12 +375,32 @@ async def test_missing_defs_is_loud_and_does_not_download(monkeypatch):
     assert profile["splits"] == []
     assert profile["unavailable"][0]["id"] == "feature_defs"
     assert "could not be imported" in profile["unavailable"][0]["reason"]
+    assert svc.WAITING_REASON not in profile["unavailable"][0]["reason"]
     assert svc.cache_status(1981) == "miss"
     again = await svc.efficiency_profile("KC", 1981)
     assert again["unavailable"][0]["id"] == "feature_defs"
     assert svc.cache_status(1981) == "miss"
+    assert "feature_defs_import_failed" in events
+    assert "feature_defs_unavailable" in events
     with pytest.raises(features.FeatureDefsUnavailable):
         await svc.materialize_profiles(object())
+    assert events.count("feature_defs_import_failed") >= 2
+
+
+def test_missing_defs_endpoint_returns_unavailable(client, monkeypatch):
+    events = _capture_error_logs(monkeypatch)
+    monkeypatch.setattr(features, "_import_defs", _missing_defs)
+    features.reset()
+    svc._drop_bundle_cache(1981)
+    response = client.get("/teams/KC/efficiency?season=1981")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["splits"] == []
+    assert body["unavailable"][0]["id"] == "feature_defs"
+    assert "could not be imported" in body["unavailable"][0]["reason"]
+    assert "placeholder" not in body["unavailable"][0]["reason"].lower()
+    assert "feature_defs_import_failed" in events
+    assert "feature_defs_unavailable" in events
 
 
 def _rated_row(team: str, *, offense: float, defense: float) -> dict:
