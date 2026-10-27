@@ -306,6 +306,17 @@ async def _job_profiles_only() -> None:
     await sync_run_service.run_job("profiles", _build_profiles)
 
 
+async def _job_team_luck() -> None:
+    """Cache the luck index. Registered on every boot level, including minimal.
+
+    The web role does not run this scheduler. A cold request still computes
+    once if the shared cache is empty.
+    """
+    from ..services import nfl_luck_service
+
+    await sync_run_service.run_job("team_luck", nfl_luck_service.materialize)
+
+
 async def _job_model_lifecycle() -> None:
     await sync_run_service.run_job("model_lifecycle", _run_model_lifecycle)
 
@@ -344,6 +355,7 @@ def start_scheduler() -> None:
         sched.add_job(_job_materialize_only, "date", run_date=_soon(20), id="boot_materialize")
         sched.add_job(_job_rebuild_elo_boot, "date", run_date=_soon(45), id="boot_elo")
         sched.add_job(_job_profiles_only, "date", run_date=_soon(60), id="boot_profiles")
+        sched.add_job(_job_team_luck, "date", run_date=_soon(110), id="boot_team_luck")
         sched.add_job(_job_warmup_predictions_boot, "date", run_date=_soon(75), id="boot_predictions")
         sched.add_job(_job_nightly_h2h, "date", run_date=_soon(90), id="boot_h2h")
 
@@ -351,6 +363,14 @@ def start_scheduler() -> None:
         _job_daily_derive,
         CronTrigger(hour=settings.derive_cron_hours_expr, minute=15, timezone="UTC"),
         id="derive_pipeline",
+        coalesce=True,
+        max_instances=1,
+    )
+
+    sched.add_job(
+        _job_team_luck,
+        CronTrigger(hour=settings.derive_cron_hours_expr, minute=50, timezone="UTC"),
+        id="team_luck",
         coalesce=True,
         max_instances=1,
     )
