@@ -22,9 +22,8 @@ luck index. Positive means the team was luckier than the baseline.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-
 import warnings
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -185,7 +184,15 @@ def _contract() -> dict[str, tuple[type, str, str]]:
     for name, unit, desc in ridge:
         out[name] = (float, unit, desc + "." + asof)
     luck = (
-        ("fumble_rec_luck", "Fumble recovery rate minus 0.5, shrunk with k = 50. When fumble_forced is present the count is forced fumbles, including ones the offense recovered. fumble_lost is not read. Positive means more recoveries than half"),
+        (
+            "fumble_rec_luck",
+            (
+                "Recovery rate on every fumble, forced or unforced, minus 0.5, shrunk with k = 50. "
+                "Recovery is who falls on the ball, so an offense recovery counts. fumble_lost is not read. "
+                "This is not the havoc count, which uses fumble_forced == 1 only. "
+                "Positive means more recoveries than half"
+            ),
+        ),
         ("int_luck", "Pass-attempt INT rate below the passes-defensed expectation, shrunk with k = 200 attempts. Positive means fewer interceptions than expected"),
         ("rz_td_luck", "Red-zone trip TD rate minus the league rate, shrunk with k = 30 trips. Positive means more red-zone TDs than expected"),
         ("one_score_luck", "Win rate in games decided by 8 points or fewer, minus 0.5, shrunk with k = 16 games"),
@@ -194,7 +201,13 @@ def _contract() -> dict[str, tuple[type, str, str]]:
     for name, desc in luck:
         out[name] = (float, "shrunk residual", desc + "." + asof)
     for name, desc in (
-        ("fumble_n", "Forced fumbles when fumble_forced is present, otherwise fumbles. Counted whether or not the ball was lost"),
+        (
+            "fumble_n",
+            (
+                "Every fumble in the team's games, forced and unforced, whether or not the ball was lost. "
+                "Havoc does not use this column. Havoc counts fumble_forced == 1 only"
+            ),
+        ),
         ("int_n", "Pass attempts"),
         ("rz_n", "Red-zone offensive trips"),
         ("one_score_n", "One-score games"),
@@ -245,8 +258,8 @@ def assert_no_market_columns(columns: Iterable[str]) -> None:
 
     ``total_home_score`` and ``total_away_score`` are final scores, not a
     betting total, and are allowed. A column named ``total`` or ``total_line``
-    is rejected. Non-market columns this module does not read (a play id, a
-    description) may sit on the input and are ignored.
+    is rejected. Any other column that is not on ``PBP_INPUT_COLUMNS`` is
+    dropped before features are computed, so it cannot reach an output.
     """
     allowed = set(PBP_INPUT_COLUMNS)
     bad = [
@@ -296,9 +309,7 @@ def _is_market_like(name: str) -> bool:
         return True
     if key in {"total", "total_line"} or key.endswith("_total") or "total_line" in key:
         return True
-    if key.endswith("_line") and "yardline" not in key:
-        return True
-    return False
+    return key.endswith("_line") and "yardline" not in key
 
 
 def canon_team(value: object) -> str | None:
@@ -448,22 +459,21 @@ def _spine(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fumble_rows(scr: pd.DataFrame) -> pd.DataFrame:
-    """Fumbles inside the WP band. Recovery is not required.
+    """Every fumble inside the WP band. Recovery luck uses this set.
 
-    When ``fumble_forced`` is on the frame, the event is ``fumble_forced == 1``.
-    A forced fumble the offense keeps still counts. ``fumble_lost`` is not read.
-    The pinned slim fixture has no ``fumble_forced`` column, so that frame
-    falls back to ``fumble == 1``.
+    The event is any fumble: ``fumble == 1`` or ``fumble_forced == 1``. Forced
+    and unforced fumbles both count, including one the offense keeps.
+    ``fumble_lost`` is not read. Havoc is a different count and uses only
+    ``fumble_forced == 1``.
     """
     if len(scr) == 0:
         return scr
-    if "fumble_forced" in scr.columns:
-        flag = pd.to_numeric(scr["fumble_forced"], errors="coerce").fillna(0).eq(1)
-        return scr.loc[flag]
+    flag = pd.Series(False, index=scr.index)
     if "fumble" in scr.columns:
-        flag = pd.to_numeric(scr["fumble"], errors="coerce").fillna(0).eq(1)
-        return scr.loc[flag]
-    return scr.iloc[0:0]
+        flag = flag | pd.to_numeric(scr["fumble"], errors="coerce").fillna(0).eq(1)
+    if "fumble_forced" in scr.columns:
+        flag = flag | pd.to_numeric(scr["fumble_forced"], errors="coerce").fillna(0).eq(1)
+    return scr.loc[flag]
 
 
 def _player_present(value: object) -> bool:
@@ -522,7 +532,7 @@ def _offense_sums(scr: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     work["passdown_rush_epa_num"] = masked(passing & is_rush, epa)
     work["passdown_rush_den"] = masked(passing & is_rush)
     work["passdown_rush_sr_num"] = masked(passing & is_rush, suc)
-    measure_cols = [col for col in work.columns if col.endswith("_num") or col.endswith("_den")]
+    measure_cols = [col for col in work.columns if col.endswith(("_num", "_den"))]
     agg = work.groupby(["season", "week", "game_id", "posteam", "defteam"], as_index=False)[measure_cols].sum()
     agg = agg.rename(columns={"posteam": "team", "defteam": "defense"})
     allowed = agg[["season", "week", "game_id", "defense", "epa_num", "epa_den"]].rename(
@@ -801,10 +811,22 @@ def _cast(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     return out
 
 
+def _project_input(plays: pd.DataFrame) -> pd.DataFrame:
+    """Keep only the play columns this module reads.
+
+    Market-like names outside that allowlist raise. Every other extra column
+    is dropped before any feature code sees the frame.
+    """
+    assert_no_market_columns(plays.columns)
+    keep = [col for col in PBP_INPUT_COLUMNS if col in plays.columns]
+    return plays.loc[:, keep].copy()
+
+
 def build_features(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return ``(team_game, team_season)`` feature frames.
 
-    Both frames obey ``CONTRACT``. Market columns on the input raise.
+    Both frames obey ``CONTRACT``. Market columns on the input raise. Any
+    other column that is not on ``PBP_INPUT_COLUMNS`` is dropped first.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
@@ -812,7 +834,7 @@ def build_features(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _build_features(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    assert_no_market_columns(plays.columns)
+    plays = _project_input(plays)
     _require(plays)
     raw = _prepare(plays)
     if len(raw) == 0:
@@ -904,13 +926,6 @@ def _build_features(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     else:
         for col in ("int_pd", "int_nopd", "int_on_pd", "int_on_nopd", "rz_trips", "rz_td"):
             windowed[f"{col}_league_prior"] = 0.0
-    for col in ("int_pd", "int_nopd", "int_on_pd", "int_on_nopd", "rz_trips", "rz_td"):
-        league_col = f"{col}_league_prior" if f"{col}_league_prior" in windowed.columns else col
-        # merge suffix: the league prior columns were not suffixed if names differed.
-        if f"{col}_league_prior" not in windowed.columns:
-            # cumsum frame used the same names and merge added _league? We inserted season/week
-            # and the measure names, so merge suffixes the right side when they collide.
-            pass
     # The merge above collides on the measure names. Pandas suffixes the right frame.
     rename_map = {}
     for col in ("int_pd", "int_nopd", "int_on_pd", "int_on_nopd", "rz_trips", "rz_td"):
@@ -992,7 +1007,7 @@ def _season_frame(
         row: dict[str, object] = {
             "season": int(season),
             "team": team,
-            "games": int(len(group)),
+            "games": len(group),
             "n_plays_season": full["epa_den"],
             "n_plays_last4": last["epa_den"],
         }

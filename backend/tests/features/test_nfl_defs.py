@@ -36,7 +36,8 @@ from features.nfl.defs import (
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pbp_2023_reg_slim.parquet"
 # play_by_play_2023.parquet from the nflverse pbp release pinned at
 # updated_at 2026-10-26T16:29:22Z, sha256 bd3484731408def6b0ec93225bba2bd7b2c65769ca707a2b9444d891abdc6776.
-# The fixture is that file's 2023 regular-season rows with market columns removed.
+# The fixture is that file's 2023 regular-season rows, market columns removed,
+# with fumble_forced kept so recovery luck runs on the production path.
 
 # Frozen outputs of build_features on that fixture. Rounded checks use 1e-6.
 GOLDEN = {
@@ -51,6 +52,7 @@ GOLDEN = {
         "early_epa_season": 0.059047765167043235,
         "passing_epa_season": 0.07604111462801491,
         "sched_strength": 0.092926292891514,
+        "fumble_n": 24,
         "fumble_rec_luck": -0.06756756756756757,
         "int_luck": -0.004152519646744936,
         "rz_td_luck": 0.04596477089569418,
@@ -68,6 +70,7 @@ GOLDEN = {
         "early_epa_season": -0.021581811579974363,
         "passing_epa_season": -0.01926270529630443,
         "sched_strength": 0.0716353845700137,
+        "fumble_n": 30,
         "fumble_rec_luck": -0.03749999999999999,
         "int_luck": -0.004830291178792844,
         "rz_td_luck": -0.01495395499176683,
@@ -171,27 +174,48 @@ def test_pbp_allowlist_is_the_columns_defs_reads():
     if not FIXTURE.exists():
         pytest.fail(f"missing pinned fixture {FIXTURE}")
     plays = pd.read_parquet(FIXTURE)
+    assert "fumble_forced" in plays.columns
     assert set(plays.columns) <= set(PBP_INPUT_COLUMNS)
 
 
-def test_forced_fumble_counts_without_recovery_and_ignores_lost():
-    """fumble_forced == 1 counts even when the offense keeps the ball.
+def test_columns_off_the_read_list_never_reach_outputs():
+    """A pure input allowlist. These names are not market tokens and not reads."""
+    banned = ("cover", "ats_margin", "implied_prob", "no_vig_prob")
+    plays = _hand_plays()
+    for name in banned:
+        plays[name] = 1.0
+    game, season = build_features(plays)
+    clean_game, clean_season = build_features(_hand_plays())
+    for name in banned:
+        assert name not in game.columns
+        assert name not in season.columns
+        assert name not in PBP_INPUT_COLUMNS
+    assert game.equals(clean_game)
+    assert season.equals(clean_season)
 
-    A row that is only fumble_lost, and an unforced fumble, do not count once
-    fumble_forced is on the frame.
+
+def test_recovery_luck_counts_every_fumble_and_ignores_lost():
+    """Recovery is who falls on the ball, so unforced fumbles count too.
+
+    Havoc would count only the forced fumble. ``fumble_lost`` does not.
+    A forced fumble the offense keeps is still a fumble.
     """
     plays = pd.DataFrame([
         _play(epa=1.0, fumble=1, fumble_forced=1, fumble_lost=0, fumble_recovery_1_team="KC"),
-        _play(epa=0.2, fumble=0, fumble_forced=0, fumble_lost=1, fumble_recovery_1_team="DEN"),
-        _play(epa=0.3, fumble=1, fumble_forced=0, fumble_lost=1, fumble_recovery_1_team="DEN"),
+        _play(epa=0.2, fumble=1, fumble_forced=0, fumble_lost=0, fumble_recovery_1_team="KC"),
+        _play(epa=0.3, fumble=0, fumble_forced=0, fumble_lost=1, fumble_recovery_1_team="DEN"),
     ])
     _, season = build_features(plays)
     kc = season[season["team"] == "KC"].iloc[0]
     den = season[season["team"] == "DEN"].iloc[0]
-    assert kc["fumble_n"] == 1
-    assert den["fumble_n"] == 1
-    assert kc["fumble_rec_luck"] == pytest.approx(shrink(1.0 - FUMBLE_EXPECTED, 1, K_FUMBLE))
-    assert den["fumble_rec_luck"] == pytest.approx(shrink(0.0 - FUMBLE_EXPECTED, 1, K_FUMBLE))
+    assert int(plays["fumble_forced"].sum()) == 1
+    assert kc["fumble_n"] == 2
+    assert den["fumble_n"] == 2
+    assert kc["fumble_rec_luck"] == pytest.approx(shrink(1.0 - FUMBLE_EXPECTED, 2, K_FUMBLE))
+    assert den["fumble_rec_luck"] == pytest.approx(shrink(0.0 - FUMBLE_EXPECTED, 2, K_FUMBLE))
+    assert "all fumbles" in CONTRACT["fumble_n"][2].lower() or "every fumble" in CONTRACT["fumble_n"][2].lower()
+    assert "fumble_forced" in CONTRACT["fumble_n"][2]
+    assert "fumble_lost" in CONTRACT["fumble_rec_luck"][2]
 
 
 def test_garbage_band_families_and_separate_explosiveness():
