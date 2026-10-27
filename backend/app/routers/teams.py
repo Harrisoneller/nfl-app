@@ -67,8 +67,8 @@ async def get_team_efficiency(
 ):
     """Efficiency profile for one team.
 
-    Rates come from the NFL feature contract (``features/nfl/defs.py``) via
-    the feature adapter. This handler does not compute EPA or success rate.
+    Rates come from ``features.nfl.defs.build_features`` via the feature
+    adapter. This handler does not compute EPA, success rate, or percentiles.
     The league bundle is cached; the response is one team sliced out of it.
     """
     season = season or latest_completed_season()

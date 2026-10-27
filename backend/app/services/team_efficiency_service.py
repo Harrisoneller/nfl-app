@@ -1,14 +1,16 @@
 """Team efficiency profile: cache, job, and page shape.
 
-Metric definitions live in ``features/nfl/defs.py``. This module loads
-play-by-play, hands it to ``nfl_feature_adapter``, and stores the team-game
-and team-season tables. Percentile ranks and the four-game line are
-presentation over those columns. They are not EPA, success-rate, or
-opponent-adjustment math.
+Numbers come from ``features.nfl.defs.build_features``. This module loads
+play-by-play, strips market columns, stores the team-game and team-season
+tables, and shapes one team for the page. It does not compute EPA, success
+rate, opponent adjustment, or percentiles.
 
-Until defs lands, the adapter returns the placeholder contract and this
-page omits every rate instead of inventing one. Garbage time is reported
-as excluded only when the loaded module says its filter ran.
+Headline cells are the opponent-adjusted ratings (``*_off_adj`` /
+``*_def_adj`` and ``sched_strength``). Percentiles are the contract's
+``*_season_pct`` columns. The chart is ``*_last4`` against ``*_season`` on
+the team-game rows, which are as of the start of each week. Early-down and
+passing-down rows are the published season rates; the contract has no
+opponent-adjusted rating for those splits.
 """
 from __future__ import annotations
 
@@ -23,18 +25,12 @@ from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
 from . import artifact_cache
 from . import nfl_feature_adapter as features
-from .analytics_service import percentile_rank
 
 log = get_logger(__name__)
 
 KIND = "team_efficiency"
-CACHE_TTL = 60 * 60 * 6  # current season, real feature module
-PLACEHOLDER_TTL = 60 * 30  # short, so a landed defs module replaces the stub quickly
-
-# Display rule only: a rank needs a sample. Not a definition of the metric.
-MIN_PLAYS_FOR_RANK = 40
-
-_TEAM_COLUMNS = ("posteam", "defteam", "home_team", "away_team", "team", "opponent")
+CACHE_TTL = 60 * 60 * 6
+PLACEHOLDER_TTL = 60 * 30
 
 WAITING_REASON = (
     "Opponent-adjusted EPA, success rate, and schedule strength are omitted. "
@@ -42,10 +38,116 @@ WAITING_REASON = (
     "calculate those metrics itself."
 )
 
-_HIGHER_IS_BETTER = {
-    "epa": {"offense": True, "defense": False},
-    "success_rate": {"offense": True, "defense": False},
-    "schedule_strength": {"offense": True, "defense": True},
+_TEAM_COLUMNS = ("posteam", "defteam", "home_team", "away_team", "team", "opponent")
+
+# column, percentile column, display, higher_is_better, rank sense, percentile caption
+_Cell = tuple[str | None, str | None, str, bool, str, str | None]
+
+def _cell(
+    column: str | None,
+    percentile: str | None,
+    display: str,
+    higher: bool,
+    sense: str = "better",
+    percentile_of: str | None = None,
+) -> _Cell:
+    return (column, percentile, display, higher, sense, percentile_of)
+
+
+# Early and passing downs have season rates and percentiles, not a ridge rating.
+_RATE_NOTE = (
+    "This row is the season rate from the feature contract, not an "
+    "opponent-adjusted rating. The adjusted ratings are all plays, pass, and rush."
+)
+
+_SPLITS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "overall",
+        "label": "All plays",
+        "adjusted": True,
+        "note": None,
+        "offense": {
+            "epa": _cell("epa_off_adj", "epa_play_season_pct", "epa", True, "better", "the season rate"),
+            "success_rate": _cell("sr_off_adj", "success_rate_season_pct", "signed", True, "better", "the season rate"),
+            "schedule_strength": _cell("sched_strength", "sched_strength_season_pct", "signed", True),
+        },
+        "defense": {
+            "epa": _cell("epa_def_adj", None, "epa", False),
+            "success_rate": _cell("sr_def_adj", None, "signed", False),
+            "schedule_strength": _cell("sched_strength", "sched_strength_season_pct", "signed", True),
+        },
+    },
+    {
+        "id": "pass",
+        "label": "Pass",
+        "adjusted": True,
+        "note": None,
+        "offense": {
+            "epa": _cell("pass_off_adj", "pass_epa_season_pct", "epa", True, "better", "the season rate"),
+            "success_rate": _cell(None, None, "signed", True),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+        "defense": {
+            "epa": _cell("pass_def_adj", None, "epa", False),
+            "success_rate": _cell(None, None, "signed", False),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+    },
+    {
+        "id": "rush",
+        "label": "Rush",
+        "adjusted": True,
+        "note": None,
+        "offense": {
+            "epa": _cell("rush_off_adj", "rush_epa_season_pct", "epa", True, "better", "the season rate"),
+            "success_rate": _cell(None, None, "signed", True),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+        "defense": {
+            "epa": _cell("rush_def_adj", None, "epa", False),
+            "success_rate": _cell(None, None, "signed", False),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+    },
+    {
+        "id": "early_down",
+        "label": "Early downs",
+        "adjusted": False,
+        "note": _RATE_NOTE,
+        "offense": {
+            "epa": _cell("early_epa_season", "early_epa_season_pct", "epa", True, "better", "the season rate"),
+            "success_rate": _cell("early_sr_season", None, "share", True),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+        "defense": {
+            "epa": _cell(None, None, "epa", False),
+            "success_rate": _cell(None, None, "share", False),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+    },
+    {
+        "id": "passing_down",
+        "label": "Passing downs",
+        "adjusted": False,
+        "note": _RATE_NOTE,
+        "offense": {
+            "epa": _cell(
+                "passing_epa_season", "passing_epa_season_pct", "epa", True, "better", "the season rate",
+            ),
+            "success_rate": _cell("passing_sr_season", None, "share", True),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+        "defense": {
+            "epa": _cell(None, None, "epa", False),
+            "success_rate": _cell(None, None, "share", False),
+            "schedule_strength": _cell(None, None, "signed", True),
+        },
+    },
+)
+
+_CHART = {
+    "offense": ("epa_play_last4", "epa_play_season"),
+    "defense": ("epa_allowed_last4", "epa_allowed_season"),
 }
 
 
@@ -68,38 +170,13 @@ def _finite(value: Any) -> float | None:
     return number
 
 
-def _cell(
-    value: float | None,
-    distribution: list[float],
-    *,
-    higher_is_better: bool,
-    plays: int | None,
-    rank_sense: str,
-) -> dict[str, Any]:
-    sample = plays if plays is not None else 0
-    usable = [item for item in distribution if item is not None]
-    percentile = None
-    if value is not None and sample >= MIN_PLAYS_FOR_RANK and usable:
-        percentile = percentile_rank(value, usable, higher_is_better)
-    return {
-        "value": _num(value),
-        "percentile": _num(percentile, 1),
-        "higher_is_better": higher_is_better,
-        "plays": int(sample) if plays is not None else None,
-        "rank_sense": rank_sense,
-    }
-
-
-def _empty_cell(higher_is_better: bool, rank_sense: str) -> dict[str, Any]:
-    return _cell(None, [], higher_is_better=higher_is_better, plays=None, rank_sense=rank_sense)
-
-
 def _empty_rolling(reason: str | None = None) -> dict[str, Any]:
     return {
-        "metric": "epa_per_play",
+        "metric": "epa_play",
         "season_average": None,
         "last4_average": None,
         "games": [],
+        "as_of_week": True,
         "empty_reason": reason,
     }
 
@@ -118,8 +195,8 @@ def _public_filters(raw: dict[str, Any], *, placeholder: bool) -> dict[str, Any]
 
 
 def _canonicalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    if frame.empty:
-        return frame
+    if frame is None or frame.empty:
+        return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
     out = frame.copy()
     for col in _TEAM_COLUMNS:
         if col not in out.columns:
@@ -136,17 +213,10 @@ def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
-def _lookup(row: dict[str, Any] | pd.Series, column: str | None) -> Any:
-    if not column:
+def _lookup(row: dict[str, Any] | None, column: str | None) -> Any:
+    if row is None or not column or column not in row:
         return None
-    if isinstance(row, pd.Series):
-        if column not in row.index:
-            return None
-        value = row[column]
-    else:
-        value = row.get(column)
-    if value is None:
-        return None
+    value = row[column]
     try:
         if pd.isna(value):
             return None
@@ -155,51 +225,53 @@ def _lookup(row: dict[str, Any] | pd.Series, column: str | None) -> Any:
     return value
 
 
-def _weighted(values: list[float | None], weights: list[float]) -> float | None:
-    numerator = 0.0
-    denominator = 0.0
-    plain: list[float] = []
-    for value, weight in zip(values, weights):
-        if value is None:
+def _metric_payload(row: dict[str, Any] | None, spec: _Cell, plays: int | None) -> dict[str, Any]:
+    column, pct_col, display, higher, sense, pct_of = spec
+    value = _finite(_lookup(row, column))
+    percentile = _finite(_lookup(row, pct_col))
+    return {
+        "value": _num(value),
+        "percentile": _num(percentile, 1),
+        "higher_is_better": higher,
+        "plays": plays,
+        "rank_sense": sense,
+        "display": display,
+        "percentile_of": pct_of if percentile is not None else None,
+    }
+
+
+def _team_rows(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if frame is None or frame.empty or "team" not in frame.columns:
+        return {}
+    grouped: dict[str, dict[str, Any]] = {}
+    for _, series in frame.iterrows():
+        team = series.get("team")
+        if not isinstance(team, str) or not team:
             continue
-        plain.append(value)
-        if weight > 0:
-            numerator += value * weight
-            denominator += weight
-    if denominator > 0:
-        return numerator / denominator
-    if plain:
-        return sum(plain) / len(plain)
-    return None
+        grouped[canonical_team(team) or team] = series.to_dict()
+    return grouped
 
 
-def _location(row: dict[str, Any], game_bind: dict[str, str]) -> str | None:
-    raw = _lookup(row, game_bind.get("location"))
-    if isinstance(raw, str) and raw.strip():
-        text = raw.strip().lower()
-        if text in ("home", "away"):
-            return text
-    flag = _finite(_lookup(row, game_bind.get("is_home")))
+def _location(value: Any) -> str | None:
+    flag = _finite(value)
     if flag is None:
         return None
     return "home" if flag > 0 else "away"
 
 
-def _game_label(week: float | None, opponent: str | None, location: str | None) -> str:
+def _label(week: float | None, opponent: str | None, location: str | None) -> str:
     where = "@" if location == "away" else "vs"
     week_text = f"Wk {int(week)} " if week is not None else ""
     return f"{week_text}{where} {opponent or '—'}".strip()
 
 
-def _rolling_unit(
+def _chart(
     games: list[dict[str, Any]],
-    *,
-    value_key: str,
-    plays_key: str,
+    season_row: dict[str, Any] | None,
+    side: str,
     empty_reason: str | None,
 ) -> dict[str, Any]:
-    if not games:
-        return _empty_rolling(empty_reason)
+    last4_col, season_col = _CHART[side]
     ordered = sorted(
         games,
         key=lambda row: (
@@ -208,45 +280,35 @@ def _rolling_unit(
             str(row.get("game_id") or ""),
         ),
     )
-    values = [_finite(row.get(value_key)) for row in ordered]
-    weights = [(_finite(row.get(plays_key)) or 0.0) for row in ordered]
-    season_avg = _weighted(values, weights)
-    last4 = _weighted(values[-4:], weights[-4:]) if len(ordered) >= 4 else None
-    rows: list[dict[str, Any]] = []
-    for index, game in enumerate(ordered):
-        window = slice(max(0, index - 3), index + 1)
-        rolling = _weighted(values[window], weights[window]) if index >= 3 else None
-        plays = weights[index]
-        rows.append({
-            "week": _num(game.get("week"), 0) if _finite(game.get("week")) is not None else None,
+    points: list[dict[str, Any]] = []
+    for game in ordered:
+        week = _finite(game.get("week"))
+        opponent = game.get("opponent")
+        if isinstance(opponent, str):
+            opponent = canonical_team(opponent)
+        location = _location(game.get("is_home"))
+        last4 = _finite(game.get(last4_col))
+        season_value = _finite(game.get(season_col))
+        plays = _finite(game.get("n_plays_last4"))
+        points.append({
+            "week": int(week) if week is not None else None,
             "game_id": game.get("game_id"),
-            "opponent": game.get("opponent"),
-            "location": game.get("location"),
-            "label": game.get("label") or "",
-            "plays": int(plays) if plays else 0,
-            "value": _num(values[index]),
-            "rolling4": _num(rolling),
-            "season_average": _num(season_avg),
+            "opponent": opponent,
+            "location": location,
+            "label": _label(week, opponent if isinstance(opponent, str) else None, location),
+            "plays": int(plays) if plays is not None else 0,
+            "value": _num(last4),
+            "rolling4": _num(last4),
+            "season_average": _num(season_value),
         })
     return {
-        "metric": "epa_per_play",
-        "season_average": _num(season_avg),
-        "last4_average": _num(last4),
-        "games": rows,
-        "empty_reason": None,
+        "metric": last4_col,
+        "season_average": _num(_lookup(season_row, season_col)),
+        "last4_average": _num(_lookup(season_row, last4_col)),
+        "games": points,
+        "as_of_week": True,
+        "empty_reason": None if points else empty_reason,
     }
-
-
-def _column_map(frame: pd.DataFrame, team_column: str) -> dict[str, dict[str, Any]]:
-    if frame.empty or team_column not in frame.columns:
-        return {}
-    grouped: dict[str, dict[str, Any]] = {}
-    for _, row in frame.iterrows():
-        team = _lookup(row, team_column)
-        if not isinstance(team, str) or not team:
-            continue
-        grouped[team] = row.to_dict()
-    return grouped
 
 
 def _present_teams(
@@ -256,134 +318,71 @@ def _present_teams(
     placeholder: bool,
     empty_reason: str | None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Turn feature rows into the page's splits and rolling series."""
-    bind = features.bindings()
-    season_bind = bind["season"]
-    game_bind = bind["game"]
+    if placeholder or "epa_off_adj" not in getattr(season_frame, "columns", []):
+        return {}, []
+    if season_frame.empty and game_frame.empty:
+        return {}, []
+
+    by_season = _team_rows(season_frame)
+    by_game: dict[str, list[dict[str, Any]]] = {}
+    if not game_frame.empty and "team" in game_frame.columns:
+        for _, series in game_frame.iterrows():
+            team = series.get("team")
+            if not isinstance(team, str) or not team:
+                continue
+            key = canonical_team(team) or team
+            by_game.setdefault(key, []).append(series.to_dict())
+
     unavailable: list[dict[str, str]] = []
-    if placeholder or season_frame.empty and game_frame.empty:
-        return {}, unavailable
-
-    by_team = _column_map(season_frame, season_bind["team"])
-    teams = sorted(by_team)
-    split_rows: list[dict[str, Any]] = []
-    for split_id, spec in season_bind["splits"].items():
-        split_rows.append({
-            "id": split_id,
-            "label": spec.get("label") or split_id,
-            "approximated": False,
-            "approximation_note": None,
-            "spec": spec,
-        })
-
-    missing: list[str] = []
-    if teams:
-        sample = next(iter(by_team.values()))
-        for row in split_rows:
-            for side in ("offense", "defense"):
-                for column in row["spec"][side].values():
-                    if column not in sample:
-                        missing.append(column)
-    if missing:
-        unavailable.append({
-            "id": "feature_columns",
-            "reason": (
-                "Some feature-contract columns are not in this season's table, "
-                "so those cells are blank: " + ", ".join(sorted(set(missing))) + "."
-            ),
-        })
-
-    per_team: dict[str, dict[str, Any]] = {
-        team: {"splits": [], "rolling": {"offense": _empty_rolling(empty_reason), "defense": _empty_rolling(empty_reason)}}
-        for team in teams
-    }
-
-    for row in split_rows:
-        distributions: dict[tuple[str, str], list[float]] = {}
-        for side in ("offense", "defense"):
-            for metric, column in row["spec"][side].items():
-                if metric not in _HIGHER_IS_BETTER:
-                    continue
-                rankable: list[float] = []
-                for team in teams:
-                    record = by_team[team]
-                    plays = _finite(_lookup(record, row["spec"][side]["plays"]))
-                    value = _finite(_lookup(record, column))
-                    if value is None or plays is None or plays < MIN_PLAYS_FOR_RANK:
-                        continue
-                    rankable.append(value)
-                distributions[(side, metric)] = rankable
-        for team in teams:
-            record = by_team[team]
-            block: dict[str, Any] = {}
-            for side in ("offense", "defense"):
-                plays = _finite(_lookup(record, row["spec"][side]["plays"]))
-                play_count = int(plays) if plays is not None else None
-                metrics: dict[str, Any] = {}
-                for metric in ("epa", "success_rate", "schedule_strength"):
-                    column = row["spec"][side][metric]
-                    sense = "tougher" if metric == "schedule_strength" else "better"
-                    higher = _HIGHER_IS_BETTER[metric][side]
-                    metrics[metric] = _cell(
-                        _finite(_lookup(record, column)),
-                        distributions.get((side, metric), []),
-                        higher_is_better=higher,
-                        plays=play_count,
-                        rank_sense=sense,
-                    )
-                block[side] = metrics
-            per_team[team]["splits"].append({
-                "id": row["id"],
-                "label": row["label"],
-                "approximated": False,
-                "approximation_note": None,
-                "offense": block["offense"],
-                "defense": block["defense"],
+    if by_season:
+        sample = next(iter(by_season.values()))
+        missing = [
+            spec[0]
+            for split in _SPLITS
+            if split["adjusted"]
+            for side in ("offense", "defense")
+            for spec in split[side].values()
+            if spec[0] and spec[0] not in sample
+        ]
+        if missing:
+            unavailable.append({
+                "id": "feature_columns",
+                "reason": (
+                    "Some feature-contract columns are not in this season's table, "
+                    "so those cells are blank: " + ", ".join(sorted(set(missing))) + "."
+                ),
             })
 
-    game_rows = _records(game_frame) if not game_frame.empty else []
-    by_game: dict[str, list[dict[str, Any]]] = {}
-    for record in game_rows:
-        team = record.get(game_bind["team"])
-        if isinstance(team, str):
-            team = canonical_team(team)
-        if not isinstance(team, str) or not team:
-            continue
-        week = _finite(record.get(game_bind["week"]))
-        opponent = record.get(game_bind["opponent"])
-        if isinstance(opponent, str):
-            opponent = canonical_team(opponent)
-        location = _location(record, game_bind)
-        by_game.setdefault(team, []).append({
-            "week": week,
-            "game_id": record.get(game_bind["game_id"]),
-            "opponent": opponent,
-            "location": location,
-            "label": _game_label(week, opponent if isinstance(opponent, str) else None, location),
-            "off_epa": record.get(game_bind["offense_epa"]),
-            "def_epa": record.get(game_bind["defense_epa"]),
-            "off_plays": record.get(game_bind["offense_plays"]),
-            "def_plays": record.get(game_bind["defense_plays"]),
-        })
-        if team not in per_team:
-            per_team[team] = {
-                "splits": [],
-                "rolling": {
-                    "offense": _empty_rolling(empty_reason),
-                    "defense": _empty_rolling(empty_reason),
+    teams = sorted(set(by_season) | set(by_game))
+    per_team: dict[str, dict[str, Any]] = {}
+    for team in teams:
+        row = by_season.get(team)
+        plays = _finite(_lookup(row, "n_plays_season"))
+        play_count = int(plays) if plays is not None else None
+        splits = []
+        for spec in _SPLITS:
+            splits.append({
+                "id": spec["id"],
+                "label": spec["label"],
+                "adjusted": spec["adjusted"],
+                "approximated": False,
+                "approximation_note": None,
+                "note": spec["note"],
+                "offense": {
+                    key: _metric_payload(row, cell, play_count)
+                    for key, cell in spec["offense"].items()
                 },
-            }
-
-    chart_reason = empty_reason or "No games in the feature table for this season."
-    for team, payload in per_team.items():
-        rows = by_game.get(team, [])
-        payload["rolling"] = {
-            "offense": _rolling_unit(
-                rows, value_key="off_epa", plays_key="off_plays", empty_reason=chart_reason,
-            ),
-            "defense": _rolling_unit(
-                rows, value_key="def_epa", plays_key="def_plays", empty_reason=chart_reason,
-            ),
+                "defense": {
+                    key: _metric_payload(row, cell, None)
+                    for key, cell in spec["defense"].items()
+                },
+            })
+        per_team[team] = {
+            "splits": splits if row is not None else [],
+            "rolling": {
+                "offense": _chart(by_game.get(team, []), row, "offense", empty_reason),
+                "defense": _chart(by_game.get(team, []), row, "defense", empty_reason),
+            },
         }
     return per_team, unavailable
 
@@ -404,15 +403,12 @@ def assemble_bundle(
     notes: list[str] = []
     unavailable: list[dict[str, str]] = []
     chart_reason = "No games to chart for this season."
-    if placeholder:
+    if placeholder or "epa_off_adj" not in getattr(season_frame, "columns", []):
+        placeholder = True
+        public = _public_filters(filters, placeholder=True)
         unavailable.append({"id": "feature_defs", "reason": WAITING_REASON})
-        chart_reason = (
-            "Game-by-game EPA is omitted until features/nfl/defs.py is available."
-        )
-        notes.append(
-            "The efficiency tab is waiting on the NFL feature contract. "
-            "No rates were calculated for this page."
-        )
+        chart_reason = "Game-by-game rates are omitted until features/nfl/defs.py is available."
+        notes.append("The efficiency tab is waiting on the NFL feature contract. No rates were calculated for this page.")
     elif season_frame.empty and game_frame.empty:
         unavailable.append({
             "id": "feature_rows",
@@ -420,9 +416,16 @@ def assemble_bundle(
         })
     else:
         notes.append(
-            "Rates come from the NFL feature contract. "
-            "Percentiles and the four-game line are presentation over those columns."
+            "Headline EPA and success figures are the opponent-adjusted ratings "
+            "from the NFL feature contract. A percentile ranks the matching season "
+            "rate, and a higher percentile is better."
         )
+        notes.append(
+            "The chart is the last four team-games against the season-to-date rate, "
+            "as of the start of each week. That week's game is not in the point."
+        )
+        if public.get("preseason_excluded"):
+            notes.append("Preseason plays are dropped when the feed labels season type.")
 
     teams, missing = _present_teams(
         season_frame,
@@ -440,8 +443,8 @@ def assemble_bundle(
         "filters": public,
         "notes": notes,
         "unavailable": unavailable,
-        "team_season_rows": len(season_frame.index),
-        "team_game_rows": len(game_frame.index),
+        "team_season_rows": len(season_frame.index) if isinstance(season_frame, pd.DataFrame) else 0,
+        "team_game_rows": len(game_frame.index) if isinstance(game_frame, pd.DataFrame) else 0,
         "team_season": _records(season_frame),
         "team_game": _records(game_frame),
         "teams": teams,
@@ -449,13 +452,11 @@ def assemble_bundle(
 
 
 def project_team(bundle: dict[str, Any], team_id: str, season: int) -> dict[str, Any]:
-    """One team, in the shape the page already renders."""
-    team_id = canonical_team(team_id) if team_id else team_id
+    """One team, in the shape the page renders."""
+    team_id = canonical_team(team_id) or team_id
     rolling_reason = None
     if bundle.get("placeholder"):
-        rolling_reason = (
-            "Game-by-game EPA is omitted until features/nfl/defs.py is available."
-        )
+        rolling_reason = "Game-by-game rates are omitted until features/nfl/defs.py is available."
     out: dict[str, Any] = {
         "team_id": team_id,
         "season": season,
@@ -470,10 +471,10 @@ def project_team(bundle: dict[str, Any], team_id: str, season: int) -> dict[str,
             "defense": _empty_rolling(rolling_reason),
         },
     }
-    teams = bundle.get("teams") or {}
-    team = teams.get(team_id)
+    team = (bundle.get("teams") or {}).get(team_id)
     if team is None:
         if not bundle.get("placeholder"):
+            teams = bundle.get("teams") or {}
             if not teams:
                 out["error"] = "No efficiency profile for this season."
             else:
@@ -503,7 +504,7 @@ def _pbp_loader() -> Any:
 
 
 def _cache_key(season: int) -> str:
-    return f"nfl:{season}"
+    return f"nfl:{season}:defs"
 
 
 def _ttl(season: int) -> int | None:
@@ -514,7 +515,7 @@ def _ttl(season: int) -> int | None:
     return CACHE_TTL
 
 
-def _no_pbp(season: int) -> dict[str, Any]:
+def _no_pbp(season: int, *, reason: str, unavailable_id: str = "play_by_play") -> dict[str, Any]:
     return {
         "league": "NFL",
         "season": season,
@@ -522,23 +523,17 @@ def _no_pbp(season: int) -> dict[str, Any]:
         "placeholder": False,
         "cacheable": False,
         "filters": _public_filters(
-            {
-                "garbage_time_excluded": False,
-                "description": "Play-by-play for this season is not in the data pipeline.",
-            },
+            {"garbage_time_excluded": False, "description": reason},
             placeholder=True,
         ),
         "notes": [],
-        "unavailable": [{
-            "id": "play_by_play",
-            "reason": "Play-by-play for this season is not in the data pipeline.",
-        }],
+        "unavailable": [{"id": unavailable_id, "reason": reason}],
         "team_season_rows": 0,
         "team_game_rows": 0,
         "team_season": [],
         "team_game": [],
         "teams": {},
-        "error": "No play-by-play is available for this season yet.",
+        "error": reason,
     }
 
 
@@ -557,19 +552,16 @@ async def _compute_features(season: int) -> dict[str, Any]:
     else:
         plays = await _load_plays(season)
         if plays is None:
-            return _no_pbp(season)
+            return _no_pbp(season, reason="Play-by-play for this season is not in the data pipeline.")
     try:
-        season_frame = features.team_season(plays)
-        game_frame = features.team_game(plays)
-    except Exception as exc:  # noqa: BLE001 — a bad feature module must not 500 the page
+        game_frame, season_frame = features.build(plays)
+    except Exception as exc:  # noqa: BLE001 — a bad feature build must not 500 the page
         log.warning("team_features_failed", season=season, error=str(exc)[:200])
-        bundle = _no_pbp(season)
-        bundle["cacheable"] = False
-        bundle["unavailable"] = [{
-            "id": "feature_defs",
-            "reason": "The feature module failed while building team tables, so the rates are omitted.",
-        }]
-        return bundle
+        return _no_pbp(
+            season,
+            reason="The feature module failed while building team tables, so the rates are omitted.",
+            unavailable_id="feature_defs",
+        )
     bundle = assemble_bundle(
         season_frame if isinstance(season_frame, pd.DataFrame) else pd.DataFrame(),
         game_frame if isinstance(game_frame, pd.DataFrame) else pd.DataFrame(),
@@ -585,8 +577,7 @@ async def _compute_features(season: int) -> dict[str, Any]:
 async def league_features(season: int) -> dict[str, Any]:
     """League feature bundle, L1 then L2, singleflighted.
 
-    An empty download is not cached. A placeholder result uses a short TTL
-    so it does not stick after defs.py is deployed.
+    An empty download is not cached. A placeholder result uses a short TTL.
     """
     bundle = await artifact_cache.get_or_compute(
         kind=KIND,
@@ -631,11 +622,7 @@ async def efficiency_profile(team_id: str, season: int) -> dict[str, Any]:
 
 
 async def materialize_profiles(_db: Any = None) -> dict[str, Any]:
-    """Worker job: refresh the live season and warm the latest completed one.
-
-    The request path reads this cache. A cold page still computes through
-    the same function, singleflighted, so the job is not required to render.
-    """
+    """Worker job: refresh the live season and warm the latest completed one."""
     del _db
     seasons: list[int] = []
     for season in (latest_completed_season(), current_or_upcoming_season()):

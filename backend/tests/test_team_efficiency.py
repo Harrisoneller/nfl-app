@@ -1,11 +1,16 @@
-"""Team efficiency profile: adapter swap, presentation, cache. No metric math."""
+"""Team efficiency profile wired to features.nfl.defs. No metric math here."""
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+# Repo root holds features/nfl/defs.py. Backend tests put backend/ on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from features.nfl.defs import CONTRACT, REQUIRED
 
 from app.cache import cache
 from app.services import nfl_feature_adapter as features
@@ -13,16 +18,14 @@ from app.services import nfl_feature_placeholder as placeholder
 from app.services import team_efficiency_service as svc
 from app.utils.seasons import current_or_upcoming_season, latest_completed_season
 
-_MARKET = ("spread", "moneyline", "odds", "total_line", "price", "opener")
-
 REAL_FILTERS = {
     "implemented": True,
     "garbage_time_excluded": True,
     "wp_low": 0.10,
     "wp_high": 0.90,
     "description": "Only plays with win probability between 10% and 90% are counted.",
-    "plays_kept": 1000,
-    "plays_excluded": 80,
+    "plays_kept": None,
+    "plays_excluded": None,
     "preseason_excluded": True,
 }
 
@@ -36,65 +39,64 @@ def _reset_feature_module():
     cache.clear()
 
 
-def _season_row(team: str, **overrides) -> dict:
-    row: dict = {"season": 2020, "team": team}
-    for split in placeholder.SPLITS:
-        row[f"off_{split}_epa"] = 0.0
-        row[f"off_{split}_success"] = 0.45
-        row[f"off_{split}_plays"] = 100
-        row[f"off_{split}_schedule_strength"] = 0.0
-        row[f"def_{split}_epa"] = 0.0
-        row[f"def_{split}_success"] = 0.45
-        row[f"def_{split}_plays"] = 100
-        row[f"def_{split}_schedule_strength"] = 0.0
+def _season_row(**overrides) -> dict:
+    row = {
+        "season": 2020,
+        "team": "AAA",
+        "games": 5,
+        "n_plays_season": 400,
+        "epa_off_adj": 0.11,
+        "epa_def_adj": -0.04,
+        "sr_off_adj": 0.02,
+        "sr_def_adj": -0.01,
+        "pass_off_adj": 0.08,
+        "pass_def_adj": 0.01,
+        "rush_off_adj": 0.03,
+        "rush_def_adj": -0.02,
+        "sched_strength": 0.132,
+        "epa_play_season": 0.07,
+        "epa_play_last4": 0.15,
+        "epa_play_season_pct": 12.0,
+        "success_rate_season_pct": 63.0,
+        "pass_epa_season_pct": 70.0,
+        "rush_epa_season_pct": 40.0,
+        "sched_strength_season_pct": 88.0,
+        "early_epa_season": 0.05,
+        "early_epa_season_pct": 55.0,
+        "early_sr_season": 0.48,
+        "passing_epa_season": -0.02,
+        "passing_epa_season_pct": 33.0,
+        "passing_sr_season": 0.41,
+        "epa_allowed_season": 0.01,
+        "epa_allowed_last4": -0.03,
+        "total_home_score": 27,
+        "closing_spread": -3.5,
+    }
     row.update(overrides)
     return row
 
 
-def _league_rows() -> list[dict]:
-    specs = {
-        "AAA": (0.20, 0.50, 0.10, -0.20),
-        "BBB": (0.00, 0.40, -0.20, 0.10),
-        "CCC": (-0.10, 0.42, 0.00, 0.20),
-        "DDD": (0.10, 0.48, 0.05, 0.00),
-    }
-    rows = []
-    for team, (off_epa, success, off_sos, def_epa) in specs.items():
-        overrides = {}
-        for split in placeholder.SPLITS:
-            overrides[f"off_{split}_epa"] = off_epa
-            overrides[f"off_{split}_success"] = success
-            overrides[f"off_{split}_schedule_strength"] = off_sos
-            overrides[f"def_{split}_epa"] = def_epa
-        rows.append(_season_row(team, **overrides))
-    return rows
-
-
 def _games() -> list[dict]:
-    # Unequal play counts so a plain mean cannot match the chart.
-    samples = [(1, 0.0, 10), (2, 0.0, 10), (3, 0.0, 10), (4, 0.0, 10), (5, 1.0, 50)]
-    rows = []
-    for week, epa, plays in samples:
-        rows.append({
-            "season": 2020,
-            "week": week,
-            "game_id": f"AAA-{week}",
-            "team": "AAA",
-            "opponent": "BBB",
-            "location": "away" if week % 2 == 0 else "home",
-            "off_epa": epa,
-            "def_epa": 0.2,
-            "off_plays": plays,
-            "def_plays": plays,
-            "closing_spread": -3.5,
-        })
-    return rows
+    return [
+        {
+            "season": 2020, "week": 2, "game_id": "g2", "team": "AAA",
+            "opponent": "BBB", "is_home": 0, "n_plays_last4": 50,
+            "epa_play_last4": 0.10, "epa_play_season": 0.20,
+            "epa_allowed_last4": 0.30, "epa_allowed_season": 0.40,
+        },
+        {
+            "season": 2020, "week": 5, "game_id": "g5", "team": "AAA",
+            "opponent": "CCC", "is_home": 1, "n_plays_last4": 80,
+            "epa_play_last4": 0.50, "epa_play_season": 0.25,
+            "epa_allowed_last4": 0.05, "epa_allowed_season": 0.10,
+        },
+    ]
 
 
-def _bundle(season_rows: list[dict], game_rows: list[dict] | None = None, **kwargs) -> dict:
+def _bundle(rows: list[dict] | None = None, games: list[dict] | None = None, **kwargs) -> dict:
     return svc.assemble_bundle(
-        pd.DataFrame(season_rows),
-        pd.DataFrame(game_rows or []),
+        pd.DataFrame(rows if rows is not None else [_season_row()]),
+        pd.DataFrame(games if games is not None else _games()),
         kwargs.get("season", 2020),
         filters=kwargs.get("filters", REAL_FILTERS),
         source=kwargs.get("source", "features.nfl.defs"),
@@ -102,143 +104,182 @@ def _bundle(season_rows: list[dict], game_rows: list[dict] | None = None, **kwar
     )
 
 
-def test_placeholder_contract_has_no_market_columns_and_ignores_plays():
-    for name, spec in placeholder.CONTRACT.items():
-        lowered = name.lower()
-        assert not any(token in lowered for token in _MARKET)
-        assert {"dtype", "unit", "description"} <= set(spec)
-    plays = pd.DataFrame({
-        "epa": [9.0],
-        "success": [1.0],
-        "spread": [3.5],
-        "posteam": ["KC"],
-    })
-    season = placeholder.team_season(plays)
-    game = placeholder.team_game(plays)
-    assert list(season.columns) == list(placeholder.TEAM_SEASON_COLUMNS)
-    assert list(game.columns) == list(placeholder.TEAM_GAME_COLUMNS)
-    assert len(season) == 0 and len(game) == 0
-    assert placeholder.FILTERS["implemented"] is False
-    assert placeholder.FILTERS["garbage_time_excluded"] is False
-    assert placeholder.SOURCE == "placeholder"
-
-
-def test_adapter_prefers_an_injected_module_and_strips_market_columns():
-    class _Fake:
-        SOURCE = "features.nfl.defs"
-
-        def team_season(self, plays: pd.DataFrame) -> pd.DataFrame:
-            assert "epa" in plays.columns
-            return pd.DataFrame({
-                "team": ["KC"],
-                "off_overall_epa": [0.1],
-                "closing_spread": [-3.0],
-                "moneyline": [-110],
-            })
-
-        def team_game(self, plays: pd.DataFrame) -> pd.DataFrame:
-            del plays
-            return pd.DataFrame({"team": ["KC"], "off_epa": [0.2], "total_line": [44.5]})
-
-    features.use_module(_Fake())
+def test_defs_contract_is_the_page_source_and_has_no_market_columns():
+    features.reset()
     assert features.using_placeholder() is False
     assert features.source_name() == "features.nfl.defs"
-    season = features.team_season(pd.DataFrame({"epa": [1.0]}))
-    game = features.team_game(pd.DataFrame())
-    assert list(season.columns) == ["team", "off_overall_epa"]
-    assert "total_line" not in game.columns
-    features.reset()
-    assert features.using_placeholder() is True
-    assert features.source_name() == "placeholder"
+    assert len(CONTRACT) == 86
+    for name in (
+        "epa_off_adj", "epa_def_adj", "sr_off_adj", "sr_def_adj",
+        "pass_off_adj", "rush_off_adj", "sched_strength",
+        "epa_play_season", "epa_play_last4", "epa_play_season_pct", "epa_play_last4_pct",
+        "early_epa_season", "passing_epa_season", "fumble_rec_luck",
+    ):
+        assert name in CONTRACT
+    assert features.market_columns(CONTRACT) == []
+    filters = features.filters()
+    assert filters["garbage_time_excluded"] is True
+    assert filters["wp_low"] == pytest.approx(0.10)
+    assert filters["wp_high"] == pytest.approx(0.90)
+    assert "10%" in filters["description"] and "90%" in filters["description"]
+
+
+def test_adapter_strips_market_columns_before_build_features():
+    seen: dict[str, list[str]] = {}
+
+    class _Fake:
+        WP_LO = 0.10
+        WP_HI = 0.90
+
+        def build_features(self, plays: pd.DataFrame):
+            seen["cols"] = list(plays.columns)
+            if features.market_columns(plays.columns):
+                raise ValueError("market columns reached build_features")
+            game = pd.DataFrame({"team": ["AAA"], "week": [1], "epa_play_last4": [0.1]})
+            season = pd.DataFrame({"team": ["AAA"], "epa_off_adj": [0.2], "total_home_score": [24]})
+            return game, season
+
+    features.use_module(_Fake())
+    plays = pd.DataFrame({
+        "posteam": ["AAA"],
+        "epa": [0.1],
+        "spread": [-3.0],
+        "moneyline": [-110],
+        "total_line": [44.5],
+        "total": [47],
+        "price": [-105],
+        "opener": [3],
+        "total_home_score": [21],
+    })
+    game, season = features.build(plays)
+    assert "spread" not in seen["cols"]
+    assert "moneyline" not in seen["cols"]
+    assert "total_line" not in seen["cols"]
+    assert "total" not in seen["cols"]
+    assert "price" not in seen["cols"]
+    assert "opener" not in seen["cols"]
+    assert "total_home_score" in seen["cols"]
+    assert "epa" in seen["cols"]
+    assert list(game.columns) == ["team", "week", "epa_play_last4"]
+    assert "total_home_score" in season.columns
+    assert features.filters()["garbage_time_excluded"] is True
 
 
 def test_service_does_not_implement_epa_or_adjustment():
     text = Path(svc.__file__).read_text(encoding="utf-8")
-    for banned in ("epa_adjust", "ridge_adjust", "prepare_plays", "schedule_strength("):
+    for banned in ("epa_adjust", "ridge_adjust", "prepare_plays", "percentile_rank", "schedule_strength("):
         assert banned not in text
 
 
-def test_presentation_ranks_schedule_and_last_four_from_feature_rows():
-    bundle = _bundle(_league_rows(), _games())
-    profile = svc.project_team(bundle, "AAA", 2020)
-    json.dumps(profile)
+def test_page_uses_adjusted_headlines_published_percentiles_and_asof_chart():
+    profile = svc.project_team(_bundle(), "AAA", 2020)
     overall = profile["splits"][0]
-    assert [row["id"] for row in profile["splits"]] == list(placeholder.SPLITS)
-    assert overall["approximated"] is False
-    assert overall["offense"]["epa"]["value"] == pytest.approx(0.20)
-    assert overall["offense"]["epa"]["percentile"] == pytest.approx(87.5)
-    assert overall["offense"]["success_rate"]["value"] == pytest.approx(0.50)
-    assert overall["offense"]["schedule_strength"]["value"] == pytest.approx(0.10)
-    assert overall["offense"]["schedule_strength"]["rank_sense"] == "tougher"
+    assert [row["id"] for row in profile["splits"]] == [
+        "overall", "pass", "rush", "early_down", "passing_down",
+    ]
+    assert overall["adjusted"] is True
+    assert overall["offense"]["epa"]["value"] == pytest.approx(0.11)
+    assert overall["offense"]["epa"]["percentile"] == pytest.approx(12.0)
+    assert overall["offense"]["epa"]["percentile_of"] == "the season rate"
+    assert overall["offense"]["success_rate"]["value"] == pytest.approx(0.02)
+    assert overall["offense"]["success_rate"]["display"] == "signed"
+    assert overall["offense"]["schedule_strength"]["value"] == pytest.approx(0.132)
+    assert overall["offense"]["schedule_strength"]["percentile"] == pytest.approx(88.0)
+    assert overall["offense"]["schedule_strength"]["rank_sense"] == "better"
+    assert overall["defense"]["epa"]["value"] == pytest.approx(-0.04)
     assert overall["defense"]["epa"]["higher_is_better"] is False
-    assert overall["defense"]["epa"]["percentile"] == pytest.approx(87.5)
-    bbb = svc.project_team(bundle, "BBB", 2020)
-    assert bbb["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(37.5)
-    assert profile["filters"]["garbage_time_excluded"] is True
-    assert profile["filters"]["plays_kept"] == 1000
-    assert "10%" in profile["filters"]["description"]
+    assert overall["defense"]["epa"]["percentile"] is None
+    early = profile["splits"][3]
+    assert early["adjusted"] is False
+    assert early["offense"]["epa"]["value"] == pytest.approx(0.05)
+    assert early["offense"]["success_rate"]["display"] == "share"
+    assert early["defense"]["epa"]["value"] is None
     rolling = profile["rolling"]["offense"]
-    assert rolling["last4_average"] == pytest.approx(0.625)
-    assert rolling["season_average"] == pytest.approx(0.5556)
-    assert rolling["games"][-1]["label"] == "Wk 5 vs BBB"
-    assert rolling["games"][1]["label"] == "Wk 2 @ BBB"
-    assert profile["rolling"]["defense"]["season_average"] == pytest.approx(0.2)
-    stored = json.dumps(bundle["team_game"])
-    for token in ("closing_spread", "moneyline", "total_line"):
-        assert token not in stored
-
-
-def test_missing_contract_column_is_blank_not_estimated():
-    rows = _league_rows()
-    for row in rows:
-        row.pop("off_overall_schedule_strength")
-    profile = svc.project_team(_bundle(rows), "AAA", 2020)
-    strength = profile["splits"][0]["offense"]["schedule_strength"]
-    assert strength["value"] is None
-    assert strength["percentile"] is None
-    assert any(item["id"] == "feature_columns" for item in profile["unavailable"])
+    assert rolling["as_of_week"] is True
+    assert rolling["last4_average"] == pytest.approx(0.15)
+    assert rolling["season_average"] == pytest.approx(0.07)
+    assert rolling["games"][0]["rolling4"] == pytest.approx(0.10)
+    assert rolling["games"][0]["label"] == "Wk 2 @ BBB"
+    assert rolling["games"][1]["label"] == "Wk 5 vs CCC"
+    assert rolling["games"][1]["season_average"] == pytest.approx(0.25)
+    assert profile["rolling"]["defense"]["last4_average"] == pytest.approx(-0.03)
+    assert profile["filters"]["garbage_time_excluded"] is True
+    stored = profile  # page payload has no raw market cells
+    assert "closing_spread" not in str(stored)
+    bundle = _bundle()
+    assert all("closing_spread" not in row for row in bundle["team_season"])
+    assert all(row.get("total_home_score") == 27 for row in bundle["team_season"])
 
 
 def test_placeholder_omits_metrics_and_does_not_claim_garbage_time():
-    claimed = dict(REAL_FILTERS)
-    bundle = _bundle([], [], filters=claimed, source="placeholder", placeholder=True)
+    features.use_module(placeholder)
+    bundle = svc.assemble_bundle(
+        placeholder.team_season(pd.DataFrame()),
+        placeholder.team_game(pd.DataFrame()),
+        2024,
+        filters=features.filters(),
+        source=features.source_name(),
+        placeholder=True,
+    )
     profile = svc.project_team(bundle, "KC", 2024)
     assert profile["splits"] == []
     assert profile["filters"]["garbage_time_excluded"] is False
-    assert profile["filters"]["plays_kept"] is None
-    assert profile["filters"]["preseason_excluded"] is False
-    assert profile["rolling"]["offense"]["games"] == []
     assert "features/nfl/defs.py" in profile["unavailable"][0]["reason"]
-    assert "error" not in profile
-    assert bundle["team_season"] == []
-    assert bundle["team_game"] == []
+    assert profile["rolling"]["offense"]["games"] == []
 
 
-def test_unknown_team_is_empty_when_the_feature_table_has_other_teams():
-    profile = svc.project_team(_bundle(_league_rows()), "ZZZ", 2020)
+def test_unknown_team_is_empty_when_other_teams_have_rows():
+    profile = svc.project_team(_bundle(), "ZZZ", 2020)
     assert profile["splits"] == []
     assert "ZZZ" in profile["error"]
+
+
+def _play_row() -> dict:
+    row = {name: 0 for name in REQUIRED}
+    row.update({
+        "game_id": "g1",
+        "season": 2020,
+        "week": 1,
+        "posteam": "KC",
+        "defteam": "BUF",
+        "home_team": "KC",
+        "away_team": "BUF",
+        "epa": 0.4,
+        "success": 1,
+        "pass": 1,
+        "rush": 0,
+        "down": 1,
+        "ydstogo": 10,
+        "yards_gained": 8,
+        "wp": 0.55,
+        "qb_kneel": 0,
+        "qb_spike": 0,
+        "special_teams_play": 0,
+        "season_type": "REG",
+        "spread": -2.5,
+    })
+    return row
+
+
+def test_real_build_features_feeds_the_page_without_market_columns():
+    game, season = features.build(pd.DataFrame([_play_row()]))
+    assert "spread" not in game.columns
+    assert "epa_off_adj" in season.columns
+    assert set(season["team"]) == {"BUF", "KC"}
+    profile = svc.project_team(
+        svc.assemble_bundle(
+            season, game, 2020,
+            filters=features.filters(),
+            source=features.source_name(),
+            placeholder=False,
+        ),
+        "KC",
+        2020,
+    )
     assert profile["filters"]["garbage_time_excluded"] is True
-
-
-class _Recording:
-    SOURCE = "features.nfl.defs"
-    FILTERS = REAL_FILTERS
-    BINDINGS = placeholder.BINDINGS
-
-    def __init__(self) -> None:
-        self.season_calls = 0
-
-    def team_season(self, plays: pd.DataFrame) -> pd.DataFrame:
-        self.season_calls += 1
-        assert len(plays) > 0
-        frame = pd.DataFrame(_league_rows())
-        frame["opener_total"] = 47.5
-        return frame
-
-    def team_game(self, plays: pd.DataFrame) -> pd.DataFrame:
-        del plays
-        return pd.DataFrame(_games())
+    assert profile["splits"][0]["offense"]["epa"]["value"] is not None
+    assert profile["rolling"]["offense"]["as_of_week"] is True
+    assert profile["source"] == "features.nfl.defs"
 
 
 class _Loader:
@@ -252,23 +293,31 @@ class _Loader:
         return self.frame
 
 
+class _Recording:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def build_features(self, plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        self.calls += 1
+        assert len(plays) > 0
+        assert "spread" not in plays.columns
+        return pd.DataFrame(_games()), pd.DataFrame([_season_row()])
+
+
 @pytest.mark.asyncio
-async def test_real_module_is_cached_and_market_columns_are_not_stored(monkeypatch):
+async def test_real_module_is_cached_across_teams(monkeypatch):
     module = _Recording()
     features.use_module(module)
-    loader = _Loader(pd.DataFrame({"posteam": ["AAA"], "epa": [0.1]}))
+    loader = _Loader(pd.DataFrame([_play_row()]))
     monkeypatch.setattr(svc, "_pbp_loader", lambda: loader)
     svc._drop_bundle_cache(1983)
     first = await svc.efficiency_profile("AAA", 1983)
-    second = await svc.efficiency_profile("BBB", 1983)
+    second = await svc.efficiency_profile("AAA", 1983)
     assert loader.calls == 1
-    assert module.season_calls == 1
-    assert first["splits"][0]["offense"]["epa"]["value"] == pytest.approx(0.2)
-    assert second["team_id"] == "BBB"
+    assert module.calls == 1
+    assert first["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(12.0)
+    assert second["team_id"] == "AAA"
     assert svc.cache_status(1983) == "hit"
-    bundle = await svc.league_features(1983)
-    assert all("opener_total" not in row for row in bundle["team_season"])
-    assert all("closing_spread" not in row for row in bundle["team_game"])
 
 
 @pytest.mark.asyncio
@@ -288,17 +337,17 @@ async def test_empty_download_is_not_cached(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_placeholder_path_does_not_download_play_by_play(monkeypatch):
+    features.use_module(placeholder)
+
     def _boom() -> None:
         raise AssertionError("placeholder must not download play-by-play")
 
     monkeypatch.setattr(svc, "_pbp_loader", _boom)
     svc._drop_bundle_cache(1981)
     profile = await svc.efficiency_profile("KC", 1981)
-    assert features.using_placeholder() is True
     assert profile["source"] == "placeholder"
     assert profile["filters"]["garbage_time_excluded"] is False
     assert profile["splits"] == []
-    assert "calculate those metrics" in profile["unavailable"][0]["reason"]
     assert svc.cache_status(1981) == "hit"
 
 
@@ -308,7 +357,7 @@ async def test_materialize_job_refreshes_completed_and_current_seasons(monkeypat
 
     async def _fake(season: int) -> dict:
         seen.append(season)
-        return {"team_season_rows": 3, "source": "placeholder"}
+        return {"team_season_rows": 3, "source": "features.nfl.defs"}
 
     monkeypatch.setattr(svc, "league_features", _fake)
     monkeypatch.setattr(svc, "_drop_bundle_cache", lambda season: seen.append(-season))
@@ -320,24 +369,24 @@ async def test_materialize_job_refreshes_completed_and_current_seasons(monkeypat
     assert -current_or_upcoming_season() in seen
 
 
-def test_efficiency_endpoint_cache_headers_and_honest_placeholder(client, monkeypatch):
-    def _boom() -> None:
-        raise AssertionError("endpoint placeholder must not download play-by-play")
-
-    monkeypatch.setattr(svc, "_pbp_loader", _boom)
+def test_efficiency_endpoint_serves_defs_rows_and_cache_headers(client, monkeypatch):
+    features.use_module(_Recording())
+    loader = _Loader(pd.DataFrame([_play_row()]))
+    monkeypatch.setattr(svc, "_pbp_loader", lambda: loader)
     svc._drop_bundle_cache(1982)
-    response = client.get("/teams/KC/efficiency?season=1982")
+    response = client.get("/teams/AAA/efficiency?season=1982")
     assert response.status_code == 200
     body = response.json()
-    assert body["team_id"] == "KC"
+    assert body["team_id"] == "AAA"
     assert body["season"] == 1982
+    # The recording module does not declare WP_LO, so the page must not claim the filter.
     assert body["filters"]["garbage_time_excluded"] is False
-    assert body["splits"] == []
-    assert "features/nfl/defs.py" in body["unavailable"][0]["reason"]
+    assert body["splits"][0]["offense"]["epa"]["value"] == pytest.approx(0.11)
+    assert body["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(12.0)
+    assert body["rolling"]["offense"]["as_of_week"] is True
+    assert "closing_spread" not in response.text
     assert response.headers["x-cache-status"] == "miss"
     assert "max-age=300" in response.headers["cache-control"]
-    again = client.get("/teams/BUF/efficiency?season=1982")
-    assert again.status_code == 200
+    again = client.get("/teams/AAA/efficiency?season=1982")
     assert again.headers["x-cache-status"] == "hit"
-    assert again.json()["team_id"] == "BUF"
-    assert again.json()["filters"]["garbage_time_excluded"] is False
+    assert again.json()["splits"][0]["id"] == "overall"

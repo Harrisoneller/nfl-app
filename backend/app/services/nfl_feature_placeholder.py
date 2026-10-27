@@ -1,10 +1,8 @@
-"""Stand-in for ``features/nfl/defs.py`` until that module lands.
+"""Fallback when ``features.nfl.defs`` cannot be imported.
 
-The model engineer owns the metric math on branch ``features/nfl-defs``:
-pure functions (plays in, team-game and team-season frames out), a
-``CONTRACT`` dict, and golden fixtures. This file is the only copy of the
-column contract the team page binds to in the meantime. Swap is an import
-in ``nfl_feature_adapter`` — do not add EPA, success-rate, or
+The live contract is ``features/nfl/defs.py`` (``build_features``). This module
+is only the empty stand-in so a checkout without that file still omits rates
+instead of inventing them. Do not add EPA, success-rate, or
 opponent-adjustment math here, and do not add market or odds columns.
 """
 from __future__ import annotations

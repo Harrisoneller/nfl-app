@@ -12,6 +12,10 @@ export type ProfileMetric = {
   higher_is_better: boolean;
   plays: number | null;
   rank_sense: RankSense;
+  /** epa: points per play. signed: a rating centered near zero. share: a 0–1 rate. */
+  display?: "epa" | "signed" | "share";
+  /** What the published percentile ranks, when it is not the headline value itself. */
+  percentile_of?: string | null;
 };
 
 export type UnitProfile = {
@@ -25,6 +29,8 @@ export type SplitProfile = {
   label: string;
   approximated?: boolean;
   approximation_note?: string | null;
+  adjusted?: boolean;
+  note?: string | null;
   offense: UnitProfile;
   defense: UnitProfile;
 };
@@ -47,6 +53,8 @@ export type RollingUnit = {
   last4_average: number | null;
   games: RollingGame[];
   empty_reason?: string | null;
+  /** Team-game points are the feature state entering that week. */
+  as_of_week?: boolean;
 };
 
 export type EfficiencyFilters = {
@@ -104,9 +112,9 @@ export const NFL_TEAM_PROFILE_CONFIG: TeamProfileConfig = {
   garbageTimeNote:
     "Garbage time is excluded. Only plays with win probability between 10% and 90% are counted.",
   methodNote:
-    "EPA per play and success rate are schedule-adjusted. They estimate how this team would look against an average opponent, and small samples are pulled toward the league average. Home field is included in that adjustment.",
+    "The headline EPA and success figures are opponent-adjusted ratings from the feature contract. Zero is an average team. A percentile ranks the matching season rate, and higher is better.",
   rollingNote:
-    "Each bar is one game from the feature table. The solid line is a play-weighted average of the last four games. The dashed line is the play-weighted season average of those same games.",
+    "The solid line is the last four team-games. The dashed line is the season-to-date rate. Both are the feature state entering that week, so the game itself is not included yet.",
   splitTooltips: {
     overall: {
       label: "All plays",
@@ -122,47 +130,47 @@ export const NFL_TEAM_PROFILE_CONFIG: TeamProfileConfig = {
     },
     early_down: {
       label: "Early downs",
-      body: "Downs where the offense can still stay on schedule: 1st down, 2nd and 7 or fewer, and 3rd or 4th and 4 or fewer.",
+      body: "1st down, or 2nd and 7 or fewer. This row is the season rate. It is not a separate opponent-adjusted rating.",
     },
     passing_down: {
       label: "Passing downs",
-      body: "Obvious passing situations: 2nd and 8 or more, and 3rd or 4th and 5 or more.",
+      body: "2nd and 8 or more, or 3rd or 4th and 5 or more. This row is the season rate. It is not a separate opponent-adjusted rating.",
     },
   },
   metrics: {
     offenseEpa: {
       label: "EPA per play",
-      body: "Expected points added per play versus an average opponent. Positive means the offense creates more value than a typical team after the schedule is taken into account. Zero is league average.",
+      body: "Opponent-adjusted offensive EPA per play. Positive means the offense creates more value than an average team. On early downs and passing downs this cell is the season rate instead, because those splits are not separately adjusted.",
     },
     offenseSuccess: {
       label: "Success rate",
-      body: "Share of plays that stay on schedule, adjusted for opponent. A play is a success when it gains about 40% of the yards to go on 1st down, 60% on 2nd, or the full line to gain on 3rd and 4th.",
+      body: "On all plays, the opponent-adjusted success rating. Zero is average. On early downs and passing downs, the share of plays that succeeded.",
     },
     offenseSchedule: {
-      label: "Schedule strength",
-      body: "How much better or worse than average the defenses on the schedule were. Positive means a tougher slate. The EPA and success rate beside it are already adjusted for this.",
+      label: "Team strength",
+      body: "Schedule-adjusted team strength: opponent-adjusted offensive EPA minus 0.55 times opponent-adjusted EPA allowed. Higher is a stronger team. The same number is shown on both sides.",
     },
     defenseEpa: {
       label: "EPA per play allowed",
-      body: "Expected points the opposing offense added per play, versus an average offense. Lower is a better defense. Already adjusted for who this team faced.",
+      body: "Opponent-adjusted EPA allowed per play. Positive means opponents gained more than they would against an average defense. Lower is better. The feature contract does not publish a percentile for this rating.",
     },
     defenseSuccess: {
       label: "Success rate allowed",
-      body: "How often opponents stay on schedule, adjusted for who this team played. Lower is better.",
+      body: "Opponent-adjusted success rate allowed. Positive means opponents stayed on schedule more often than they would against an average defense. Lower is better.",
     },
     defenseSchedule: {
-      label: "Schedule strength",
-      body: "How much better or worse than average the offenses on the schedule were. Positive means this defense faced a tougher slate. The EPA and success rate beside it are already adjusted for this.",
+      label: "Team strength",
+      body: "The same schedule-adjusted team strength as the offense column: offensive EPA minus 0.55 times EPA allowed, after opponent adjustment. Higher is a stronger team.",
     },
   },
   rolling: {
     offense: {
       label: "Offensive EPA per play",
-      body: "Points the offense added or cost on a typical competitive play. Above the season line means the last four games were better than the year as a whole.",
+      body: "Season-to-date offensive EPA per play and the last four team-games, as published for the start of each week. Above the season line means the recent games were better than the year to that point.",
     },
     defense: {
       label: "EPA per play allowed",
-      body: "Points opponents added on a typical competitive play. Below the season line means the last four games were stingier than the year as a whole.",
+      body: "Season-to-date EPA allowed and the last four team-games, as of the start of each week. Below the season line means the recent games were stingier.",
     },
   },
 };
@@ -203,5 +211,6 @@ export function rankCaption(metric: ProfileMetric): string {
   if (metric.rank_sense === "tougher") {
     return `tougher than ${Math.round(metric.percentile)}%`;
   }
-  return `${ordinal(metric.percentile)} percentile`;
+  const ofWhat = metric.percentile_of ? ` of ${metric.percentile_of}` : "";
+  return `${ordinal(metric.percentile)} percentile${ofWhat}`;
 }

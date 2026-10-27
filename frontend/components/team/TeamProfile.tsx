@@ -271,6 +271,7 @@ function SplitTable({
           <tr key={split.id} className="border-b divider align-top">
             <th scope="row" className="text-left font-medium py-2 pr-3 whitespace-nowrap">
               {splitLabel(split, config)}
+              {split.adjusted === false ? <span className="text-muted font-normal"> · rate</span> : null}
               {split.approximated ? <span className="text-amber-300/90"> *</span> : null}
             </th>
             {COLUMNS.map((col) => (
@@ -293,6 +294,7 @@ function SplitCard({ split, config }: { split: SplitProfile; config: TeamProfile
     <div className="rounded-lg border divider p-3">
       <div className="font-medium text-sm mb-2">
         {splitLabel(split, config)}
+        {split.adjusted === false ? <span className="text-muted font-normal"> · rate</span> : null}
         {split.approximated ? <span className="text-amber-300/90"> *</span> : null}
       </div>
       {(["offense", "defense"] as const).map((unit) => (
@@ -314,6 +316,13 @@ function SplitCard({ split, config }: { split: SplitProfile; config: TeamProfile
   );
 }
 
+function formatMetric(metric: ProfileMetric, fallback: (value: number | null) => string): string {
+  if (metric.display === "share") return formatSuccess(metric.value);
+  if (metric.display === "signed") return formatSigned(metric.value);
+  if (metric.display === "epa") return formatEpa(metric.value);
+  return fallback(metric.value);
+}
+
 function MetricReadout({
   metric,
   format,
@@ -326,7 +335,7 @@ function MetricReadout({
   const color = percentile == null || neutral ? "#94a3b8" : pctColor(percentile);
   return (
     <div className="min-w-[4.75rem]">
-      <div className="font-medium tabular-nums">{format(metric.value)}</div>
+      <div className="font-medium tabular-nums">{formatMetric(metric, format)}</div>
       <div className="mt-1 h-1 rounded-full bg-bg overflow-hidden">
         {percentile != null && (
           <div className="h-full" style={{ width: `${Math.max(0, Math.min(100, percentile))}%`, background: color }} />
@@ -362,6 +371,9 @@ function SplitGlossary({
       {approximated?.approximation_note && (
         <p className="text-[11px] text-amber-200/80">* {approximated.approximation_note}</p>
       )}
+      {splits.some((split) => split.note) && (
+        <p className="text-[11px] text-muted">{splits.find((split) => split.note)?.note}</p>
+      )}
     </div>
   );
 }
@@ -380,6 +392,7 @@ function RollingSection({
   accent?: string;
 }) {
   const tip = config.rolling[unit];
+  const asOf = rolling?.as_of_week === true;
   const color = accent || "var(--team-primary)";
   const last4 = rolling?.last4_average ?? null;
   const season = rolling?.season_average ?? null;
@@ -448,9 +461,11 @@ function RollingSection({
                 formatter={(value: number, name: string) => [formatEpa(value), name]}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="value" name="This game" fill={color} fillOpacity={0.35} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-              <Line type="monotone" dataKey="rolling4" name="Last 4 games" stroke={color} strokeWidth={2.5} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />
-              <Line type="monotone" dataKey="season" name="Season average" stroke="#94a3b8" strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              {!asOf && (
+                <Bar dataKey="value" name="This game" fill={color} fillOpacity={0.35} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+              )}
+              <Line type="monotone" dataKey="rolling4" name={asOf ? "Last 4 entering the week" : "Last 4 games"} stroke={color} strokeWidth={2.5} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="season" name={asOf ? "Season entering the week" : "Season average"} stroke="#94a3b8" strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
