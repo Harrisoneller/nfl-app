@@ -197,8 +197,8 @@ def test_columns_off_the_read_list_never_reach_outputs():
 def test_recovery_luck_counts_every_fumble_and_ignores_lost():
     """Recovery is who falls on the ball, so unforced fumbles count too.
 
-    Havoc would count only the forced fumble. ``fumble_lost`` does not.
-    A forced fumble the offense keeps is still a fumble.
+    ``fumble_lost`` does not. A forced fumble the offense keeps is still a fumble.
+    Forced fumbles are used only in havoc elsewhere, and this frame has no havoc column.
     """
     plays = pd.DataFrame([
         _play(epa=1.0, fumble=1, fumble_forced=1, fumble_lost=0, fumble_recovery_1_team="KC"),
@@ -213,9 +213,12 @@ def test_recovery_luck_counts_every_fumble_and_ignores_lost():
     assert den["fumble_n"] == 2
     assert kc["fumble_rec_luck"] == pytest.approx(shrink(1.0 - FUMBLE_EXPECTED, 2, K_FUMBLE))
     assert den["fumble_rec_luck"] == pytest.approx(shrink(0.0 - FUMBLE_EXPECTED, 2, K_FUMBLE))
-    assert "all fumbles" in CONTRACT["fumble_n"][2].lower() or "every fumble" in CONTRACT["fumble_n"][2].lower()
-    assert "fumble_forced" in CONTRACT["fumble_n"][2]
+    assert "every fumble" in CONTRACT["fumble_n"][2].lower()
+    assert "forced fumbles are used only in havoc elsewhere" in CONTRACT["fumble_n"][2].lower()
+    assert "forced fumbles are used only in havoc elsewhere" in CONTRACT["fumble_rec_luck"][2].lower()
     assert "fumble_lost" in CONTRACT["fumble_rec_luck"][2]
+    assert "havoc" not in season.columns
+    assert "havoc" not in set(CONTRACT)
 
 
 def test_garbage_band_families_and_separate_explosiveness():

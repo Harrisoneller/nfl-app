@@ -189,7 +189,7 @@ def _contract() -> dict[str, tuple[type, str, str]]:
             (
                 "Recovery rate on every fumble, forced or unforced, minus 0.5, shrunk with k = 50. "
                 "Recovery is who falls on the ball, so an offense recovery counts. fumble_lost is not read. "
-                "This is not the havoc count, which uses fumble_forced == 1 only. "
+                "Forced fumbles are used only in havoc elsewhere. "
                 "Positive means more recoveries than half"
             ),
         ),
@@ -205,7 +205,7 @@ def _contract() -> dict[str, tuple[type, str, str]]:
             "fumble_n",
             (
                 "Every fumble in the team's games, forced and unforced, whether or not the ball was lost. "
-                "Havoc does not use this column. Havoc counts fumble_forced == 1 only"
+                "Forced fumbles are used only in havoc elsewhere"
             ),
         ),
         ("int_n", "Pass attempts"),
@@ -463,8 +463,7 @@ def _fumble_rows(scr: pd.DataFrame) -> pd.DataFrame:
 
     The event is any fumble: ``fumble == 1`` or ``fumble_forced == 1``. Forced
     and unforced fumbles both count, including one the offense keeps.
-    ``fumble_lost`` is not read. Havoc is a different count and uses only
-    ``fumble_forced == 1``.
+    ``fumble_lost`` is not read. Forced fumbles are used only in havoc elsewhere.
     """
     if len(scr) == 0:
         return scr
