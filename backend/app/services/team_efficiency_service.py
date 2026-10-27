@@ -14,6 +14,7 @@ opponent-adjusted rating for those splits.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from typing import Any
@@ -29,7 +30,18 @@ from . import nfl_feature_adapter as features
 log = get_logger(__name__)
 
 KIND = "team_efficiency"
+# Completed seasons keep a 6h in-process copy. L2 for those seasons does not expire.
 CACHE_TTL = 60 * 60 * 6
+# The worker cron is minute 50 of derive hours (default 06:50 and 18:50 UTC),
+# so the gap between refreshes is 12 hours. The job drops the live-season
+# artifact and rebuilds it. L2 has to outlast that gap; otherwise a web
+# request rebuilds the play frame on the request path. 18h still expires if
+# the worker misses a run.
+LIVE_CACHE_TTL = 60 * 60 * 18
+# L1 is process-local. A long L1 on the web process would ignore the worker's
+# fresh L2 write. Half an hour is enough to skip a database read per request
+# and still pick up the next job.
+LIVE_L1_TTL = 60 * 30
 PLACEHOLDER_TTL = 60 * 30
 
 WAITING_REASON = (
@@ -508,11 +520,20 @@ def _cache_key(season: int) -> str:
 
 
 def _ttl(season: int) -> int | None:
+    """L2 lifetime. None means the completed-season artifact does not expire."""
     if features.using_placeholder():
         return PLACEHOLDER_TTL
     if season < current_or_upcoming_season():
         return None
-    return CACHE_TTL
+    return LIVE_CACHE_TTL
+
+
+def _l1_ttl(season: int) -> int:
+    """In-process lifetime. Live seasons stay short so the worker's write wins."""
+    ttl = _ttl(season)
+    if ttl is None:
+        return CACHE_TTL
+    return min(ttl, LIVE_L1_TTL)
 
 
 def _no_pbp(season: int, *, reason: str, unavailable_id: str = "play_by_play") -> dict[str, Any]:
@@ -554,7 +575,9 @@ async def _compute_features(season: int) -> dict[str, Any]:
         if plays is None:
             return _no_pbp(season, reason="Play-by-play for this season is not in the data pipeline.")
     try:
-        game_frame, season_frame = features.build(plays)
+        # Ridge fits over a season of plays are CPU work. Off the event loop
+        # so one profile build does not stall the worker's other jobs.
+        game_frame, season_frame = await asyncio.to_thread(features.build, plays)
     except Exception as exc:  # noqa: BLE001 — a bad feature build must not 500 the page
         log.warning("team_features_failed", season=season, error=str(exc)[:200])
         return _no_pbp(
@@ -584,7 +607,7 @@ async def league_features(season: int) -> dict[str, Any]:
         key=_cache_key(season),
         compute=lambda: _compute_features(season),
         ttl_seconds=_ttl(season),
-        l1_ttl_seconds=min(_ttl(season) or CACHE_TTL, CACHE_TTL),
+        l1_ttl_seconds=_l1_ttl(season),
     )
     if not bundle.get("cacheable", True):
         _drop_bundle_cache(season)

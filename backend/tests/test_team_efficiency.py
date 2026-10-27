@@ -369,6 +369,74 @@ async def test_materialize_job_refreshes_completed_and_current_seasons(monkeypat
     assert -current_or_upcoming_season() in seen
 
 
+def test_pbp_projection_covers_the_feature_contract():
+    from app.adapters.data.nfl_data_py_adapter import (
+        _PBP_FEATURE_OPTIONAL,
+        PBP_COLUMNS,
+    )
+
+    missing = [col for col in REQUIRED if col != "season" and col not in PBP_COLUMNS]
+    assert missing == []
+    assert "season" not in PBP_COLUMNS
+    optional = (
+        "fumble", "fumble_recovery_1_team", "pass_attempt",
+        "pass_defense_1_player_id", "pass_defense_2_player_id",
+        "fixed_drive", "field_goal_attempt", "kick_distance",
+        "field_goal_result", "home_score", "away_score",
+    )
+    assert list(_PBP_FEATURE_OPTIONAL) == list(optional)
+    for col in optional:
+        assert col in PBP_COLUMNS
+
+
+def test_missing_optional_column_does_not_load_the_full_parquet(monkeypatch):
+    import app.adapters.data.nfl_data_py_adapter as adapter
+
+    calls: list[list[str] | None] = []
+
+    def _read(url: str, columns: list[str] | None = None, **kwargs: object) -> pd.DataFrame:
+        del url, kwargs
+        calls.append(columns)
+        if columns == adapter.PBP_COLUMNS:
+            raise ValueError("missing column fumble")
+        return pd.DataFrame({"game_id": ["g"]})
+
+    monkeypatch.setattr(adapter.pd, "read_parquet", _read)
+    frame = adapter._read_projected_parquet("https://example.test/pbp.parquet")
+    assert list(frame["game_id"]) == ["g"]
+    assert calls == [adapter.PBP_COLUMNS, adapter._PBP_CORE]
+    assert all(cols is not None for cols in calls)
+
+
+def test_library_fallback_stays_projected(monkeypatch):
+    import app.adapters.data.nfl_data_py_adapter as adapter
+
+    calls: list[list[str] | None] = []
+
+    def _import(seasons, columns=None, **kwargs):
+        del seasons, kwargs
+        calls.append(columns)
+        if columns == adapter.PBP_COLUMNS:
+            raise ValueError("missing column fumble")
+        return pd.DataFrame({"week": [1]})
+
+    monkeypatch.setattr(adapter.nfl, "import_pbp_data", _import)
+    frame = adapter._import_pbp_via_library(2026)
+    assert list(frame["week"]) == [1]
+    assert calls == [adapter.PBP_COLUMNS, adapter._PBP_CORE]
+
+
+def test_live_season_cache_outlasts_the_worker_gap():
+    live = current_or_upcoming_season()
+    completed = latest_completed_season()
+    assert svc._ttl(live) == svc.LIVE_CACHE_TTL
+    assert svc.LIVE_CACHE_TTL > 12 * 60 * 60
+    assert svc._l1_ttl(live) == svc.LIVE_L1_TTL
+    assert svc._l1_ttl(live) < svc._ttl(live)
+    assert svc._ttl(completed) is None
+    assert svc._l1_ttl(completed) == svc.CACHE_TTL
+
+
 def test_efficiency_endpoint_serves_defs_rows_and_cache_headers(client, monkeypatch):
     features.use_module(_Recording())
     loader = _Loader(pd.DataFrame([_play_row()]))

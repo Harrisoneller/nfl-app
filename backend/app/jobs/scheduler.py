@@ -311,7 +311,13 @@ async def _job_profiles_only() -> None:
 
 
 async def _job_team_efficiency() -> None:
-    """Materialize team-game and team-season feature tables for the profile page."""
+    """Materialize team-game and team-season tables for the profile page.
+
+    Registered on the worker cron for every boot level, including the
+    production default (minimal). It loads the same projected nflverse
+    play-by-play the request path uses and stores the defs output in the
+    shared artifact cache. The web role does not run this scheduler.
+    """
     await sync_run_service.run_job("team_efficiency", team_efficiency_service.materialize_profiles)
 
 
