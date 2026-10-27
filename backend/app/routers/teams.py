@@ -68,8 +68,9 @@ async def get_team_efficiency(
     """Efficiency profile for one team.
 
     Rates come from ``features.nfl.defs.build_features`` via the feature
-    adapter. This handler does not compute EPA, success rate, or percentiles.
-    The league bundle is cached; the response is one team sliced out of it.
+    adapter. This handler does not compute EPA or success rate. The league
+    bundle is cached; the response is one team sliced out of it. A missing
+    feature module returns an unavailable profile instead of a placeholder.
     """
     season = season or latest_completed_season()
     response.headers["X-Cache-Status"] = team_efficiency_service.cache_status(season)

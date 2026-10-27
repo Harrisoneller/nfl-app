@@ -1,8 +1,8 @@
 """Load ``features.nfl.defs`` and keep market columns out of the play frame.
 
 ``build_features(plays)`` returns ``(team_game, team_season)``. Market columns
-raise inside that module, so they are removed here before the call. The
-placeholder remains only when ``features.nfl.defs`` cannot be imported.
+raise inside that module, so they are removed here before the call. A missing
+module is an error. This adapter does not substitute the placeholder.
 """
 from __future__ import annotations
 
@@ -13,10 +13,19 @@ from typing import Any
 
 import pandas as pd
 
+from ..logging_config import get_logger
 from . import nfl_feature_placeholder as placeholder
 
-# backend/app/services/<this file> -> repo root, where features/nfl/defs.py lives.
+log = get_logger(__name__)
+
+# backend/app/services/<this file> -> repo root. The packaged copy lives at
+# backend/features (Railway's root is /backend). The repo-root path is only
+# the checkout layout from before that move.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class FeatureDefsUnavailable(RuntimeError):
+    """``features.nfl.defs`` is not importable. Ratings must not be invented."""
 
 _cached: Any = None
 _override: Any = None
@@ -36,22 +45,48 @@ def use_module(module: Any) -> None:
 
 
 def _import_defs() -> Any:
-    root = str(_REPO_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    return importlib.import_module("features.nfl.defs")
+    """Import the feature module from the backend package, then the repo root.
+
+    ``pip install`` of the backend project, and ``PYTHONPATH=backend``, both
+    resolve ``features.nfl.defs`` once that package lives under ``backend/``.
+    Inserting the repo root is the pre-move checkout only. Either miss raises.
+    """
+    try:
+        return importlib.import_module("features.nfl.defs")
+    except ImportError as first:
+        root = str(_REPO_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        try:
+            return importlib.import_module("features.nfl.defs")
+        except ImportError as exc:
+            log.error(
+                "feature_defs_import_failed",
+                error=str(exc),
+                first_error=str(first),
+            )
+            raise FeatureDefsUnavailable(
+                "features.nfl.defs could not be imported. "
+                "Team efficiency ratings are unavailable until that package is installed."
+            ) from exc
 
 
 def module() -> Any:
-    """The feature module currently in use."""
+    """The feature module currently in use. Raises if it cannot be imported."""
     global _cached
     if _override is not None:
         return _override
     if _cached is None:
         try:
             _cached = _import_defs()
-        except ImportError:
-            _cached = placeholder
+        except FeatureDefsUnavailable:
+            raise
+        except ImportError as exc:
+            log.error("feature_defs_import_failed", error=str(exc))
+            raise FeatureDefsUnavailable(
+                "features.nfl.defs could not be imported. "
+                "Team efficiency ratings are unavailable until that package is installed."
+            ) from exc
     return _cached
 
 

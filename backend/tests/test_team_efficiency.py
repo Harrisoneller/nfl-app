@@ -1,6 +1,8 @@
 """Team efficiency profile wired to features.nfl.defs. No metric math here."""
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -171,7 +173,7 @@ def test_service_does_not_implement_epa_or_adjustment():
         assert banned not in text
 
 
-def test_page_uses_adjusted_headlines_published_percentiles_and_asof_chart():
+def test_page_uses_adjusted_headlines_and_asof_chart():
     profile = svc.project_team(_bundle(), "AAA", 2020)
     overall = profile["splits"][0]
     assert [row["id"] for row in profile["splits"]] == [
@@ -179,19 +181,27 @@ def test_page_uses_adjusted_headlines_published_percentiles_and_asof_chart():
     ]
     assert overall["adjusted"] is True
     assert overall["offense"]["epa"]["value"] == pytest.approx(0.11)
-    assert overall["offense"]["epa"]["percentile"] == pytest.approx(12.0)
-    assert overall["offense"]["epa"]["percentile_of"] == "the season rate"
+    # One team is the middle of its own league: (0 worse + half a tie) / 1.
+    assert overall["offense"]["epa"]["percentile"] == pytest.approx(50.0)
+    assert overall["offense"]["epa"]["percentile_of"] is None
+    assert overall["offense"]["epa"]["rank"] == 1
+    assert overall["offense"]["epa"]["league_size"] == 1
     assert overall["offense"]["success_rate"]["value"] == pytest.approx(0.02)
     assert overall["offense"]["success_rate"]["display"] == "signed"
+    assert overall["offense"]["success_rate"]["percentile"] == pytest.approx(50.0)
     assert overall["offense"]["schedule_strength"]["value"] == pytest.approx(0.132)
-    assert overall["offense"]["schedule_strength"]["percentile"] == pytest.approx(88.0)
+    assert overall["offense"]["schedule_strength"]["percentile"] == pytest.approx(50.0)
     assert overall["offense"]["schedule_strength"]["rank_sense"] == "better"
     assert overall["defense"]["epa"]["value"] == pytest.approx(-0.04)
     assert overall["defense"]["epa"]["higher_is_better"] is False
-    assert overall["defense"]["epa"]["percentile"] is None
+    assert overall["defense"]["epa"]["percentile"] == pytest.approx(50.0)
+    assert overall["defense"]["success_rate"]["percentile"] == pytest.approx(50.0)
     early = profile["splits"][3]
     assert early["adjusted"] is False
     assert early["offense"]["epa"]["value"] == pytest.approx(0.05)
+    assert early["offense"]["epa"]["percentile"] == pytest.approx(55.0)
+    assert early["offense"]["epa"]["percentile_of"] == "the season rate"
+    assert early["offense"]["epa"]["rank"] is None
     assert early["offense"]["success_rate"]["display"] == "share"
     assert early["defense"]["epa"]["value"] is None
     rolling = profile["rolling"]["offense"]
@@ -315,7 +325,7 @@ async def test_real_module_is_cached_across_teams(monkeypatch):
     second = await svc.efficiency_profile("AAA", 1983)
     assert loader.calls == 1
     assert module.calls == 1
-    assert first["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(12.0)
+    assert first["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(50.0)
     assert second["team_id"] == "AAA"
     assert svc.cache_status(1983) == "hit"
 
@@ -335,20 +345,89 @@ async def test_empty_download_is_not_cached(monkeypatch):
     assert loader.calls == 2
 
 
+def _missing_defs() -> None:
+    raise ImportError("features.nfl.defs is not installed")
+
+
 @pytest.mark.asyncio
-async def test_placeholder_path_does_not_download_play_by_play(monkeypatch):
-    features.use_module(placeholder)
+async def test_missing_defs_is_loud_and_does_not_download(monkeypatch):
+    monkeypatch.setattr(features, "_import_defs", _missing_defs)
+    features.reset()
 
     def _boom() -> None:
-        raise AssertionError("placeholder must not download play-by-play")
+        raise AssertionError("a missing feature module must not download play-by-play")
 
     monkeypatch.setattr(svc, "_pbp_loader", _boom)
     svc._drop_bundle_cache(1981)
     profile = await svc.efficiency_profile("KC", 1981)
-    assert profile["source"] == "placeholder"
+    assert profile["source"] == "features.nfl.defs"
     assert profile["filters"]["garbage_time_excluded"] is False
     assert profile["splits"] == []
-    assert svc.cache_status(1981) == "hit"
+    assert profile["unavailable"][0]["id"] == "feature_defs"
+    assert "could not be imported" in profile["unavailable"][0]["reason"]
+    assert svc.cache_status(1981) == "miss"
+    again = await svc.efficiency_profile("KC", 1981)
+    assert again["unavailable"][0]["id"] == "feature_defs"
+    assert svc.cache_status(1981) == "miss"
+    with pytest.raises(features.FeatureDefsUnavailable):
+        await svc.materialize_profiles(object())
+
+
+def _rated_row(team: str, *, offense: float, defense: float) -> dict:
+    """One team whose adjusted cells all sit on two levels, by side."""
+    return _season_row(
+        team=team,
+        epa_off_adj=offense,
+        sr_off_adj=offense,
+        pass_off_adj=offense,
+        rush_off_adj=offense,
+        sched_strength=offense,
+        epa_def_adj=defense,
+        sr_def_adj=defense,
+        pass_def_adj=defense,
+        rush_def_adj=defense,
+    )
+
+
+def test_adjusted_percentile_ranks_the_shown_value_with_half_credit_for_ties():
+    """26 teams worse and no tie is the 82.8th percentile, 27th of 32."""
+    rows = [_rated_row(f"L{index:02d}", offense=-1.0, defense=0.5) for index in range(26)]
+    rows.extend(_rated_row(f"H{index:02d}", offense=1.0, defense=-0.5) for index in range(5))
+    rows.append(_rated_row("KC", offense=0.059661746737180985, defense=-0.04))
+    profile = svc.project_team(_bundle(rows), "KC", 2026)
+    by_id = {row["id"]: row for row in profile["splits"]}
+    for split_id in ("overall", "pass", "rush"):
+        offense = by_id[split_id]["offense"]["epa"]
+        defense = by_id[split_id]["defense"]["epa"]
+        assert offense["percentile"] == pytest.approx(82.8)
+        assert offense["rank"] == 27
+        assert offense["league_size"] == 32
+        assert offense["percentile_of"] is None
+        assert defense["higher_is_better"] is False
+        assert defense["percentile"] == pytest.approx(82.8)
+        assert defense["rank"] == 27
+        assert defense["league_size"] == 32
+    assert by_id["overall"]["offense"]["success_rate"]["percentile"] == pytest.approx(82.8)
+    assert by_id["overall"]["defense"]["success_rate"]["percentile"] == pytest.approx(82.8)
+    assert by_id["overall"]["offense"]["schedule_strength"]["percentile"] == pytest.approx(82.8)
+
+    tied = [
+        _rated_row("LOW", offense=0.0, defense=0.2),
+        _rated_row("A", offense=0.2, defense=0.0),
+        _rated_row("B", offense=0.2, defense=0.0),
+    ]
+    a = svc.project_team(_bundle(tied), "A", 2026)["splits"][0]["offense"]["epa"]
+    low = svc.project_team(_bundle(tied), "LOW", 2026)["splits"][0]["offense"]["epa"]
+    # A and B tie: (1 worse + half of 2) / 3 = 66.7. LOW is (half of 1) / 3 = 16.7.
+    assert a["percentile"] == pytest.approx(66.7)
+    assert a["rank"] == 2
+    assert low["percentile"] == pytest.approx(16.7)
+    assert low["rank"] == 1
+    # Defense is lower-is-better, so 0.0 beats 0.2. The tie is the better rating.
+    def_a = svc.project_team(_bundle(tied), "A", 2026)["splits"][0]["defense"]["epa"]
+    def_low = svc.project_team(_bundle(tied), "LOW", 2026)["splits"][0]["defense"]["epa"]
+    assert def_a["percentile"] == pytest.approx(66.7)
+    assert def_low["percentile"] == pytest.approx(16.7)
 
 
 @pytest.mark.asyncio
@@ -379,7 +458,7 @@ def test_pbp_projection_covers_the_feature_contract():
     assert missing == []
     assert "season" not in PBP_COLUMNS
     optional = (
-        "fumble", "fumble_recovery_1_team", "pass_attempt",
+        "fumble", "fumble_forced", "fumble_recovery_1_team", "pass_attempt",
         "pass_defense_1_player_id", "pass_defense_2_player_id",
         "fixed_drive", "field_goal_attempt", "kick_distance",
         "field_goal_result", "home_score", "away_score",
@@ -437,6 +516,32 @@ def test_live_season_cache_outlasts_the_worker_gap():
     assert svc._l1_ttl(completed) == svc.CACHE_TTL
 
 
+def test_build_features_imports_with_backend_pythonpath_only():
+    """Railway's root is /backend. The import must work with only that path."""
+    backend = Path(__file__).resolve().parents[1]
+    packaged = backend / "features" / "nfl" / "defs.py"
+    if not packaged.is_file():
+        pytest.skip(
+            "backend/features/nfl/defs.py is not in this checkout yet. "
+            "Rebase onto features/nfl-defs once #31 places the module there."
+        )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(backend)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    completed = subprocess.run(
+        [
+            sys.executable, "-c",
+            "from features.nfl.defs import build_features; assert callable(build_features)",
+        ],
+        cwd=str(backend),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_efficiency_endpoint_serves_defs_rows_and_cache_headers(client, monkeypatch):
     features.use_module(_Recording())
     loader = _Loader(pd.DataFrame([_play_row()]))
@@ -450,7 +555,7 @@ def test_efficiency_endpoint_serves_defs_rows_and_cache_headers(client, monkeypa
     # The recording module does not declare WP_LO, so the page must not claim the filter.
     assert body["filters"]["garbage_time_excluded"] is False
     assert body["splits"][0]["offense"]["epa"]["value"] == pytest.approx(0.11)
-    assert body["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(12.0)
+    assert body["splits"][0]["offense"]["epa"]["percentile"] == pytest.approx(50.0)
     assert body["rolling"]["offense"]["as_of_week"] is True
     assert "closing_spread" not in response.text
     assert response.headers["x-cache-status"] == "miss"

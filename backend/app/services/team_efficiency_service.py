@@ -3,14 +3,15 @@
 Numbers come from ``features.nfl.defs.build_features``. This module loads
 play-by-play, strips market columns, stores the team-game and team-season
 tables, and shapes one team for the page. It does not compute EPA, success
-rate, opponent adjustment, or percentiles.
+rate, or opponent adjustment.
 
 Headline cells are the opponent-adjusted ratings (``*_off_adj`` /
-``*_def_adj`` and ``sched_strength``). Percentiles are the contract's
-``*_season_pct`` columns. The chart is ``*_last4`` against ``*_season`` on
-the team-game rows, which are as of the start of each week. Early-down and
-passing-down rows are the published season rates; the contract has no
-opponent-adjusted rating for those splits.
+``*_def_adj`` and ``sched_strength``). The percentile next to those cells
+ranks that adjusted value across the teams in the season table: half credit
+for ties, higher percentile means a better team, and defensive ratings are
+lower-is-better. Early-down and passing-down rows keep the contract's
+season-rate percentiles. The chart is ``*_last4`` against ``*_season`` on
+the team-game rows, which are as of the start of each week.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import json
 import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..logging_config import get_logger
@@ -66,6 +68,20 @@ def _cell(
     return (column, percentile, display, higher, sense, percentile_of)
 
 
+# column, higher_is_better. The percentile ranks this adjusted value.
+# Defense is lower-is-better: a smaller rating is a better defense.
+_ADJUSTED_RANKS: tuple[tuple[str, bool], ...] = (
+    ("epa_off_adj", True),
+    ("sr_off_adj", True),
+    ("pass_off_adj", True),
+    ("rush_off_adj", True),
+    ("sched_strength", True),
+    ("epa_def_adj", False),
+    ("sr_def_adj", False),
+    ("pass_def_adj", False),
+    ("rush_def_adj", False),
+)
+
 # Early and passing downs have season rates and percentiles, not a ridge rating.
 _RATE_NOTE = (
     "This row is the season rate from the feature contract, not an "
@@ -79,14 +95,14 @@ _SPLITS: tuple[dict[str, Any], ...] = (
         "adjusted": True,
         "note": None,
         "offense": {
-            "epa": _cell("epa_off_adj", "epa_play_season_pct", "epa", True, "better", "the season rate"),
-            "success_rate": _cell("sr_off_adj", "success_rate_season_pct", "signed", True, "better", "the season rate"),
-            "schedule_strength": _cell("sched_strength", "sched_strength_season_pct", "signed", True),
+            "epa": _cell("epa_off_adj", "epa_off_adj__pct", "epa", True),
+            "success_rate": _cell("sr_off_adj", "sr_off_adj__pct", "signed", True),
+            "schedule_strength": _cell("sched_strength", "sched_strength__pct", "signed", True),
         },
         "defense": {
-            "epa": _cell("epa_def_adj", None, "epa", False),
-            "success_rate": _cell("sr_def_adj", None, "signed", False),
-            "schedule_strength": _cell("sched_strength", "sched_strength_season_pct", "signed", True),
+            "epa": _cell("epa_def_adj", "epa_def_adj__pct", "epa", False),
+            "success_rate": _cell("sr_def_adj", "sr_def_adj__pct", "signed", False),
+            "schedule_strength": _cell("sched_strength", "sched_strength__pct", "signed", True),
         },
     },
     {
@@ -95,12 +111,12 @@ _SPLITS: tuple[dict[str, Any], ...] = (
         "adjusted": True,
         "note": None,
         "offense": {
-            "epa": _cell("pass_off_adj", "pass_epa_season_pct", "epa", True, "better", "the season rate"),
+            "epa": _cell("pass_off_adj", "pass_off_adj__pct", "epa", True),
             "success_rate": _cell(None, None, "signed", True),
             "schedule_strength": _cell(None, None, "signed", True),
         },
         "defense": {
-            "epa": _cell("pass_def_adj", None, "epa", False),
+            "epa": _cell("pass_def_adj", "pass_def_adj__pct", "epa", False),
             "success_rate": _cell(None, None, "signed", False),
             "schedule_strength": _cell(None, None, "signed", True),
         },
@@ -111,12 +127,12 @@ _SPLITS: tuple[dict[str, Any], ...] = (
         "adjusted": True,
         "note": None,
         "offense": {
-            "epa": _cell("rush_off_adj", "rush_epa_season_pct", "epa", True, "better", "the season rate"),
+            "epa": _cell("rush_off_adj", "rush_off_adj__pct", "epa", True),
             "success_rate": _cell(None, None, "signed", True),
             "schedule_strength": _cell(None, None, "signed", True),
         },
         "defense": {
-            "epa": _cell("rush_def_adj", None, "epa", False),
+            "epa": _cell("rush_def_adj", "rush_def_adj__pct", "epa", False),
             "success_rate": _cell(None, None, "signed", False),
             "schedule_strength": _cell(None, None, "signed", True),
         },
@@ -237,10 +253,54 @@ def _lookup(row: dict[str, Any] | None, column: str | None) -> Any:
     return value
 
 
+def _league_percentiles(values: pd.Series, *, higher_is_better: bool) -> tuple[pd.Series, pd.Series, int]:
+    """Midrank percentile of one adjusted column.
+
+    ``(teams strictly worse + half the tied teams) / teams * 100``. A higher
+    percentile is a better team. For a lower-is-better rating, a smaller
+    number is the better one. One team alone is the 50th percentile.
+    """
+    numeric = pd.to_numeric(values, errors="coerce")
+    array = numeric.to_numpy(dtype="float64", na_value=np.nan)
+    finite_mask = np.isfinite(array)
+    finite = array[finite_mask]
+    n = int(finite.shape[0])
+    pct = pd.Series(np.nan, index=numeric.index, dtype="float64")
+    rank = pd.Series(np.nan, index=numeric.index, dtype="float64")
+    if n == 0:
+        return pct, rank, 0
+    for idx, value in numeric[finite_mask].items():
+        if higher_is_better:
+            worse = int(np.sum(finite < value))
+        else:
+            worse = int(np.sum(finite > value))
+        tied = int(np.sum(finite == value))
+        pct.at[idx] = (worse + 0.5 * tied) / n * 100.0
+        rank.at[idx] = worse + 1
+    return pct, rank, n
+
+
+def _attach_adjusted_ranks(frame: pd.DataFrame) -> pd.DataFrame:
+    """Add ``{column}__pct`` ranks for the adjusted values the page shows."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return frame
+    out = frame.copy()
+    for column, higher in _ADJUSTED_RANKS:
+        if column not in out.columns:
+            continue
+        pct, rank, n = _league_percentiles(out[column], higher_is_better=higher)
+        out[f"{column}__pct"] = pct
+        out[f"{column}__pct_rank"] = rank
+        out[f"{column}__pct_n"] = n
+    return out
+
+
 def _metric_payload(row: dict[str, Any] | None, spec: _Cell, plays: int | None) -> dict[str, Any]:
     column, pct_col, display, higher, sense, pct_of = spec
     value = _finite(_lookup(row, column))
     percentile = _finite(_lookup(row, pct_col))
+    rank = _finite(_lookup(row, f"{pct_col}_rank")) if pct_col else None
+    league = _finite(_lookup(row, f"{pct_col}_n")) if pct_col else None
     return {
         "value": _num(value),
         "percentile": _num(percentile, 1),
@@ -249,6 +309,8 @@ def _metric_payload(row: dict[str, Any] | None, spec: _Cell, plays: int | None) 
         "rank_sense": sense,
         "display": display,
         "percentile_of": pct_of if percentile is not None else None,
+        "rank": int(rank) if rank is not None else None,
+        "league_size": int(league) if league is not None else None,
     }
 
 
@@ -409,7 +471,7 @@ def assemble_bundle(
     placeholder: bool,
 ) -> dict[str, Any]:
     """Cache document: feature tables plus the per-team page payload."""
-    season_frame = features.drop_market(_canonicalize_frame(team_season))
+    season_frame = _attach_adjusted_ranks(features.drop_market(_canonicalize_frame(team_season)))
     game_frame = features.drop_market(_canonicalize_frame(team_game))
     public = _public_filters(filters, placeholder=placeholder)
     notes: list[str] = []
@@ -429,8 +491,10 @@ def assemble_bundle(
     else:
         notes.append(
             "Headline EPA and success figures are the opponent-adjusted ratings "
-            "from the NFL feature contract. A percentile ranks the matching season "
-            "rate, and a higher percentile is better."
+            "from the NFL feature contract. A percentile ranks that adjusted "
+            "value. A higher percentile is a better team, and defensive ratings "
+            "are lower-is-better. Early-down and passing-down percentiles rank "
+            "the season rate."
         )
         notes.append(
             "The chart is the last four team-games against the season-to-date rate, "
@@ -516,7 +580,8 @@ def _pbp_loader() -> Any:
 
 
 def _cache_key(season: int) -> str:
-    return f"nfl:{season}:defs"
+    # v2 ranks the adjusted cell. v1 artifacts ranked the raw season rate.
+    return f"nfl:{season}:defs:v2"
 
 
 def _ttl(season: int) -> int | None:
@@ -536,11 +601,18 @@ def _l1_ttl(season: int) -> int:
     return min(ttl, LIVE_L1_TTL)
 
 
+def _source_label() -> str:
+    try:
+        return features.source_name()
+    except features.FeatureDefsUnavailable:
+        return "features.nfl.defs"
+
+
 def _no_pbp(season: int, *, reason: str, unavailable_id: str = "play_by_play") -> dict[str, Any]:
     return {
         "league": "NFL",
         "season": season,
-        "source": features.source_name(),
+        "source": _source_label(),
         "placeholder": False,
         "cacheable": False,
         "filters": _public_filters(
@@ -600,8 +672,14 @@ async def _compute_features(season: int) -> dict[str, Any]:
 async def league_features(season: int) -> dict[str, Any]:
     """League feature bundle, L1 then L2, singleflighted.
 
-    An empty download is not cached. A placeholder result uses a short TTL.
+    An empty download is not cached. A missing feature module is not cached
+    and is not replaced with the placeholder.
     """
+    try:
+        features.module()
+    except features.FeatureDefsUnavailable as exc:
+        log.error("feature_defs_unavailable", season=season, error=str(exc))
+        return _no_pbp(season, reason=str(exc), unavailable_id="feature_defs")
     bundle = await artifact_cache.get_or_compute(
         kind=KIND,
         key=_cache_key(season),
@@ -645,8 +723,13 @@ async def efficiency_profile(team_id: str, season: int) -> dict[str, Any]:
 
 
 async def materialize_profiles(_db: Any = None) -> dict[str, Any]:
-    """Worker job: refresh the live season and warm the latest completed one."""
+    """Worker job: refresh the live season and warm the latest completed one.
+
+    A missing ``features.nfl.defs`` raises. The job must fail instead of
+    storing an empty placeholder.
+    """
     del _db
+    features.module()
     seasons: list[int] = []
     for season in (latest_completed_season(), current_or_upcoming_season()):
         if season not in seasons:

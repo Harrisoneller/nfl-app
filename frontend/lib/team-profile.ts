@@ -14,8 +14,11 @@ export type ProfileMetric = {
   rank_sense: RankSense;
   /** epa: points per play. signed: a rating centered near zero. share: a 0–1 rate. */
   display?: "epa" | "signed" | "share";
-  /** What the published percentile ranks, when it is not the headline value itself. */
+  /** What the percentile ranks, when it is not the value in the cell. */
   percentile_of?: string | null;
+  /** 1-based place from the bottom of this rating. Ties share a place. */
+  rank?: number | null;
+  league_size?: number | null;
 };
 
 export type UnitProfile = {
@@ -112,7 +115,7 @@ export const NFL_TEAM_PROFILE_CONFIG: TeamProfileConfig = {
   garbageTimeNote:
     "Garbage time is excluded. Only plays with win probability between 10% and 90% are counted.",
   methodNote:
-    "The headline EPA and success figures are opponent-adjusted ratings from the feature contract. Zero is an average team. A percentile ranks the matching season rate, and higher is better.",
+    "The headline EPA and success figures are opponent-adjusted ratings from the feature contract. Zero is an average team. A percentile ranks that adjusted rating among the teams in the table. Higher is a better team. Defense is lower-is-better, so a smaller EPA allowed still ranks higher. Early-down and passing-down percentiles rank the season rate.",
   rollingNote:
     "The solid line is the last four team-games. The dashed line is the season-to-date rate. Both are the feature state entering that week, so the game itself is not included yet.",
   splitTooltips: {
@@ -152,7 +155,7 @@ export const NFL_TEAM_PROFILE_CONFIG: TeamProfileConfig = {
     },
     defenseEpa: {
       label: "EPA per play allowed",
-      body: "Opponent-adjusted EPA allowed per play. Positive means opponents gained more than they would against an average defense. Lower is better. The feature contract does not publish a percentile for this rating.",
+      body: "Opponent-adjusted EPA allowed per play. Positive means opponents gained more than they would against an average defense. Lower is better. The percentile ranks this rating, so a higher percentile is a better defense.",
     },
     defenseSuccess: {
       label: "Success rate allowed",
@@ -192,15 +195,17 @@ export function formatSigned(value: number | null): string {
 }
 
 export function ordinal(percentile: number): string {
-  const value = Math.round(percentile);
-  const mod100 = value % 100;
-  if (mod100 >= 11 && mod100 <= 13) return `${value}th`;
-  switch (value % 10) {
-    case 1: return `${value}st`;
-    case 2: return `${value}nd`;
-    case 3: return `${value}rd`;
-    default: return `${value}th`;
+  const rounded = Math.round(percentile * 10) / 10;
+  const whole = Math.trunc(Math.abs(rounded));
+  const mod100 = whole % 100;
+  let suffix = "th";
+  if (mod100 < 11 || mod100 > 13) {
+    if (whole % 10 === 1) suffix = "st";
+    else if (whole % 10 === 2) suffix = "nd";
+    else if (whole % 10 === 3) suffix = "rd";
   }
+  const body = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${body}${suffix}`;
 }
 
 export function rankCaption(metric: ProfileMetric): string {
@@ -212,5 +217,9 @@ export function rankCaption(metric: ProfileMetric): string {
     return `tougher than ${Math.round(metric.percentile)}%`;
   }
   const ofWhat = metric.percentile_of ? ` of ${metric.percentile_of}` : "";
-  return `${ordinal(metric.percentile)} percentile${ofWhat}`;
+  const label = `${ordinal(metric.percentile)} percentile${ofWhat}`;
+  if (metric.rank != null && metric.league_size != null) {
+    return `${label} · ${metric.rank} of ${metric.league_size}`;
+  }
+  return label;
 }

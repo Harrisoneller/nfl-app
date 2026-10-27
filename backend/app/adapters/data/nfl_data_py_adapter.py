@@ -80,7 +80,7 @@ _PBP_CORE: list[str] = [
     "score_differential", "special_teams_play",
 ]
 _PBP_FEATURE_OPTIONAL: list[str] = [
-    "fumble", "fumble_recovery_1_team", "pass_attempt",
+    "fumble", "fumble_forced", "fumble_recovery_1_team", "pass_attempt",
     "pass_defense_1_player_id", "pass_defense_2_player_id",
     "fixed_drive", "field_goal_attempt", "kick_distance", "field_goal_result",
     "home_score", "away_score",
