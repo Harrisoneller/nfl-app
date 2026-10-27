@@ -1,18 +1,12 @@
 """Confidence scoring — the ensemble (SOW 1, "Confidence Scoring").
 
-Per Harrison's decision, Sparky *ensembles* the app's existing Elo/ML win
-probability with the de-vigged market probability, then applies the signal
-boosts/penalties on top. The output is:
+Sparky's fair win probability is the model number. The de-vigged market
+probability is stored beside it for the edge layer and is not mixed into
+the fair. Signal boosts and penalties then apply on top. The output is:
 
   - ``win_prob``        : ensemble probability for the predicted winner (0-1)
   - ``confidence_score``: 0-100, base 45-95 from win_prob then signal-adjusted
   - ``classification``  : anchor | strong_lean | lean | coin_flip | upset_watch
-
-Why blend in logit space
-------------------------
-Averaging probabilities directly understates confident agreement (0.9 and 0.85
-should stay ~0.88, not get dragged toward 0.5). Blending the log-odds and mapping
-back keeps the ensemble well-calibrated and symmetric.
 
 Signal application rule (matches signals.py weights, which are all >= 0):
   - bullish + supports predicted side  -> + magnitude * weight
@@ -26,14 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .odds_math import clamp, inv_logit, logit
+from .odds_math import clamp
 from .signals import Signal
-
-# Ensemble weights for the model (Elo/ML) vs. the de-vigged market.
-# The market is sharp, so it gets the larger share; the model contributes
-# genuine independent signal (injuries-via-ratings, situational, etc.).
-_W_MODEL = 0.45
-_W_MARKET = 0.55
 
 # Base-confidence mapping: win_prob 0.50 -> 45, 0.95 -> 95 (clamped).
 _CONF_FLOOR = 45.0
@@ -72,15 +60,15 @@ class GameScore:
 
 
 def ensemble_home_prob(model_home_prob: float | None, market_home_prob: float | None) -> float:
-    """Blend model + market home win prob in logit space."""
-    if model_home_prob is None and market_home_prob is None:
-        return 0.5
+    """Home win probability for the fair. The market quote is not mixed in.
+
+    ``market_home_prob`` is retained so callers can still pass it; shrinkage
+    against the market belongs in the edge layer, after this number exists.
+    """
+    del market_home_prob
     if model_home_prob is None:
-        return clamp(market_home_prob, 0.01, 0.99)  # type: ignore[arg-type]
-    if market_home_prob is None:
-        return clamp(model_home_prob, 0.01, 0.99)
-    blended = _W_MODEL * logit(model_home_prob) + _W_MARKET * logit(market_home_prob)
-    return inv_logit(blended)
+        return 0.5
+    return clamp(model_home_prob, 0.01, 0.99)
 
 
 def _base_confidence(win_prob: float) -> float:

@@ -458,9 +458,11 @@ async def league_game_environments(
     aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
 
     remaining = sched[sched["home_score"].isna() | sched["away_score"].isna()]
-    # Same v5 ratings the game board uses (as of the next slate) so player
-    # environments and the headline spreads/totals can't disagree.
+    # Prefer the frozen v6-blind fair so player environments match the
+    # published game. v5 (market-blind) is the fallback when the snapshot
+    # has no row for this matchup.
     wm = None
+    v5s = None
     try:
         from . import game_model_v5_service as v5s
 
@@ -469,12 +471,24 @@ async def league_game_environments(
     except Exception as e:  # noqa: BLE001
         log.warning("v5_envs_failed", season=season, error=str(e)[:200])
         wm = None
+        v5s = None
     for _, g in remaining.sort_values("week").iterrows():
         h, a = g.get("home_team"), g.get("away_team")
         if not h or not a:
             continue
         hr = ratings.get(h, elo_service.INITIAL_RATING)
         ar = ratings.get(a, elo_service.INITIAL_RATING)
+        v6_fair = None
+        try:
+            from . import game_model_v6_service
+
+            v6_fair = game_model_v6_service.prediction_for(
+                h, a, str(g.get("gameday") or ""),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("v6_env_lookup_failed", error=str(e)[:200])
+            v6_fair = None
+        v5_fair = v5s.predict_any(wm, h, a) if wm is not None and v5s is not None else None
         pred = predictions_service.predict_game(
             hr, ar,
             home_off_ppg=(aggs.get(h) or {}).get("points_per_game"),
@@ -482,7 +496,7 @@ async def league_game_environments(
             home_def_ppg_allowed=(aggs.get(h) or {}).get("points_allowed_per_game"),
             away_def_ppg_allowed=(aggs.get(a) or {}).get("points_allowed_per_game"),
             home_aggs=aggs.get(h), away_aggs=aggs.get(a),
-            v5=(v5s.predict_any(wm, h, a) if wm is not None else None),
+            v5=v6_fair or v5_fair,
         )
         base = {
             "week": _safe_int(g.get("week")),
@@ -732,6 +746,8 @@ def _project_stat_for_game(
     w_mult = weather_multiplier(weather, stat)
     mean = post.mean * env_mult * w_mult * inj_mult
     sd = post.game_sd  # multipliers shift the mean; week-to-week noise stays
+    # Prop prices are not a model input. The anchor argument cannot move the mean.
+    anchor = None
 
     market_anchor: dict[str, Any] | None = None
     if anchor is not None and mean > 0:
@@ -789,6 +805,8 @@ def _project_stat_opportunity(
     q = dict(proj["quantiles"])
     mean = float(proj["mean"])
     sd = float(proj["sd"])
+    # Prop prices are not a model input. The anchor argument cannot move the mean.
+    anchor = None
 
     market_anchor: dict[str, Any] | None = None
     if anchor is not None and mean > 0:
@@ -903,10 +921,6 @@ async def player_game_predictions(
     injury_status = (player.metadata_json or {}).get("injury_status")
     inj_mult = injury_multiplier(injury_status)
 
-    # Market anchors: consensus prop lines for this player's next game (when
-    # books have posted them). Blended into the next-game means below.
-    anchors = _market_anchors(db, player.full_name)
-
     # Batch weather for the slate (best-effort).
     try:
         from . import weather_service
@@ -925,7 +939,7 @@ async def player_game_predictions(
     ov_by_week = overrides_service.player_overrides_by_week(db, season)
 
     games_out = []
-    for gi, env in enumerate(envs):
+    for env in envs:
         weather = forecasts.get(env["game_id"], {"available": False})
         predicted: dict[str, dict[str, Any]] = {}
         stat_means: dict[str, float] = {}
@@ -940,7 +954,7 @@ async def player_game_predictions(
                 rep_def_factor = d_factor
             predicted[stat] = _project_stat_for_game(
                 post, stat, env, d_factor, weather, inj_mult,
-                anchor=anchors.get(stat) if gi == 0 else None,
+                anchor=None,
                 opp=opp,
             )
             stat_means[stat] = float(predicted[stat]["mean"])
@@ -1280,24 +1294,16 @@ async def projection_leaderboard(
         cache.set(cache_key, board, CACHE_TTL)
     rows = board["rows"]
 
-    # ---- Season-level market anchor (the board-rank fix) --------------------
-    # Shrink every fantasy projection toward the ADP-implied level BEFORE
-    # sorting, so the board's ordering itself is market-aware — a player the
-    # model loves but the market fades lands between the two views instead of
-    # a market-blind #3 overall. Runs before admin overrides (overrides
-    # replace values outright and must win). Best-effort: dead ADP source →
-    # pure model board, unchanged.
     from . import fantasy_market_service  # late import: no cycle back into us
 
+    # ADP is a post-hoc comparison (attach_market_context). It does not move
+    # the published means.
     weeks_played = 0
     if rows:
         weeks_played = max(
             0, 17 - max(int(r.get("games_remaining") or 17) for r in rows)
         )
     adp_map = await fantasy_market_service.adp_board(db, scoring, season)
-    rows = fantasy_market_service.apply_adp_anchor(
-        rows, adp_map, weeks_played=weeks_played,
-    )
 
     # Season-scoped admin overrides (week IS NULL): direct season fantasy-point
     # totals, applied on row copies so the shared cached board stays pristine.
@@ -1805,7 +1811,6 @@ async def weekly_projection_board(
             slate_week = min(weeks) if weeks else None
         else:
             slate_week = week
-        anchors_by_name = _bulk_market_anchors(db)
         slate_ovs = (
             overrides_service.player_week_overrides(db, season, int(slate_week))
             if slate_week is not None else {}
@@ -1854,8 +1859,6 @@ async def weekly_projection_board(
                 }
             inj_mult = injury_multiplier(base["injury_status"])
             weather = forecasts.get(env["game_id"], {"available": False})
-            anchors = anchors_by_name.get(player.full_name.strip().lower(), {})
-
             opp = _opp_inputs(
                 opp_ctx, c.get("gsis_id"), player.team_id, role_mult, c.get("input_levers"),
             )
@@ -1866,7 +1869,7 @@ async def weekly_projection_board(
                 d_factor = _defense_factor(def_factors, env["opponent"], stat, pos)
                 predicted[stat] = _project_stat_for_game(
                     post, stat, env, d_factor, weather, inj_mult,
-                    anchor=anchors.get(stat), opp=opp,
+                    anchor=None, opp=opp,
                 )
                 stat_means[stat] = float(predicted[stat]["mean"])
                 stat_sds[stat] = float(predicted[stat]["sd"])

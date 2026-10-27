@@ -203,10 +203,10 @@ def test_nfl_signals_graceful_when_data_missing():
 # --------------------------------------------------------------------------- #
 
 
-def test_ensemble_blends_toward_agreement():
-    # Both sources agree ~0.8 -> ensemble stays high (not dragged to 0.5).
-    p = confidence.ensemble_home_prob(0.80, 0.82)
-    assert 0.78 <= p <= 0.84
+def test_ensemble_is_the_model_fair():
+    # The market quote does not move the fair.
+    assert confidence.ensemble_home_prob(0.80, 0.82) == pytest.approx(0.80)
+    assert confidence.ensemble_home_prob(None, 0.82) == pytest.approx(0.5)
 
 
 def test_base_confidence_range():

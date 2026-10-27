@@ -1,0 +1,53 @@
+{
+  "sample": "2016-2025 REG games with a result, a closing spread_line, and both predictions",
+  "n_games": 2639,
+  "sigma_margin": 13.5,
+  "seed": 20261026,
+  "n_bootstrap": 10000,
+  "difference": "v6 minus v5",
+  "v5": {
+    "source": "main:backend/app/services/team_ratings_v5.py",
+    "model": "qb-ridge-v5",
+    "stage2": "OLS of home margin on mkt_d, epa_d, pts_d, st_d, qb_d, hfa, fit on seasons >= 2015 and < test season",
+    "features": "build_week_model from games strictly before the week, including the market prior",
+    "crps": 7.232399810600162,
+    "mae": 10.023254636236729,
+    "ats": 0.5015540015540015,
+    "ats_n": 2574
+  },
+  "v6": {
+    "source": "backtest/harness_model priors and by_season coefficients",
+    "model": "qb-ridge-v6-blind",
+    "crps": 7.397670789419317,
+    "mae": 10.208046286881315,
+    "ats": 0.5054390054390054,
+    "ats_n": 2574
+  },
+  "diff_v6_minus_v5": {
+    "crps": {
+      "n": 2639,
+      "diff": 0.16527097881915565,
+      "ci95": [
+        0.09690596250957893,
+        0.23417372642525924
+      ]
+    },
+    "mae": {
+      "n": 2639,
+      "diff": 0.1847916506445866,
+      "ci95": [
+        0.06879546901909657,
+        0.298100150747859
+      ]
+    },
+    "ats": {
+      "n": 2574,
+      "diff": 0.003885003885003885,
+      "ci95": [
+        -0.01825951825951826,
+        0.026806526806526808
+      ]
+    }
+  },
+  "gate_v6_crps_no_worse_than_v5": false
+}

@@ -39,7 +39,7 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
-PREDICTION_MODEL_VERSION = "qb-ridge-v5"
+PREDICTION_MODEL_VERSION = "qb-ridge-v6-blind"
 # Fallback path (Elo × adjusted EPA) when the v5 inputs are unavailable.
 LEGACY_MODEL_VERSION = "epa-elo-ctx-v4"
 
@@ -375,12 +375,14 @@ def _build_explainability(
 
 
 _V5_LABELS = {
-    "mkt_d": "Market power rating (past closing lines)",
     "epa_d": "Opponent-adjusted efficiency (EPA/play)",
     "pts_d": "Opponent-adjusted scoring",
     "st_d": "Special teams",
     "qb_d": "Starting QB vs. team's recent QB play",
     "hfa": "Home field",
+    "pass": "Pass unit, including the starter minus the baked QB",
+    "rush": "Rush unit",
+    "success": "Success-rate unit",
 }
 
 
@@ -421,11 +423,11 @@ def _build_explainability_v5(
         })
     contributors.sort(key=lambda x: abs(float(x["impact"])), reverse=True)
     out = {
-        "method": "qb_ridge_v5",
+        "method": "qb-ridge-v6-blind" if v5.get("blind_core") else "qb_ridge_v5",
         "summary": ("Spread = sum of the parts below, in points: recency-weighted "
                     "opponent-adjusted team ratings, the starting QB against the QB "
-                    "play the team's numbers were built on, a prior from past closing "
-                    "lines, and home field; then the context layer."),
+                    "play the team's numbers were built on, and home field. "
+                    "Closing lines are not an input."),
         "top_contributors": contributors[:3],
         "components": contributors,
     }
@@ -573,6 +575,7 @@ def predict_game(
     priced, and only into the total and the two sigmas — see ``dist_model``.
     """
     use_v5 = isinstance(v5, dict) and v5.get("margin") is not None and v5.get("total") is not None
+    blind_core = bool(use_v5 and v5.get("blind_core"))
     elo_margin = -elo_service.predicted_spread(home_rating, away_rating, neutral_site)
     fund = None if use_v5 else _fundamentals(home_aggs, away_aggs, neutral_site)
     w_fund = _param("game.w_fundamentals") if fund else 0.0
@@ -582,7 +585,11 @@ def predict_game(
         expected_margin = (1 - w_fund) * elo_margin + w_fund * (fund["margin"] if fund else 0.0)
 
     ctx = context if isinstance(context, dict) and context.get("applicable") else None
-    if use_v5 and ctx:
+    if blind_core:
+        # The v6 core is the team unit and the starter delta. Context, rest,
+        # wind and other ablations are not added in this model.
+        ctx = None
+    elif use_v5 and ctx:
         ctx = _strip_v5_qb_context(ctx, v5)
     margin_before_context = expected_margin
     if ctx:
@@ -592,7 +599,7 @@ def predict_game(
     # number we actually believe, not the historical one with a footnote.
     spread = -expected_margin  # negative = home favored (sportsbook convention)
 
-    wind_mph, indoor = _wind_inputs(weather)
+    wind_mph, indoor = (None, False) if blind_core else _wind_inputs(weather)
 
     league_avg = _league_avg()
     h_off = home_off_ppg if home_off_ppg is not None else league_avg
@@ -785,7 +792,9 @@ def predict_game(
             wind_total_pts=wind_total_pts,
             v5=v5 if use_v5 else None,
         ),
-        "model_version": PREDICTION_MODEL_VERSION if use_v5 else LEGACY_MODEL_VERSION,
+        "model_version": (
+            "qb-ridge-v6-blind" if blind_core else PREDICTION_MODEL_VERSION
+        ) if use_v5 else LEGACY_MODEL_VERSION,
     }
 
 
@@ -965,20 +974,29 @@ async def _predict_week_uncached(
         a_off = (aggs.get(a) or {}).get("points_per_game")
         h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
         a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
+        v6_fair = None
+        try:
+            from . import game_model_v6_service
+
+            v6_fair = game_model_v6_service.prediction_for(
+                h, a, str(g.get("gameday") or ""),
+            )
+        except Exception as e:  # noqa: BLE001 — a missing snapshot is not a board outage
+            log.warning("v6_lookup_failed", error=str(e)[:200])
+            v6_fair = None
         pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
                             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
                             home_aggs=aggs.get(h), away_aggs=aggs.get(a),
                             context=context_service.game_context(ctx_bundle, h, a),
                             weather=weather_by_game.get(str(g.get("game_id") or "")),
-                            v5=v5_slate.get((h, a)))
+                            v5=v6_fair or v5_slate.get((h, a)))
         pred = uncertainty_service.attach_uncertainty(
             pred,
             model_version=pred.get("model_version") or PREDICTION_MODEL_VERSION,
             expected_calibration_error=expected_calibration_error,
         )
-        # Headline numbers become the market blend when consensus exists;
-        # pure-model values move to pred["model_only"] with pred["edge"]
-        # exposing the disagreement. Admin overrides (below) still win.
+        # Market is attached for edge only. Headline fair stays the model.
+        # Admin overrides (below) still win.
         market_service.apply_market_blend(
             pred, market_service.context_for_game(market_ctx, h, a),
         )

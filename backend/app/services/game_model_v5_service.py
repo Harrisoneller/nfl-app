@@ -7,8 +7,8 @@ Data flow
    PBP: completed seasons are effectively immutable (30-day TTL), the live
    season refreshes every 3 hours.
 2. ``schedules()`` — nflverse games.csv (every season): scores for the points
-   ridge, *past* closing spreads for the market prior, and the starting QB ids
-   the QB layer prices. Falls back to per-season nfl_data_py schedules.
+   ridge and the starting QB ids the QB layer prices. Closing lines are not a
+   rating input. Falls back to per-season nfl_data_py schedules.
 3. ``week_model(season, week)`` — fits the ratings for one slate, memoized in
    process (the fit is ~0.3s; the inputs are the slow part).
 
@@ -68,18 +68,16 @@ def params() -> dict[str, float]:
 
 
 def margin_coefs() -> dict[str, float]:
-    c = dict(v5.MARGIN_COEFS)
-    c["qb_d"] = _p("v5.coef_qb", c["qb_d"])
-    c["hfa"] = _p("v5.hfa_pts", c["hfa"])
-    c["mkt_d"] = _p("v5.coef_market_prior", c["mkt_d"])
-    return c
+    """Frozen blind margin coefficients.
+
+    The registry does not retune these and cannot reintroduce a market column.
+    """
+    return dict(v5.MARGIN_COEFS)
 
 
 def margin_coefs_no_mkt() -> dict[str, float]:
-    c = dict(v5.MARGIN_COEFS_NO_MKT)
-    c["qb_d"] = _p("v5.coef_qb", c["qb_d"])
-    c["hfa"] = _p("v5.hfa_pts", c["hfa"])
-    return c
+    """Same object as ``margin_coefs``. There is no with-market design."""
+    return dict(v5.MARGIN_COEFS_NO_MKT)
 
 
 # ---- inputs ----------------------------------------------------------------
