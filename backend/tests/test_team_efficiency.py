@@ -11,7 +11,6 @@ import pytest
 
 from app.cache import cache
 from app.services import nfl_feature_adapter as features
-from app.services import nfl_feature_placeholder as placeholder
 from app.services import team_efficiency_service as svc
 from app.utils.seasons import current_or_upcoming_season, latest_completed_season
 from features.nfl.defs import CONTRACT, PBP_INPUT_COLUMNS, REQUIRED
@@ -179,6 +178,7 @@ def test_page_uses_adjusted_headlines_and_asof_chart():
     assert overall["adjusted"] is True
     assert overall["offense"]["epa"]["value"] == pytest.approx(0.11)
     # One team is the middle of its own league: (0 worse + half a tie) / 1.
+    # Rank 1 is the best team, including a league of one.
     assert overall["offense"]["epa"]["percentile"] == pytest.approx(50.0)
     assert overall["offense"]["epa"]["percentile_of"] is None
     assert overall["offense"]["epa"]["rank"] == 1
@@ -211,6 +211,7 @@ def test_page_uses_adjusted_headlines_and_asof_chart():
     assert rolling["games"][1]["season_average"] == pytest.approx(0.25)
     assert profile["rolling"]["defense"]["last4_average"] == pytest.approx(-0.03)
     assert profile["filters"]["garbage_time_excluded"] is True
+    assert any("raw, not opponent-adjusted" in note for note in profile["notes"])
     stored = profile  # page payload has no raw market cells
     assert "closing_spread" not in str(stored)
     bundle = _bundle()
@@ -219,13 +220,19 @@ def test_page_uses_adjusted_headlines_and_asof_chart():
 
 
 def test_placeholder_omits_metrics_and_does_not_claim_garbage_time():
-    features.use_module(placeholder)
     bundle = svc.assemble_bundle(
-        placeholder.team_season(pd.DataFrame()),
-        placeholder.team_game(pd.DataFrame()),
+        pd.DataFrame(),
+        pd.DataFrame(),
         2024,
-        filters=features.filters(),
-        source=features.source_name(),
+        filters={
+            "implemented": False,
+            "garbage_time_excluded": False,
+            "description": (
+                "Garbage time is not excluded here. That filter belongs to "
+                "features/nfl/defs.py, which is not loaded in this build."
+            ),
+        },
+        source="placeholder",
         placeholder=True,
     )
     profile = svc.project_team(bundle, "KC", 2024)
@@ -384,7 +391,9 @@ async def test_missing_defs_is_loud_and_does_not_download(monkeypatch):
     assert "feature_defs_unavailable" in events
     with pytest.raises(features.FeatureDefsUnavailable):
         await svc.materialize_profiles(object())
-    assert events.count("feature_defs_import_failed") >= 2
+    # First call tries, retries once, then caches the failure. The second
+    # profile and the worker job raise that cached error and do not log again.
+    assert events.count("feature_defs_import_failed") == 2
 
 
 def test_missing_defs_endpoint_returns_unavailable(client, monkeypatch):
@@ -399,7 +408,7 @@ def test_missing_defs_endpoint_returns_unavailable(client, monkeypatch):
     assert body["unavailable"][0]["id"] == "feature_defs"
     assert "could not be imported" in body["unavailable"][0]["reason"]
     assert "placeholder" not in body["unavailable"][0]["reason"].lower()
-    assert "feature_defs_import_failed" in events
+    assert events.count("feature_defs_import_failed") == 2
     assert "feature_defs_unavailable" in events
 
 
@@ -420,7 +429,11 @@ def _rated_row(team: str, *, offense: float, defense: float) -> dict:
 
 
 def test_adjusted_percentile_ranks_the_shown_value_with_half_credit_for_ties():
-    """26 teams worse and no tie is the 82.8th percentile, 27th of 32."""
+    """26 teams worse and one self-tie is the 82.8th percentile, 6th of 32.
+
+    Rank 1 is the best team: ``n - worse - tied + 1``. The five teams at the
+    best defensive rating are tied for 1st of 32.
+    """
     rows = [_rated_row(f"L{index:02d}", offense=-1.0, defense=0.5) for index in range(26)]
     rows.extend(_rated_row(f"H{index:02d}", offense=1.0, defense=-0.5) for index in range(5))
     rows.append(_rated_row("KC", offense=0.059661746737180985, defense=-0.04))
@@ -430,13 +443,16 @@ def test_adjusted_percentile_ranks_the_shown_value_with_half_credit_for_ties():
         offense = by_id[split_id]["offense"]["epa"]
         defense = by_id[split_id]["defense"]["epa"]
         assert offense["percentile"] == pytest.approx(82.8)
-        assert offense["rank"] == 27
+        assert offense["rank"] == 6
         assert offense["league_size"] == 32
         assert offense["percentile_of"] is None
         assert defense["higher_is_better"] is False
         assert defense["percentile"] == pytest.approx(82.8)
-        assert defense["rank"] == 27
+        assert defense["rank"] == 6
         assert defense["league_size"] == 32
+    best_defense = svc.project_team(_bundle(rows), "H00", 2026)["splits"][0]["defense"]["epa"]
+    assert best_defense["rank"] == 1
+    assert best_defense["league_size"] == 32
     assert by_id["overall"]["offense"]["success_rate"]["percentile"] == pytest.approx(82.8)
     assert by_id["overall"]["defense"]["success_rate"]["percentile"] == pytest.approx(82.8)
     assert by_id["overall"]["offense"]["schedule_strength"]["percentile"] == pytest.approx(82.8)
@@ -450,14 +466,16 @@ def test_adjusted_percentile_ranks_the_shown_value_with_half_credit_for_ties():
     low = svc.project_team(_bundle(tied), "LOW", 2026)["splits"][0]["offense"]["epa"]
     # A and B tie: (1 worse + half of 2) / 3 = 66.7. LOW is (half of 1) / 3 = 16.7.
     assert a["percentile"] == pytest.approx(66.7)
-    assert a["rank"] == 2
+    assert a["rank"] == 1
     assert low["percentile"] == pytest.approx(16.7)
-    assert low["rank"] == 1
-    # Defense is lower-is-better, so 0.0 beats 0.2. The tie is the better rating.
+    assert low["rank"] == 3
+    # Defense is lower-is-better, so 0.0 beats 0.2. The tie is rank 1.
     def_a = svc.project_team(_bundle(tied), "A", 2026)["splits"][0]["defense"]["epa"]
     def_low = svc.project_team(_bundle(tied), "LOW", 2026)["splits"][0]["defense"]["epa"]
     assert def_a["percentile"] == pytest.approx(66.7)
+    assert def_a["rank"] == 1
     assert def_low["percentile"] == pytest.approx(16.7)
+    assert def_low["rank"] == 3
 
 
 @pytest.mark.asyncio
@@ -536,6 +554,7 @@ def test_library_fallback_stays_projected(monkeypatch):
     monkeypatch.setattr(adapter.nfl, "import_pbp_data", _import)
     frame = adapter._import_pbp_via_library(2026)
     assert list(frame["week"]) == [1]
+    assert int(frame["season"].iloc[0]) == 2026
     assert calls == [adapter.PBP_COLUMNS, adapter._PBP_CORE]
 
 

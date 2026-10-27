@@ -117,7 +117,7 @@ export const NFL_TEAM_PROFILE_CONFIG: TeamProfileConfig = {
   methodNote:
     "The headline EPA and success figures are opponent-adjusted ratings from the feature contract. Zero is an average team. A percentile ranks that adjusted rating among the teams in the table. Higher is a better team. Defense is lower-is-better, so a smaller EPA allowed still ranks higher. Early-down and passing-down percentiles rank the season rate.",
   rollingNote:
-    "The solid line is the last four team-games. The dashed line is the season-to-date rate. Both are the feature state entering that week, so the game itself is not included yet.",
+    "The chart is raw, not opponent-adjusted. The solid line is the last four team-games. The dashed line is the season-to-date rate. Both are the feature state entering that week, so the game itself is not included yet.",
   splitTooltips: {
     overall: {
       label: "All plays",

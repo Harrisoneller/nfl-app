@@ -2,19 +2,29 @@
 
 ``build_features(plays)`` returns ``(team_game, team_season)``. The module is
 part of the backend install (``features*`` in pyproject). A missing import is
-an error. This adapter does not substitute the placeholder, and it does not
-hand ``build_features`` a column that is outside ``PBP_INPUT_COLUMNS``.
+an error: log it, try once more, then remember the failure for a short window
+so one request does not import again. This adapter does not invent ratings,
+and it does not hand ``build_features`` a column outside ``PBP_INPUT_COLUMNS``.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pandas as pd
 
 from ..logging_config import get_logger
-from . import nfl_feature_placeholder as placeholder
 
 log = get_logger(__name__)
+
+# After the import fails and the single retry fails, later calls in this
+# process raise the same error without importing or logging again.
+_FAILURE_TTL_S = 30.0
+
+_UNAVAILABLE = (
+    "features.nfl.defs could not be imported. "
+    "Team efficiency ratings are unavailable until that package is installed."
+)
 
 
 class FeatureDefsUnavailable(RuntimeError):
@@ -22,13 +32,17 @@ class FeatureDefsUnavailable(RuntimeError):
 
 _cached: Any = None
 _override: Any = None
+_failure: FeatureDefsUnavailable | None = None
+_failure_until: float = 0.0
 
 
 def reset() -> None:
-    """Drop the cached import and any test override."""
-    global _cached, _override
+    """Drop the cached import, a remembered failure, and any test override."""
+    global _cached, _override, _failure, _failure_until
     _cached = None
     _override = None
+    _failure = None
+    _failure_until = 0.0
 
 
 def use_module(module: Any) -> None:
@@ -46,30 +60,45 @@ def _import_defs() -> Any:
         from features.nfl import defs
     except ImportError as exc:
         log.error("feature_defs_import_failed", error=str(exc))
-        raise FeatureDefsUnavailable(
-            "features.nfl.defs could not be imported. "
-            "Team efficiency ratings are unavailable until that package is installed."
-        ) from exc
+        raise FeatureDefsUnavailable(_UNAVAILABLE) from exc
     return defs
 
 
 def module() -> Any:
-    """The feature module currently in use. Raises if it cannot be imported."""
-    global _cached
+    """The feature module currently in use. Raises if it cannot be imported.
+
+    A failed import is logged and retried once. If that retry also fails, the
+    error is cached for ``_FAILURE_TTL_S`` so the rest of the request, and a
+    short window after it, does not import or log again.
+    """
+    global _cached, _failure, _failure_until
     if _override is not None:
         return _override
-    if _cached is None:
+    if _cached is not None:
+        return _cached
+    now = time.monotonic()
+    if _failure is not None and now < _failure_until:
+        raise _failure
+    last: FeatureDefsUnavailable | None = None
+    for _attempt in range(2):
         try:
-            _cached = _import_defs()
-        except FeatureDefsUnavailable:
-            raise
+            loaded = _import_defs()
+        except FeatureDefsUnavailable as exc:
+            last = exc
+            continue
         except ImportError as exc:
             log.error("feature_defs_import_failed", error=str(exc))
-            raise FeatureDefsUnavailable(
-                "features.nfl.defs could not be imported. "
-                "Team efficiency ratings are unavailable until that package is installed."
-            ) from exc
-    return _cached
+            last = FeatureDefsUnavailable(_UNAVAILABLE)
+            continue
+        _cached = loaded
+        _failure = None
+        _failure_until = 0.0
+        return _cached
+    if last is None:
+        last = FeatureDefsUnavailable(_UNAVAILABLE)
+    _failure = last
+    _failure_until = time.monotonic() + _FAILURE_TTL_S
+    raise last
 
 
 def using_placeholder() -> bool:
@@ -134,10 +163,22 @@ def drop_market(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def filters() -> dict[str, Any]:
-    """Garbage-time flag from the loaded module. The placeholder does not filter."""
-    if using_placeholder() or not hasattr(module(), "build_features"):
-        return dict(placeholder.FILTERS)
+    """Garbage-time flag from the loaded module."""
     mod = module()
+    if getattr(mod, "SOURCE", None) == "placeholder" or not hasattr(mod, "build_features"):
+        return {
+            "implemented": False,
+            "garbage_time_excluded": False,
+            "wp_low": 0.10,
+            "wp_high": 0.90,
+            "description": (
+                "Garbage time is not excluded here. That filter belongs to "
+                "features/nfl/defs.py, which is not loaded in this build."
+            ),
+            "plays_kept": None,
+            "plays_excluded": None,
+            "preseason_excluded": False,
+        }
     lo = getattr(mod, "WP_LO", None)
     hi = getattr(mod, "WP_HI", None)
     if lo is None or hi is None:
@@ -185,6 +226,9 @@ def build(plays: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     clean = project_inputs(plays if isinstance(plays, pd.DataFrame) else pd.DataFrame())
     fn = getattr(module(), "build_features", None)
     if fn is None:
-        return _as_frame(module().team_game(clean)), _as_frame(module().team_season(clean))
+        raise FeatureDefsUnavailable(
+            "features.nfl.defs has no build_features. "
+            "Team efficiency ratings are unavailable."
+        )
     game, season = fn(clean)
     return _as_frame(game), _as_frame(season)

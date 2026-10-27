@@ -414,6 +414,7 @@ function RollingSection({
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <h3 className="text-sm font-medium inline-flex items-center">
           Last 4 games vs season
+          <span className="ml-2 text-xs font-normal text-muted">raw, not opponent-adjusted</span>
           <HelpTip label={tip.label} body={`${tip.body} ${config.rollingNote}`} />
         </h3>
         <div className="flex rounded-lg border divider overflow-hidden text-xs">

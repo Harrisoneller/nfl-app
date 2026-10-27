@@ -108,15 +108,21 @@ def _import_pbp_via_library(season: int):
 
     nflverse publishes participation late, and ``include_participation=True``
     makes nfl_data_py treat the season as unavailable. A column mismatch
-    retries the core list. It does not drop the column argument.
+    retries the core list. It does not drop the column argument. ``season``
+    is not in the library frame, so it is set here the same way as the
+    direct parquet read.
     """
     try:
-        return nfl.import_pbp_data(
+        df = nfl.import_pbp_data(
             [season], columns=PBP_COLUMNS, downcast=True, include_participation=False)
     except Exception:  # noqa: BLE001 — optional column missing on an odd season
         log.debug("pbp_optional_library_fallback", season=season)
-        return nfl.import_pbp_data(
+        df = nfl.import_pbp_data(
             [season], columns=_PBP_CORE, downcast=True, include_participation=False)
+    if isinstance(df, pd.DataFrame):
+        df = df.copy()
+        df["season"] = season
+    return df
 
 
 def _import_pbp_lean(season: int):

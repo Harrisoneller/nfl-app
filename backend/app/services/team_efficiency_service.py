@@ -258,7 +258,8 @@ def _league_percentiles(values: pd.Series, *, higher_is_better: bool) -> tuple[p
 
     ``(teams strictly worse + half the tied teams) / teams * 100``. A higher
     percentile is a better team. For a lower-is-better rating, a smaller
-    number is the better one. One team alone is the 50th percentile.
+    number is the better one. Rank 1 is the best team:
+    ``n - worse - tied + 1``. One team alone is the 50th percentile and rank 1.
     """
     numeric = pd.to_numeric(values, errors="coerce")
     array = numeric.to_numpy(dtype="float64", na_value=np.nan)
@@ -276,7 +277,7 @@ def _league_percentiles(values: pd.Series, *, higher_is_better: bool) -> tuple[p
             worse = int(np.sum(finite > value))
         tied = int(np.sum(finite == value))
         pct.at[idx] = (worse + 0.5 * tied) / n * 100.0
-        rank.at[idx] = worse + 1
+        rank.at[idx] = n - worse - tied + 1
     return pct, rank, n
 
 
@@ -497,8 +498,9 @@ def assemble_bundle(
             "the season rate."
         )
         notes.append(
-            "The chart is the last four team-games against the season-to-date rate, "
-            "as of the start of each week. That week's game is not in the point."
+            "The chart is raw, not opponent-adjusted: the last four team-games "
+            "against the season-to-date rate, as of the start of each week. "
+            "That week's game is not in the point."
         )
         if public.get("preseason_excluded"):
             notes.append("Preseason plays are dropped when the feed labels season type.")
@@ -580,8 +582,8 @@ def _pbp_loader() -> Any:
 
 
 def _cache_key(season: int) -> str:
-    # v2 ranks the adjusted cell. v1 artifacts ranked the raw season rate.
-    return f"nfl:{season}:defs:v2"
+    # v3 ranks 1 as the best team. v2 counted up from the worst team.
+    return f"nfl:{season}:defs:v3"
 
 
 def _ttl(season: int) -> int | None:
