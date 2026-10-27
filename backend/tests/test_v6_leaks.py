@@ -1,9 +1,21 @@
 """Market columns stay out of the design, the published fair, and the sim inputs."""
 from __future__ import annotations
 
+import pytest
+
 from app.services import market_service as ms
 from app.services import ml_predictions_service as ml
 from app.services import team_ratings_v5 as v5
+from app.services.v6_blind import assert_blind_columns
+
+
+def test_market_column_fails_before_it_reaches_the_model():
+    with pytest.raises(ValueError, match="market columns"):
+        assert_blind_columns(["pass_comp", "spread_line"])
+    with pytest.raises(ValueError, match="market columns"):
+        assert_blind_columns(["mkt_d"])
+    with pytest.raises(ValueError, match="market columns"):
+        assert_blind_columns(["home_moneyline", "total_line"])
 
 
 def test_margin_coefficients_have_no_market_term():

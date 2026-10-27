@@ -746,6 +746,8 @@ def _project_stat_for_game(
     w_mult = weather_multiplier(weather, stat)
     mean = post.mean * env_mult * w_mult * inj_mult
     sd = post.game_sd  # multipliers shift the mean; week-to-week noise stays
+    # Prop prices are not a model input. The anchor argument cannot move the mean.
+    anchor = None
 
     market_anchor: dict[str, Any] | None = None
     if anchor is not None and mean > 0:
@@ -803,6 +805,8 @@ def _project_stat_opportunity(
     q = dict(proj["quantiles"])
     mean = float(proj["mean"])
     sd = float(proj["sd"])
+    # Prop prices are not a model input. The anchor argument cannot move the mean.
+    anchor = None
 
     market_anchor: dict[str, Any] | None = None
     if anchor is not None and mean > 0:

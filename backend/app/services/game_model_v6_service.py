@@ -22,6 +22,8 @@ def _tables() -> tuple[pd.DataFrame, dict] | None:
     if not _FEATURES.exists() or not _COEFS.exists():
         return None
     features = pd.read_csv(_FEATURES)
+    from .v6_blind import assert_blind_columns
+    assert_blind_columns(features.columns)
     features["gameday"] = pd.to_datetime(features["gameday"], errors="coerce").dt.strftime("%Y-%m-%d")
     coefs = json.loads(_COEFS.read_text())
     return features, coefs

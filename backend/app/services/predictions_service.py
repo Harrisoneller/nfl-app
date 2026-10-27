@@ -39,7 +39,7 @@ log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
 
 CACHE_TTL = 60 * 30  # 30 minutes
-PREDICTION_MODEL_VERSION = "qb-ridge-v5"
+PREDICTION_MODEL_VERSION = "qb-ridge-v6-blind"
 # Fallback path (Elo × adjusted EPA) when the v5 inputs are unavailable.
 LEGACY_MODEL_VERSION = "epa-elo-ctx-v4"
 

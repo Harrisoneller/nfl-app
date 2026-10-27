@@ -136,10 +136,21 @@ def test_features_have_no_market_column():
     assert "mkt_d" not in f
     assert "mkt_d" not in v5.MARGIN_COEFS
     assert wm.predict("AAA", "DDD")["uses_market_prior"] is False
+    assert wm.predict("AAA", "DDD")["blind_core"] is True
     s2 = sched.copy()
     s2.loc[s2.week >= 11, "spread_line"] = 99.0
     wm2 = v5.build_week_model(rows, s2, 2025, 11, TEAMS)
     assert wm.predict("AAA", "DDD")["margin"] == pytest.approx(wm2.predict("AAA", "DDD")["margin"])
+    poisoned = wm.features
+
+    def _with_market(*args, **kwargs):
+        out = poisoned(*args, **kwargs)
+        out["spread_line"] = 3.0
+        return out
+
+    wm.features = _with_market
+    with pytest.raises(ValueError, match="market columns"):
+        wm.predict("AAA", "DDD")
 
 
 # ---- WeekModel -----------------------------------------------------------------
@@ -191,6 +202,22 @@ def test_predict_game_uses_v5_margin_and_total():
     assert p["model_version"] == ps.PREDICTION_MODEL_VERSION
     assert p["inputs"]["v5"]["margin"] == pytest.approx(6.0)
     assert p["explainability"]["method"] == "qb_ridge_v5"
+
+
+def test_production_model_is_v6_blind():
+    assert ps.PREDICTION_MODEL_VERSION == "qb-ridge-v6-blind"
+    assert v5.MODEL_VERSION == "qb-ridge-v6-blind"
+    payload = _v5_payload()
+    payload["blind_core"] = True
+    ctx = {
+        "applicable": True, "points": 5.0, "points_uncapped": 5.0,
+        "sigma_mult": 1.0, "confidence": 1.0, "capped": False,
+    }
+    p = ps.predict_game(1500, 1500, context=ctx, v5=payload)
+    assert p["model_version"] == "qb-ridge-v6-blind"
+    assert p["explainability"]["method"] == "qb-ridge-v6-blind"
+    assert p["inputs"]["context"] is None
+    assert p["predicted_spread"] == pytest.approx(-6.0)
 
 
 def test_predict_game_without_v5_is_legacy():

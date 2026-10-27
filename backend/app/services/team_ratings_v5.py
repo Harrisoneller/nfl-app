@@ -494,6 +494,9 @@ class WeekModel:
         away_qb: str | None = None,
     ) -> dict[str, Any]:
         f = self.features(home, away, home_qb, away_qb)
+        # A market column is a failed model, not a feature to ignore.
+        from .v6_blind import assert_blind_columns
+        assert_blind_columns(f)
         coefs = self.margin_coefs
         hfa = 0.0 if neutral else coefs.get("hfa", 0.0)
         parts = {k: coefs[k] * f.get(k, 0.0) for k in coefs if k != "hfa"}
@@ -503,6 +506,7 @@ class WeekModel:
         qbt = _p(self.params, "qb_change_threshold")
         return {
             "model_version": MODEL_VERSION,
+            "blind_core": True,
             "margin": float(margin),
             "total": float(total),
             "features": {k: round(float(v), 4) for k, v in f.items()},
