@@ -1,14 +1,12 @@
 """Load ``features.nfl.defs`` and pass it only its play-column allowlist.
 
-``build_features(plays)`` returns ``(team_game, team_season)``. The module
-lives in the backend package (``features*`` in pyproject; Railway's root is
-``/backend``). A missing import is an error. This adapter does not substitute
-the placeholder, and it does not hand ``build_features`` a column that is
-outside ``PBP_INPUT_COLUMNS``.
+``build_features(plays)`` returns ``(team_game, team_season)``. The module is
+part of the backend install (``features*`` in pyproject). A missing import is
+an error. This adapter does not substitute the placeholder, and it does not
+hand ``build_features`` a column that is outside ``PBP_INPUT_COLUMNS``.
 """
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import pandas as pd
@@ -40,19 +38,19 @@ def use_module(module: Any) -> None:
 
 
 def _import_defs() -> Any:
-    """Import ``features.nfl.defs`` from the backend package.
+    """Import the installed ``features.nfl.defs`` module.
 
-    No repo-root fallback. ``PYTHONPATH=backend`` and an editable install both
-    resolve this module because pyproject includes ``features*``.
+    The backend pyproject packages ``features*``, so this is a normal import.
     """
     try:
-        return importlib.import_module("features.nfl.defs")
+        from features.nfl import defs
     except ImportError as exc:
         log.error("feature_defs_import_failed", error=str(exc))
         raise FeatureDefsUnavailable(
             "features.nfl.defs could not be imported. "
             "Team efficiency ratings are unavailable until that package is installed."
         ) from exc
+    return defs
 
 
 def module() -> Any:

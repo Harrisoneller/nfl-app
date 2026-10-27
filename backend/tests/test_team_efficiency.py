@@ -9,9 +9,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-# features.nfl is a backend package. Pytest also puts backend/ on sys.path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from app.cache import cache
 from app.services import nfl_feature_adapter as features
 from app.services import nfl_feature_placeholder as placeholder
@@ -520,20 +517,18 @@ def test_live_season_cache_outlasts_the_worker_gap():
     assert svc._l1_ttl(completed) == svc.CACHE_TTL
 
 
-def test_build_features_imports_with_backend_pythonpath_only():
-    """Railway's root is /backend. The import must work with only that path."""
-    backend = Path(__file__).resolve().parents[1]
-    packaged = backend / "features" / "nfl" / "defs.py"
-    assert packaged.is_file()
+def test_build_features_imports_from_the_installed_package():
+    """The backend install exposes features.nfl.defs. No sys.path edit."""
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(backend)
+    env.pop("PYTHONPATH", None)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     completed = subprocess.run(
         [
-            sys.executable, "-c",
-            "from features.nfl.defs import build_features; assert callable(build_features)",
+            sys.executable,
+            "-c",
+            "import features.nfl.defs as defs; assert callable(defs.build_features)",
         ],
-        cwd=str(backend),
+        cwd="/tmp",
         env=env,
         capture_output=True,
         text=True,
