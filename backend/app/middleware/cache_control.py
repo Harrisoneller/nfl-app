@@ -19,7 +19,7 @@ _RULES = [
     (re.compile(r"^/teams$"), 3600),
     (re.compile(r"^/teams/[A-Z]+$"), 3600),
     (re.compile(r"^/teams/[A-Z]+/(roster|schedule)$"), 900),
-    (re.compile(r"^/teams/[A-Z]+/(profile|trend|upcoming)$"), 300),
+    (re.compile(r"^/teams/[A-Z]+/(profile|trend|upcoming|efficiency)$"), 300),
     (re.compile(r"^/teams/[A-Z]+/news$"), 60),
     (re.compile(r"^/players$"), 120),
     (re.compile(r"^/players/[^/]+$"), 3600),

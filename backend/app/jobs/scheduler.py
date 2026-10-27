@@ -4,6 +4,9 @@ Phase B/C layout:
 - **Boot (minimal):** seed, players, current schedule, news — no PBP at boot.
 - **Derive cron (06:15 + 18:15 UTC):** schedules → materialize nflverse → elo
   → profiles → MC → awards.
+- **Team efficiency (same hours, minute 50 UTC):** store team-game and
+  team-season feature tables for the profile page. The metric math is
+  ``features/nfl/defs.py``; this job only runs that module through the adapter.
 - **H2H cron (03:30 UTC nightly):** prewarm matchups only.
 - **Live (Sep–Feb):** ESPN scores on an interval.
 
@@ -30,8 +33,8 @@ from ..services import (
     analytics_service,
     artifact_cache,
     awards_service,
-    endpoint_slo_service,
     elo_service,
+    endpoint_slo_service,
     h2h_service,
     materialize_service,
     metrics_index_service,
@@ -43,6 +46,7 @@ from ..services import (
     scores_service,
     sparky_service,
     sync_run_service,
+    team_efficiency_service,
     teams_service,
 )
 from ..utils.seasons import (
@@ -306,6 +310,17 @@ async def _job_profiles_only() -> None:
     await sync_run_service.run_job("profiles", _build_profiles)
 
 
+async def _job_team_efficiency() -> None:
+    """Materialize team-game and team-season tables for the profile page.
+
+    Registered on the worker cron for every boot level, including the
+    production default (minimal). It loads the same projected nflverse
+    play-by-play the request path uses and stores the defs output in the
+    shared artifact cache. The web role does not run this scheduler.
+    """
+    await sync_run_service.run_job("team_efficiency", team_efficiency_service.materialize_profiles)
+
+
 async def _job_model_lifecycle() -> None:
     await sync_run_service.run_job("model_lifecycle", _run_model_lifecycle)
 
@@ -344,6 +359,9 @@ def start_scheduler() -> None:
         sched.add_job(_job_materialize_only, "date", run_date=_soon(20), id="boot_materialize")
         sched.add_job(_job_rebuild_elo_boot, "date", run_date=_soon(45), id="boot_elo")
         sched.add_job(_job_profiles_only, "date", run_date=_soon(60), id="boot_profiles")
+        sched.add_job(
+            _job_team_efficiency, "date", run_date=_soon(100), id="boot_team_efficiency",
+        )
         sched.add_job(_job_warmup_predictions_boot, "date", run_date=_soon(75), id="boot_predictions")
         sched.add_job(_job_nightly_h2h, "date", run_date=_soon(90), id="boot_h2h")
 
@@ -351,6 +369,14 @@ def start_scheduler() -> None:
         _job_daily_derive,
         CronTrigger(hour=settings.derive_cron_hours_expr, minute=15, timezone="UTC"),
         id="derive_pipeline",
+        coalesce=True,
+        max_instances=1,
+    )
+
+    sched.add_job(
+        _job_team_efficiency,
+        CronTrigger(hour=settings.derive_cron_hours_expr, minute=50, timezone="UTC"),
+        id="team_efficiency",
         coalesce=True,
         max_instances=1,
     )

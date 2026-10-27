@@ -57,11 +57,19 @@ DEFAULT_TIMEOUT_S = 45.0  # First-call parquet downloads can be slow.
 # couple dozen columns, so we project to just those at load time. This is the
 # single biggest lever on the backend's resident memory (the rest of the app is
 # small). Keep this list a superset of every column referenced in
-# analytics_service._team_pbp_aggregates and ml_predictions_service.
-PBP_COLUMNS: list[str] = [
-    "game_id", "week", "posteam", "defteam", "home_team", "away_team",
+# analytics_service, the team-efficiency feature adapter (the frame is passed
+# through to features/nfl/defs.py), and ml_predictions_service.
+#
+# ``_PBP_CORE`` is the historical projection. ``_PBP_FEATURE_OPTIONAL`` is what
+# ``features.nfl.defs`` reads when present (fumble luck, interception luck,
+# red-zone drives, field goals, one-score games). Those columns already live
+# in the nflverse parquet we download. They are optional inside defs: a season
+# file that lacks one must fall back to the core projection, never to an
+# unprojected read of all ~390 columns.
+_PBP_CORE: list[str] = [
+    "game_id", "week", "season_type", "posteam", "defteam", "home_team", "away_team",
     "play_type", "epa", "success", "yards_gained", "yardline_100",
-    "touchdown", "drive", "down", "first_down", "posteam_score",
+    "touchdown", "drive", "down", "ydstogo", "first_down", "posteam_score",
     "wp", "qtr", "interception", "fumble_lost", "sack",
     # Adjusted-EPA core (epa_adjust_service): QB accuracy over expectation,
     # pass-rate over expected, and clock context for neutral-situation pace.
@@ -71,6 +79,50 @@ PBP_COLUMNS: list[str] = [
     "pass", "rush", "qb_kneel", "qb_spike", "qb_dropback", "passer_player_id",
     "score_differential", "special_teams_play",
 ]
+_PBP_FEATURE_OPTIONAL: list[str] = [
+    "fumble", "fumble_forced", "fumble_recovery_1_team", "pass_attempt",
+    "pass_defense_1_player_id", "pass_defense_2_player_id",
+    "fixed_drive", "field_goal_attempt", "kick_distance", "field_goal_result",
+    "home_score", "away_score",
+]
+PBP_COLUMNS: list[str] = _PBP_CORE + _PBP_FEATURE_OPTIONAL
+
+
+def _read_projected_parquet(url: str) -> pd.DataFrame:
+    """Read ``PBP_COLUMNS`` from a parquet URL.
+
+    A missing optional column (an older nflverse file) retries the core
+    projection. Both reads pass an explicit column list. Reading the file
+    with no projection materializes every column and is the memory spike
+    this loader exists to avoid.
+    """
+    try:
+        return pd.read_parquet(url, columns=PBP_COLUMNS)
+    except Exception as exc:  # noqa: BLE001 — missing optional column, or a transport error
+        log.debug("pbp_wide_projection_failed", error=str(exc)[:160])
+        return pd.read_parquet(url, columns=_PBP_CORE)
+
+
+def _import_pbp_via_library(season: int):
+    """Library fallback, still projected. Participation stays off.
+
+    nflverse publishes participation late, and ``include_participation=True``
+    makes nfl_data_py treat the season as unavailable. A column mismatch
+    retries the core list. It does not drop the column argument. ``season``
+    is not in the library frame, so it is set here the same way as the
+    direct parquet read.
+    """
+    try:
+        df = nfl.import_pbp_data(
+            [season], columns=PBP_COLUMNS, downcast=True, include_participation=False)
+    except Exception:  # noqa: BLE001 — optional column missing on an odd season
+        log.debug("pbp_optional_library_fallback", season=season)
+        df = nfl.import_pbp_data(
+            [season], columns=_PBP_CORE, downcast=True, include_participation=False)
+    if isinstance(df, pd.DataFrame):
+        df = df.copy()
+        df["season"] = season
+    return df
 
 
 def _import_pbp_lean(season: int):
@@ -83,14 +135,16 @@ def _import_pbp_lean(season: int):
     load returned nothing and the live season silently ran on last year's
     efficiency numbers. The library path stays as a fallback, with
     participation off.
+
+    ``season`` is not a column in the release file. It is injected here
+    because ``features.nfl.defs`` requires it.
     """
     try:
-        url = f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
-        try:
-            df = pd.read_parquet(url, columns=PBP_COLUMNS)
-        except Exception:  # noqa: BLE001 — a column missing in an old season
-            df = pd.read_parquet(url)
-            df = df[[c for c in PBP_COLUMNS if c in df.columns]]
+        url = (
+            "https://github.com/nflverse/nflverse-data/releases/download/"
+            f"pbp/play_by_play_{season}.parquet"
+        )
+        df = _read_projected_parquet(url)
         df = df.copy()
         df["season"] = season
         f64 = df.select_dtypes(include=["float64"]).columns
@@ -99,12 +153,7 @@ def _import_pbp_lean(season: int):
             return df
     except Exception as e:  # noqa: BLE001
         log.debug("pbp_direct_failed", season=season, error=str(e)[:160])
-    try:
-        return nfl.import_pbp_data(
-            [season], columns=PBP_COLUMNS, downcast=True, include_participation=False)
-    except Exception:  # noqa: BLE001 — column set mismatch on an odd season
-        log.debug("pbp_columns_fallback", season=season)
-        return nfl.import_pbp_data([season], downcast=True, include_participation=False)
+    return _import_pbp_via_library(season)
 
 
 # Circuit breaker: if a given (fn, args-key) fails this many times within the

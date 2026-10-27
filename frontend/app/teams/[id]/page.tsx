@@ -30,7 +30,9 @@ import { DivisionStandingCard } from "@/components/DivisionStandingCard";
 import { TopPerformersCard } from "@/components/TopPerformersCard";
 import { pickColor } from "@/lib/colors";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
-import { readOverlayParams, syncUrlOverlays } from "@/lib/overlay-url";
+import { readOverlayParams } from "@/lib/overlay-url";
+import { TeamProfile, TeamProfileTeaser } from "@/components/team/TeamProfile";
+import { EfficiencyProfile, NFL_TEAM_PROFILE_CONFIG } from "@/lib/team-profile";
 
 const OFFENSE_RADAR = [
   "off_epa_per_play", "off_success_rate", "off_explosive_play_rate",
@@ -43,6 +45,7 @@ const DEFENSE_RADAR = [
 
 const TABS = [
   { id: "overview", label: "Overview" },
+  { id: "efficiency", label: "Efficiency" },
   { id: "performance", label: "Performance" },
   { id: "schedule", label: "Schedule" },
   { id: "predictions", label: "Predictions" },
@@ -61,6 +64,11 @@ export default function TeamPage({ params }: { params: { id: string } }) {
   const { data: profile, isLoading: profileLoading } = useSWR(
     season ? ["team-profile", id, season] : null,
     () => api.getTeamProfile(id, season),
+    { revalidateOnFocus: false },
+  );
+  const { data: efficiency, error: efficiencyError, isLoading: efficiencyLoading } = useSWR(
+    season ? ["team-efficiency", id, season] : null,
+    () => api.getTeamEfficiency(id, season),
     { revalidateOnFocus: false },
   );
   const { data: schedule } = useSWR(
@@ -200,8 +208,19 @@ export default function TeamPage({ params }: { params: { id: string } }) {
             outlook={outlook}
             nextGame={nextGame}
             profile={profile}
+            efficiency={efficiency}
             id={id}
             setTab={setTab}
+          />
+        </TabPanel>
+
+        <TabPanel active={tab} value="efficiency">
+          <TeamProfile
+            profile={efficiency}
+            config={NFL_TEAM_PROFILE_CONFIG}
+            loading={!season || efficiencyLoading}
+            error={efficiencyError ? String(efficiencyError.message || efficiencyError) : undefined}
+            accent={team.primary_color}
           />
         </TabPanel>
 
@@ -316,12 +335,13 @@ function Header({
 // =============================================================================
 
 function OverviewTab({
-  team, outlook, nextGame, profile, id, setTab,
+  team, outlook, nextGame, profile, efficiency, id, setTab,
 }: {
   team: Team;
   outlook: any;
   nextGame: GamePrediction | undefined;
   profile: any;
+  efficiency: EfficiencyProfile | undefined;
   id: string;
   setTab: (t: string) => void;
 }) {
@@ -374,6 +394,12 @@ function OverviewTab({
           <H2HLauncher teamId={id} />
         </div>
       </div>
+
+      <TeamProfileTeaser
+        profile={efficiency}
+        config={NFL_TEAM_PROFILE_CONFIG}
+        onOpen={() => setTab("efficiency")}
+      />
 
       {/* Recent form + key players */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
