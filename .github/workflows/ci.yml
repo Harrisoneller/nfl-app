@@ -23,6 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
+      # F-codes only. Non-blocking: F401 and F841 still fail this command
+      # outside the backtest fix. Full `ruff check app` stays in backend-lint.
+      - name: Ruff F checks
+        working-directory: backend
+        continue-on-error: true
+        run: ruff check --select F app
+
       # Sparky integration tests need Postgres (JSONB). SQLite answers a
       # connectivity probe but has no schema, so those tests error instead of
       # skipping. They stay out of this gate; everything else runs.

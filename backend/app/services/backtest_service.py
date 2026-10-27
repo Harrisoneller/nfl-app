@@ -252,6 +252,224 @@ def _calibration_table(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _expected_calibration_error(calibration: list[dict[str, Any]]) -> float | None:
+    """Weighted |predicted − actual| across the reliability table.
+
+    Same definition as ``task_modeling_service.expected_calibration_error``,
+    applied to the decile table ``_calibration_table`` already built. Empty
+    bins are skipped. ``None`` when no graded games landed in a bin — callers
+    treat that as "unknown" (``calibration_score_from_ece``), not as perfect.
+    """
+    total = 0
+    acc = 0.0
+    for bucket in calibration:
+        n = int(bucket.get("n") or 0)
+        predicted = bucket.get("predicted_avg")
+        actual = bucket.get("actual_win_rate")
+        if n <= 0 or predicted is None or actual is None:
+            continue
+        total += n
+        acc += abs(float(predicted) - float(actual)) * n
+    if total == 0:
+        return None
+    return round(acc / total, 4)
+
+
+# PIT shape is only called once a sample is large enough that a 12-point
+# share gap is not one weird week. Tails = outer four deciles, center =
+# 0.3–0.7; both groups are 40% of a uniform histogram.
+_PIT_BINS = 10
+_PIT_MIN_GAMES = 30
+_PIT_SHAPE_GAP = 0.12
+
+
+def _margin_sigma() -> float:
+    """Sigma the board actually ships (registry, else NFL_MARGIN_SIGMA)."""
+    sigma = float(prediction_dist.margin_sigma())
+    if sigma <= 0:
+        return float(prediction_dist.NFL_MARGIN_SIGMA)
+    return sigma
+
+
+def _pit_shape(counts: list[int]) -> str:
+    """'u_shape' = too narrow, 'domed' = too wide, 'flat' = calibrated."""
+    n = sum(counts)
+    if n < _PIT_MIN_GAMES:
+        return "insufficient"
+    tail = counts[0] + counts[1] + counts[-2] + counts[-1]
+    center = sum(counts[3:7])
+    tail_share = tail / n
+    center_share = center / n
+    if tail_share >= center_share + _PIT_SHAPE_GAP and tail_share >= 0.52:
+        return "u_shape"
+    if center_share >= tail_share + _PIT_SHAPE_GAP and center_share >= 0.52:
+        return "domed"
+    return "flat"
+
+
+def _distribution_eval(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """CRPS and a PIT histogram for the margin distribution.
+
+    Predicted home margin is ``-pred_spread`` (sportsbook spread, negative =
+    home favored). PIT is the normal CDF of the realized margin. A flat
+    histogram means ``margin_sigma`` is calibrated; a U-shape means it is too
+    narrow; a dome means it is too wide.
+    """
+    sigma = _margin_sigma()
+    histogram = [
+        {
+            "bin_lo": round(i / _PIT_BINS, 1),
+            "bin_hi": round((i + 1) / _PIT_BINS, 1),
+            "n": 0,
+            "share": None,
+        }
+        for i in range(_PIT_BINS)
+    ]
+    if not rows:
+        return {
+            "n": 0,
+            "margin_sigma": round(sigma, 2),
+            "crps": None,
+            "pit_mean": None,
+            "pit_shape": "insufficient",
+            "pit_histogram": histogram,
+        }
+
+    crps_sum = 0.0
+    pit_sum = 0.0
+    counts = [0] * _PIT_BINS
+    for row in rows:
+        expected = -float(row["pred_spread"])
+        actual = float(row["actual_margin"])
+        crps_sum += prediction_dist.crps_normal(expected, sigma, actual)
+        if sigma <= 0:
+            pit = 1.0 if actual > expected else (0.0 if actual < expected else 0.5)
+        else:
+            pit = prediction_dist.norm_cdf((actual - expected) / sigma)
+        pit = min(max(pit, 0.0), 1.0)
+        pit_sum += pit
+        # pit == 1 lands in the last decile; int(1.0 * 10) would be out of range.
+        counts[min(_PIT_BINS - 1, int(pit * _PIT_BINS))] += 1
+
+    n = len(rows)
+    for i, count in enumerate(counts):
+        histogram[i]["n"] = count
+        histogram[i]["share"] = round(count / n, 3)
+    return {
+        "n": n,
+        "margin_sigma": round(sigma, 2),
+        "crps": round(crps_sum / n, 3),
+        "pit_mean": round(pit_sum / n, 3),
+        "pit_shape": _pit_shape(counts),
+        "pit_histogram": histogram,
+    }
+
+
+def _finite(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return number
+
+
+def _empty_score() -> dict[str, Any]:
+    return {
+        "n_games": 0,
+        "classifier_accuracy_pct": None,
+        "brier_score": None,
+        "log_loss": None,
+        "spread_mae": None,
+    }
+
+
+def _score_forecasts(
+    forecasts: list[tuple[float, float, float, bool]],
+) -> dict[str, Any]:
+    """Score (home_win_prob, predicted_home_margin, actual_margin, home_won)."""
+    n = len(forecasts)
+    if n == 0:
+        return _empty_score()
+    correct = 0
+    brier = 0.0
+    log_loss = 0.0
+    mae = 0.0
+    for prob, predicted_margin, actual_margin, home_won in forecasts:
+        outcome = 1 if home_won else 0
+        if (prob >= 0.5) == bool(home_won):
+            correct += 1
+        brier += (prob - outcome) ** 2
+        log_loss += prediction_dist.log_loss(prob, outcome)
+        mae += abs(predicted_margin - actual_margin)
+    return {
+        "n_games": n,
+        "classifier_accuracy_pct": round(100 * correct / n, 1),
+        "brier_score": round(brier / n, 4),
+        "log_loss": round(log_loss / n, 4),
+        "spread_mae": round(mae / n, 2),
+    }
+
+
+def _baseline_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Elo vs a home-field-only forecast and vs the closing line.
+
+    ``closing_spread`` uses the same convention as ``pred_spread``: negative
+    means the home team is favored. The market's expected margin is therefore
+    ``-closing_spread``. Games missing a line are left out of the market
+    block, and ``elo_on_same_games`` rescores Elo on that subset so the
+    comparison is not mixed with unpriced games.
+    """
+    if not rows:
+        market = _empty_score()
+        market["elo_on_same_games"] = _empty_score()
+        return {"n_games": 0, "home": _empty_score(), "elo": _empty_score(), "market": market}
+
+    home_prob = elo_service.win_probability(
+        elo_service.INITIAL_RATING, elo_service.INITIAL_RATING,
+    )
+    home_margin = -elo_service.predicted_spread(
+        elo_service.INITIAL_RATING, elo_service.INITIAL_RATING,
+    )
+    sigma = _margin_sigma()
+
+    home_rows: list[tuple[float, float, float, bool]] = []
+    elo_rows: list[tuple[float, float, float, bool]] = []
+    market_rows: list[tuple[float, float, float, bool]] = []
+    elo_on_market: list[tuple[float, float, float, bool]] = []
+
+    for row in rows:
+        actual = float(row["actual_margin"])
+        home_won = bool(row["home_won"])
+        elo_margin = -float(row["pred_spread"])
+        elo_prob = float(row["pred_win_prob_home"])
+        home_rows.append((home_prob, home_margin, actual, home_won))
+        elo_rows.append((elo_prob, elo_margin, actual, home_won))
+        closing = _finite(row.get("closing_spread"))
+        if closing is None:
+            continue
+        market_margin = -closing
+        market_rows.append((
+            prediction_dist.win_prob(market_margin, sigma),
+            market_margin,
+            actual,
+            home_won,
+        ))
+        elo_on_market.append((elo_prob, elo_margin, actual, home_won))
+
+    market = _score_forecasts(market_rows)
+    market["elo_on_same_games"] = _score_forecasts(elo_on_market)
+    return {
+        "n_games": len(rows),
+        "home": _score_forecasts(home_rows),
+        "elo": _score_forecasts(elo_rows),
+        "market": market,
+    }
+
+
 # ============================================================================
 # ML out-of-sample evaluation
 # ============================================================================
