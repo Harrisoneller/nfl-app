@@ -17,6 +17,16 @@ def test_evaluate_gates_approves_good_challenger():
     assert result["approved"] is True
 
 
+def test_auto_promote_is_off_unless_enabled(monkeypatch):
+    assert model_lifecycle_service.AUTO_PROMOTE_ENABLED is False
+    assert model_lifecycle_service.should_auto_promote(True) is False
+    assert model_lifecycle_service.should_auto_promote(False) is False
+
+    monkeypatch.setattr(model_lifecycle_service, "AUTO_PROMOTE_ENABLED", True)
+    assert model_lifecycle_service.should_auto_promote(True) is True
+    assert model_lifecycle_service.should_auto_promote(False) is False
+
+
 def test_evaluate_gates_rejects_poor_challenger():
     challenger = {
         "n_games": 50,

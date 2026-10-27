@@ -15,6 +15,9 @@ from . import backtest_service, ml_predictions_service, task_modeling_service
 log = get_logger(__name__)
 
 LIFECYCLE_MODEL_VERSION = "ml-task-suite-v1"
+# Code switch. There is no environment variable for this. A run sets
+# is_promoted only when the metric gates pass AND this is True.
+AUTO_PROMOTE_ENABLED = False
 GATES = {
     "max_brier": 0.24,
     "max_log_loss": 0.69,
@@ -26,6 +29,11 @@ GATES = {
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def should_auto_promote(gate_approved: bool) -> bool:
+    """Promotion stays off unless AUTO_PROMOTE_ENABLED is flipped in code."""
+    return bool(gate_approved) and AUTO_PROMOTE_ENABLED
 
 
 def evaluate_gates(
@@ -177,7 +185,7 @@ async def run_weekly_lifecycle(
         run.gate_payload = gate
         run.status = "ok"
         run.decision = decision
-        run.is_promoted = decision == "promote"
+        run.is_promoted = should_auto_promote(gate["approved"])
         run.finished_at = _now()
         db.commit()
         db.refresh(run)
