@@ -1,0 +1,790 @@
+{
+  "definition": {
+    "v5_blind": "Allowlist epa_d, pts_d, st_d, qb_d, hfa. qb_d is the home minus away QBBook delta for the depth-chart starter at kickoff minus 24 hours. A missing chart is 0 on that side, not last week's starter and not home_qb_id or away_qb_id. No mkt_d and no other market column. Coefficients are refit by ordinary least squares on seasons >= 2015 and < the test season, every game type, features from games before that week.",
+    "v5_reference": "The PR #32 qb-ridge-v5: mkt_d plus epa_d, pts_d, st_d, the actual starter delta qb_d_actual, and hfa, refit on the same window.",
+    "v6": "Shipped prod/v6-blind-main week_features and by_season margin coefficients, rounded as published. Columns pass_comp, rush_comp, sr_comp, hfa. pass_comp already contains the starter delta.",
+    "guard": "allowlist: a design column outside the permitted list raises ValueError",
+    "sensitivity_not_the_model": "qb_d_fallback uses the same T-24h starter, and QBBook's last-starter fallback only when the chart is missing. It is not v5-blind."
+  },
+  "allowlist": {
+    "v5_blind": [
+      "epa_d",
+      "pts_d",
+      "st_d",
+      "qb_d",
+      "hfa"
+    ],
+    "v6_blind": [
+      "pass_comp",
+      "rush_comp",
+      "sr_comp",
+      "hfa"
+    ]
+  },
+  "starter_audit": {
+    "depth_chart": {
+      "depth_rows": 423116,
+      "injury_rows": 59798,
+      "injury_date_modified_nonnull": 1.0,
+      "depth_has_timestamp_column": true,
+      "dated_depth_seasons": [
+        2025,
+        2026
+      ],
+      "injury_seasons_without_date_modified": [
+        2025
+      ],
+      "proxy": "2014\u20132024: weekly depth-chart QB order, overridden only when an injury row with date_modified at or before kickoff minus 24h has report_status Out. Those depth charts have season and week and no captured_at, so they are not a proven T-24h snapshot. 2025\u20132026: latest depth chart whose dt is at or before kickoff minus 24h (those files are timestamped). Injury files for 2025\u20132026 have no date_modified, so they are not applied. gametime is compared as UTC. No home_qb_id. No last-start fallback. Missing chart \u2192 QB delta 0.",
+      "team_games": 6600,
+      "starter_assigned": 6599,
+      "starter_rate": 0.9998484848484849,
+      "missing_depth_chart": 1,
+      "injury_overrides_of_qb1": 171,
+      "dated_depth_assignments": 1114
+    },
+    "features_all_game_types": {
+      "games_featurized": 3028,
+      "both_teams_have_t24_starter": 3027,
+      "t24_starter_equals_actual_starter": 2521
+    },
+    "scored_reg_sample": {
+      "n": 2639,
+      "both_teams_have_t24_starter": 2638,
+      "t24_starter_equals_actual_starter": 2179
+    }
+  },
+  "qa_claim": {
+    "contrast": "v6-blind minus v5-blind",
+    "metric": "crps",
+    "diff": 0.088,
+    "ci95": [
+      0.031,
+      0.145
+    ],
+    "source": "QA review of PR #32, fully blind v5 with the depth-chart starter 24h before kickoff",
+    "observed_diff": 0.084603025327172,
+    "observed_ci95": [
+      0.02812529827364452,
+      0.14144031488961153
+    ],
+    "protocol": "This run uses the PR #32 games, seed 20261026, and 10000 paired resamples. The QA review did not leave a script in this repo, so the seed behind 0.088 was not replayed from source."
+  },
+  "sample": "2016-2025 REG games with a result, a closing spread_line, and v5, v5-blind, and v6 predictions",
+  "n_games": 2639,
+  "sigma_margin": 13.5,
+  "seed": 20261026,
+  "n_bootstrap": 10000,
+  "difference": "first minus second; a positive CRPS difference means the first model is worse. Ablation delta is the reduced model minus the full model of that family.",
+  "not_in_the_walk_forward_design": [
+    "rest",
+    "injuries",
+    "weather",
+    "context layer",
+    "live market blend",
+    "prop and ADP anchors"
+  ],
+  "levels": {
+    "v5": {
+      "crps": 7.232399810600162,
+      "mae": 10.023254636236729,
+      "ats": 0.5015540015540015,
+      "ats_wins": 1291,
+      "ats_n": 2574
+    },
+    "v5_blind": {
+      "crps": 7.313067764092145,
+      "mae": 10.106648209191048,
+      "ats": 0.4988344988344988,
+      "ats_wins": 1284,
+      "ats_n": 2574
+    },
+    "v6": {
+      "crps": 7.397670789419317,
+      "mae": 10.208046286881315,
+      "ats": 0.5054390054390054,
+      "ats_wins": 1301,
+      "ats_n": 2574
+    }
+  },
+  "sensitivity_last_start_if_chart_missing": {
+    "crps": 7.313704271583221,
+    "mae": 10.107438431772588,
+    "ats": 0.49844599844599846,
+    "ats_wins": 1283,
+    "ats_n": 2574
+  },
+  "contrasts": [
+    {
+      "contrast": "v6-blind minus v5-blind",
+      "crps": {
+        "n": 2639,
+        "diff": 0.084603025327172,
+        "ci95": [
+          0.02812529827364452,
+          0.14144031488961153
+        ]
+      },
+      "mae": {
+        "n": 2639,
+        "diff": 0.10139807769026526,
+        "ci95": [
+          0.0031339689956465916,
+          0.19830796195769687
+        ]
+      },
+      "ats": {
+        "n": 2574,
+        "diff": 0.006604506604506605,
+        "ci95": [
+          -0.014374514374514374,
+          0.027583527583527584
+        ]
+      }
+    },
+    {
+      "contrast": "v5-blind minus v6-blind",
+      "crps": {
+        "n": 2639,
+        "diff": -0.084603025327172,
+        "ci95": [
+          -0.14144031488961156,
+          -0.02812529827364453
+        ]
+      },
+      "mae": {
+        "n": 2639,
+        "diff": -0.10139807769026526,
+        "ci95": [
+          -0.19830796195769693,
+          -0.0031339689956466515
+        ]
+      },
+      "ats": {
+        "n": 2574,
+        "diff": -0.006604506604506605,
+        "ci95": [
+          -0.027583527583527584,
+          0.014374514374514374
+        ]
+      }
+    },
+    {
+      "contrast": "v5 minus v6-blind",
+      "crps": {
+        "n": 2639,
+        "diff": -0.16527097881915565,
+        "ci95": [
+          -0.23376681657609003,
+          -0.09897292969383946
+        ]
+      },
+      "mae": {
+        "n": 2639,
+        "diff": -0.1847916506445866,
+        "ci95": [
+          -0.2980766960476579,
+          -0.07332792210902721
+        ]
+      },
+      "ats": {
+        "n": 2574,
+        "diff": -0.003885003885003885,
+        "ci95": [
+          -0.02641802641802642,
+          0.019036519036519036
+        ]
+      }
+    },
+    {
+      "contrast": "v5-blind minus v5",
+      "crps": {
+        "n": 2639,
+        "diff": 0.08066795349198365,
+        "ci95": [
+          0.041792282079551935,
+          0.12035080970958352
+        ]
+      },
+      "mae": {
+        "n": 2639,
+        "diff": 0.08339357295432137,
+        "ci95": [
+          0.016730445998124167,
+          0.15134309950365696
+        ]
+      },
+      "ats": {
+        "n": 2574,
+        "diff": -0.0027195027195027195,
+        "ci95": [
+          -0.019813519813519812,
+          0.013986013986013986
+        ]
+      }
+    },
+    {
+      "contrast": "v6-blind minus v5 last-start-if-missing",
+      "crps": {
+        "n": 2639,
+        "diff": 0.08396651783609527,
+        "ci95": [
+          0.02761940916440212,
+          0.14077095125982342
+        ]
+      },
+      "mae": {
+        "n": 2639,
+        "diff": 0.10060785510872564,
+        "ci95": [
+          0.0025929523218737164,
+          0.19751070870278892
+        ]
+      },
+      "ats": {
+        "n": 2574,
+        "diff": 0.006993006993006993,
+        "ci95": [
+          -0.013986013986013986,
+          0.027972027972027972
+        ]
+      }
+    }
+  ],
+  "v5_market_coefficients": {
+    "2016": {
+      "mkt_d": 0.15587845279394197,
+      "epa_d": 75.32233706813443,
+      "pts_d": -0.27539733225159874,
+      "st_d": 1.1260472479532737,
+      "qb_d_actual": 29.965530284895166,
+      "hfa": 1.69279918653543
+    },
+    "2017": {
+      "mkt_d": 0.5275861391036618,
+      "epa_d": 37.179410477865034,
+      "pts_d": 0.19955150989019824,
+      "st_d": 1.622161870163539,
+      "qb_d_actual": 39.12750547747635,
+      "hfa": 2.393889564566656
+    },
+    "2018": {
+      "mkt_d": 0.4193083296144613,
+      "epa_d": 25.760499064665552,
+      "pts_d": 0.4432854781408762,
+      "st_d": 1.2460396640694322,
+      "qb_d_actual": 46.31750309456364,
+      "hfa": 2.463590367156784
+    },
+    "2019": {
+      "mkt_d": 0.6362145133753095,
+      "epa_d": 14.120505123043825,
+      "pts_d": 0.49116694901246344,
+      "st_d": 1.0632634164362014,
+      "qb_d_actual": 43.123679795275024,
+      "hfa": 2.3419470253047447
+    },
+    "2020": {
+      "mkt_d": 0.6540173691660357,
+      "epa_d": 9.222325243968077,
+      "pts_d": 0.6329492863478033,
+      "st_d": 0.873977942091149,
+      "qb_d_actual": 38.65012916626117,
+      "hfa": 1.8801296462222752
+    },
+    "2021": {
+      "mkt_d": 0.6739484608408745,
+      "epa_d": 22.149631384345607,
+      "pts_d": 0.3475192290680637,
+      "st_d": 0.9871619297967741,
+      "qb_d_actual": 37.18443591231909,
+      "hfa": 1.5872610971676013
+    },
+    "2022": {
+      "mkt_d": 0.8228288290654633,
+      "epa_d": 16.802905143772612,
+      "pts_d": 0.31840883090670236,
+      "st_d": 1.1868121131671343,
+      "qb_d_actual": 37.229681551001725,
+      "hfa": 1.5972847917021784
+    },
+    "2023": {
+      "mkt_d": 0.7219279141610462,
+      "epa_d": 10.812674941831427,
+      "pts_d": 0.4820706200169202,
+      "st_d": 1.0415967998674631,
+      "qb_d_actual": 33.454145199143014,
+      "hfa": 1.6683293016533767
+    },
+    "2024": {
+      "mkt_d": 0.7563357530607264,
+      "epa_d": 5.225845704435085,
+      "pts_d": 0.5595972105772629,
+      "st_d": 1.0421175250746948,
+      "qb_d_actual": 33.329001817585564,
+      "hfa": 1.7902392568646888
+    },
+    "2025": {
+      "mkt_d": 0.689930022404595,
+      "epa_d": 6.957941940433957,
+      "pts_d": 0.6239670248375313,
+      "st_d": 0.960479416027463,
+      "qb_d_actual": 34.18893899669317,
+      "hfa": 1.8023853926477527
+    }
+  },
+  "v5_blind_coefficients": {
+    "2016": {
+      "epa_d": 74.51860317137456,
+      "pts_d": -0.18213599425813576,
+      "st_d": 1.1603412681701897,
+      "qb_d": 29.270237518107045,
+      "hfa": 1.6219290734546534
+    },
+    "2017": {
+      "epa_d": 33.20131271894352,
+      "pts_d": 0.6532216517279583,
+      "st_d": 1.4440586209904973,
+      "qb_d": 29.967731917419943,
+      "hfa": 2.3401985050230696
+    },
+    "2018": {
+      "epa_d": 17.650751715923622,
+      "pts_d": 0.9369812700464258,
+      "st_d": 0.9268294898536655,
+      "qb_d": 18.51003789746553,
+      "hfa": 2.3809175574377948
+    },
+    "2019": {
+      "epa_d": 13.188857164235843,
+      "pts_d": 1.0242498092755183,
+      "st_d": 0.8559821401376856,
+      "qb_d": 19.5108068574634,
+      "hfa": 2.314092043529835
+    },
+    "2020": {
+      "epa_d": 11.771892881691253,
+      "pts_d": 1.1183140402225997,
+      "st_d": 0.7102195410854667,
+      "qb_d": 16.734344511293852,
+      "hfa": 1.841612340955099
+    },
+    "2021": {
+      "epa_d": 28.87153906687751,
+      "pts_d": 0.7709434610364012,
+      "st_d": 0.9013869050097891,
+      "qb_d": 16.851648811063225,
+      "hfa": 1.5533652073494997
+    },
+    "2022": {
+      "epa_d": 27.19718899196268,
+      "pts_d": 0.8021855755737304,
+      "st_d": 1.0447925876930975,
+      "qb_d": 20.068459039071488,
+      "hfa": 1.5806181719525523
+    },
+    "2023": {
+      "epa_d": 21.68746419799986,
+      "pts_d": 0.8836981178701474,
+      "st_d": 0.8950036331089426,
+      "qb_d": 17.01552776494291,
+      "hfa": 1.6587972057997018
+    },
+    "2024": {
+      "epa_d": 17.60895102566218,
+      "pts_d": 0.9588533052926749,
+      "st_d": 0.8991994434560333,
+      "qb_d": 16.449486891336253,
+      "hfa": 1.7901540987800695
+    },
+    "2025": {
+      "epa_d": 19.665203154352895,
+      "pts_d": 0.9397644021004882,
+      "st_d": 0.8817827833591507,
+      "qb_d": 18.303996096435895,
+      "hfa": 1.7966117758926448
+    }
+  },
+  "ablations": {
+    "v5_blind": [
+      {
+        "component": "(full)",
+        "note": "walk-forward refit of every non-market column",
+        "columns_kept": [
+          "epa_d",
+          "pts_d",
+          "st_d",
+          "qb_d",
+          "hfa"
+        ],
+        "crps": 7.313067764092145,
+        "mae": 10.106648209191048,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "component": "epa_d",
+        "note": "Drop opponent-adjusted EPA/play.",
+        "columns_kept": [
+          "pts_d",
+          "st_d",
+          "qb_d",
+          "hfa"
+        ],
+        "crps": 7.3023091650769585,
+        "mae": 10.095428040409299,
+        "delta_crps": {
+          "n": 2639,
+          "diff": -0.010758599015187137,
+          "ci95": [
+            -0.026422238429276386,
+            0.0046625214528616754
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": -0.011220168781749295,
+          "ci95": [
+            -0.038966413665582324,
+            0.017321264615888426
+          ]
+        }
+      },
+      {
+        "component": "pts_d",
+        "note": "Drop opponent-adjusted points.",
+        "columns_kept": [
+          "epa_d",
+          "st_d",
+          "qb_d",
+          "hfa"
+        ],
+        "crps": 7.330985598372685,
+        "mae": 10.127149744396194,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.017917834280539353,
+          "ci95": [
+            -0.0014464822461943397,
+            0.03747212647571879
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.020501535205143237,
+          "ci95": [
+            -0.01432807579214832,
+            0.05527319063976947
+          ]
+        }
+      },
+      {
+        "component": "st_d",
+        "note": "Drop special teams.",
+        "columns_kept": [
+          "epa_d",
+          "pts_d",
+          "qb_d",
+          "hfa"
+        ],
+        "crps": 7.319544591211099,
+        "mae": 10.11987180592786,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.006476827118953824,
+          "ci95": [
+            -0.007822667869761109,
+            0.02079919152191922
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.01322359673680881,
+          "ci95": [
+            -0.011038391111934066,
+            0.03799516531192851
+          ]
+        }
+      },
+      {
+        "component": "qb_d",
+        "note": "Drop the T-24h depth-chart starter delta. A missing chart is 0 on that side.",
+        "columns_kept": [
+          "epa_d",
+          "pts_d",
+          "st_d",
+          "hfa"
+        ],
+        "crps": 7.338405641584128,
+        "mae": 10.153709278356622,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.02533787749198183,
+          "ci95": [
+            0.0014399357196054896,
+            0.04881438197325858
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.04706106916557304,
+          "ci95": [
+            0.006190619830077276,
+            0.08765815946317969
+          ]
+        }
+      },
+      {
+        "component": "hfa",
+        "note": "Drop home field. There is no other intercept.",
+        "columns_kept": [
+          "epa_d",
+          "pts_d",
+          "st_d",
+          "qb_d"
+        ],
+        "crps": 7.368378886753302,
+        "mae": 10.19257636347433,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.05531112266115588,
+          "ci95": [
+            0.015089885468930453,
+            0.09583295187863221
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.08592815428328184,
+          "ci95": [
+            0.016854229743627845,
+            0.15695284606124837
+          ]
+        }
+      },
+      {
+        "component": "team_ridges",
+        "note": "Drop EPA, points, and special-teams ridges together. QB and home field remain. Diagnostic group, not a candidate model.",
+        "columns_kept": [
+          "qb_d",
+          "hfa"
+        ],
+        "crps": 7.920983781139372,
+        "mae": 10.948098827965756,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.6079160170472272,
+          "ci95": [
+            0.4898512480811607,
+            0.7274681385197227
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.8414506187747083,
+          "ci95": [
+            0.654674233932329,
+            1.0296988264094389
+          ]
+        }
+      }
+    ],
+    "v6_blind": [
+      {
+        "component": "(full)",
+        "note": "walk-forward refit of every non-market column",
+        "columns_kept": [
+          "pass_comp",
+          "rush_comp",
+          "sr_comp",
+          "hfa"
+        ],
+        "crps": 7.398805357958479,
+        "mae": 10.21105882014589,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "component": "pass_comp",
+        "note": "Drop the pass column. In the shipped model that column is the pass ridge plus the starter delta, priced by one coefficient.",
+        "columns_kept": [
+          "rush_comp",
+          "sr_comp",
+          "hfa"
+        ],
+        "crps": 7.422273111989864,
+        "mae": 10.257588724406247,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.02346775403138432,
+          "ci95": [
+            -0.009099724759977683,
+            0.05621469272016838
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.04652990426035637,
+          "ci95": [
+            -0.010963100129052342,
+            0.1026196408981993
+          ]
+        }
+      },
+      {
+        "component": "rush_comp",
+        "note": "Drop the rush ridge.",
+        "columns_kept": [
+          "pass_comp",
+          "sr_comp",
+          "hfa"
+        ],
+        "crps": 7.3961379568740675,
+        "mae": 10.195847288372839,
+        "delta_crps": {
+          "n": 2639,
+          "diff": -0.00266740108441225,
+          "ci95": [
+            -0.013726427265055902,
+            0.00841502106326964
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": -0.01521153177305238,
+          "ci95": [
+            -0.03483335209025677,
+            0.004711326872032388
+          ]
+        }
+      },
+      {
+        "component": "sr_comp",
+        "note": "Drop the success-rate ridge.",
+        "columns_kept": [
+          "pass_comp",
+          "rush_comp",
+          "hfa"
+        ],
+        "crps": 7.4343487710072615,
+        "mae": 10.277532743322892,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.03554341304878107,
+          "ci95": [
+            0.0045848306598246695,
+            0.06593020544948566
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.06647392317699927,
+          "ci95": [
+            0.013609787555178696,
+            0.11878977028908944
+          ]
+        }
+      },
+      {
+        "component": "hfa",
+        "note": "Drop home field. There is no other intercept.",
+        "columns_kept": [
+          "pass_comp",
+          "rush_comp",
+          "sr_comp"
+        ],
+        "crps": 7.45581703886085,
+        "mae": 10.30467189856609,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.05701168090236978,
+          "ci95": [
+            0.01714830627806771,
+            0.09688478413535635
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.09361307842019757,
+          "ci95": [
+            0.0246416912438171,
+            0.16327491539315964
+          ]
+        }
+      },
+      {
+        "component": "team_units",
+        "note": "Drop pass, rush, and success together. Home field remains. Diagnostic group, not a candidate model.",
+        "columns_kept": [
+          "hfa"
+        ],
+        "crps": 7.951648746877979,
+        "mae": 11.005441038211954,
+        "delta_crps": {
+          "n": 2639,
+          "diff": 0.5528433889194992,
+          "ci95": [
+            0.43838534733925705,
+            0.6672441667883086
+          ]
+        },
+        "delta_mae": {
+          "n": 2639,
+          "diff": 0.7943822180660627,
+          "ci95": [
+            0.6119076443765001,
+            0.9776360537249082
+          ]
+        }
+      }
+    ]
+  },
+  "v6_qb_split": {
+    "status": "rebuild did not reproduce the shipped features; QB was not split",
+    "match_to_shipped_features": {
+      "pass_comp": {
+        "n": 2639,
+        "corr": 0.9922465621139879,
+        "mae": 0.01798951118435647
+      },
+      "rush_comp": {
+        "n": 2639,
+        "corr": 0.9857585108835122,
+        "mae": 0.01109471468972201
+      },
+      "sr_comp": {
+        "n": 2639,
+        "corr": 0.9844593292505933,
+        "mae": 0.005005133575903533
+      }
+    },
+    "ablations": null
+  }
+}
