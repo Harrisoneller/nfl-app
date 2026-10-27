@@ -1,0 +1,417 @@
+{
+  "n_crps": 2639,
+  "mean_crps_bundle": 7.456378187294912,
+  "mean_crps_v6": 7.397670789419317,
+  "mean_d": -0.05870739787559453,
+  "t_stat": -3.074680371092053,
+  "t_p": 0.9989355686160013,
+  "boot_2_5": -0.09647328498790836,
+  "crps_pass": false,
+  "n_plays": 973,
+  "ats_bundle": 0.5149023638232272,
+  "ats_v6": 0.513874614594039,
+  "ats_diff": 0.0010277492291881352,
+  "ats_p": 0.5,
+  "n_discordant": 17,
+  "only_bundle": 9,
+  "ats_pass": false,
+  "ni_lo": -0.006166495375128468,
+  "ni_hi": 0.008221993833504625,
+  "ni_pass": true,
+  "cells": {
+    "2016": "6x2",
+    "2017": "6x2",
+    "2018": "6x3",
+    "2019": "6x3",
+    "2020": "6x3",
+    "2021": "6x3",
+    "2022": "8x3",
+    "2023": "8x3",
+    "2024": "8x3",
+    "2025": "8x3"
+  },
+  "chosen": {
+    "2016": {
+      "half_life": 6.0,
+      "multiplier": 2,
+      "inner_crps": 7.334206489357494,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.334206489357494
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.3346006260054875
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.334771129183842
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.335163778957759
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.336804441679081
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.337188945874488
+        }
+      ]
+    },
+    "2017": {
+      "half_life": 6.0,
+      "multiplier": 2,
+      "inner_crps": 7.014563812416267,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.014563812416267
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.015599836669821
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.019073501364723
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.019883625213327
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.023145572212872
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.02379635732025
+        }
+      ]
+    },
+    "2018": {
+      "half_life": 6.0,
+      "multiplier": 3,
+      "inner_crps": 7.451644837446693,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.451644837446693
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.452425042175651
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.453116048441222
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.453787816838666
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.453912259865248
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.4545767547189605
+        }
+      ]
+    },
+    "2019": {
+      "half_life": 6.0,
+      "multiplier": 3,
+      "inner_crps": 7.467597698955086,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.467597698955086
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.468067194624028
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.469244575196609
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.4697486514779206
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.470685950676653
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.471205865229119
+        }
+      ]
+    },
+    "2020": {
+      "half_life": 6.0,
+      "multiplier": 3,
+      "inner_crps": 7.539499347412235,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.539499347412235
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.5397614667524255
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.541233664924475
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.541549122796615
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.5429097500797395
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.54325853469178
+        }
+      ]
+    },
+    "2021": {
+      "half_life": 6.0,
+      "multiplier": 3,
+      "inner_crps": 7.48861956639138,
+      "grid": [
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.48861956639138
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.488672905609941
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.488748107714237
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.488862884182481
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.4893154724249795
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.489470573601034
+        }
+      ]
+    },
+    "2022": {
+      "half_life": 8.0,
+      "multiplier": 3,
+      "inner_crps": 7.609570917015849,
+      "grid": [
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.609570917015849
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.609760760797896
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.6103473489166245
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.61051193331568
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.612046352566961
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.612172042475139
+        }
+      ]
+    },
+    "2023": {
+      "half_life": 8.0,
+      "multiplier": 3,
+      "inner_crps": 7.454407892286809,
+      "grid": [
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.454407892286809
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.454573504038242
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.455365668414793
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.455514458773421
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.457308111215624
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.457431221142469
+        }
+      ]
+    },
+    "2024": {
+      "half_life": 8.0,
+      "multiplier": 3,
+      "inner_crps": 7.486207853946456,
+      "grid": [
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.486207853946456
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.486317465291601
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.487629285725936
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.487724019116123
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.490148645434438
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.490221732241005
+        }
+      ]
+    },
+    "2025": {
+      "half_life": 8.0,
+      "multiplier": 3,
+      "inner_crps": 7.4750566789798505,
+      "grid": [
+        {
+          "half_life": 8.0,
+          "multiplier": 3,
+          "crps": 7.4750566789798505
+        },
+        {
+          "half_life": 8.0,
+          "multiplier": 2,
+          "crps": 7.475151720961206
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 3,
+          "crps": 7.4760988972819895
+        },
+        {
+          "half_life": 7.0,
+          "multiplier": 2,
+          "crps": 7.476182672267063
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 3,
+          "crps": 7.478167951528025
+        },
+        {
+          "half_life": 6.0,
+          "multiplier": 2,
+          "crps": 7.47823455848871
+        }
+      ]
+    }
+  },
+  "opener": {
+    "source": "ESPN BET",
+    "n_rows": 0,
+    "n_plays": 0,
+    "note": "games.csv has no ESPN BET open. The column is blank. Directional ATS and CLV are not estimated."
+  },
+  "boot_2_5_presort": -0.09676482128835831,
+  "bootstrap_order": "per_game.csv sorted by season, week, game_id; seed 20261026; 10000 resamples; numpy.percentile linear",
+  "only_v6": 8,
+  "ats_wins_bundle": 501,
+  "ats_wins_v6": 500,
+  "paired_diff_sd": 0.9808724828294391
+}
