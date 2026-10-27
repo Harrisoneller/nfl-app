@@ -8,7 +8,15 @@ from ..schemas.game import GameOut
 from ..schemas.news import NewsItemOut
 from ..schemas.player import PlayerOut
 from ..schemas.team import TeamOut
-from ..services import analytics_service, news_service, players_service, scores_service, teams_service, weather_service
+from ..services import (
+    analytics_service,
+    news_service,
+    nfl_luck_service,
+    players_service,
+    scores_service,
+    teams_service,
+    weather_service,
+)
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 
 router = APIRouter()
@@ -19,6 +27,14 @@ def list_teams(response: Response, db: Session = Depends(get_db)):
     response.headers["X-Cache-Status"] = "hit"
     teams_service.ensure_seeded(db)
     return teams_service.list_teams(db)
+
+
+@router.get("/luck")
+async def get_league_luck(response: Response, season: int | None = None):
+    """League luck table, luckiest first. Not a pick."""
+    season = season or latest_completed_season()
+    response.headers["X-Cache-Status"] = nfl_luck_service.cache_status(season)
+    return await nfl_luck_service.league_luck(season)
 
 
 @router.get("/{team_id}", response_model=TeamOut)
@@ -42,6 +58,14 @@ def get_schedule(
 ):
     season = season or latest_completed_season()
     return scores_service.list_team_schedule(db, team_id.upper(), season)
+
+
+@router.get("/{team_id}/luck")
+async def get_team_luck(team_id: str, response: Response, season: int | None = None):
+    """One team's regression candidate, plus the league table. Not a pick."""
+    season = season or latest_completed_season()
+    response.headers["X-Cache-Status"] = nfl_luck_service.cache_status(season)
+    return await nfl_luck_service.team_luck(team_id.upper(), season)
 
 
 @router.get("/{team_id}/profile")

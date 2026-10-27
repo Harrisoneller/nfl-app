@@ -29,6 +29,7 @@ import { RecentFormCard } from "@/components/RecentFormCard";
 import { DivisionStandingCard } from "@/components/DivisionStandingCard";
 import { TopPerformersCard } from "@/components/TopPerformersCard";
 import { pickColor } from "@/lib/colors";
+import { LuckIndex } from "@/components/team/LuckIndex";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
 import { readOverlayParams, syncUrlOverlays } from "@/lib/overlay-url";
 
@@ -43,6 +44,7 @@ const DEFENSE_RADAR = [
 
 const TABS = [
   { id: "overview", label: "Overview" },
+  { id: "luck", label: "Luck" },
   { id: "performance", label: "Performance" },
   { id: "schedule", label: "Schedule" },
   { id: "predictions", label: "Predictions" },
@@ -61,6 +63,11 @@ export default function TeamPage({ params }: { params: { id: string } }) {
   const { data: profile, isLoading: profileLoading } = useSWR(
     season ? ["team-profile", id, season] : null,
     () => api.getTeamProfile(id, season),
+    { revalidateOnFocus: false },
+  );
+  const { data: luck, error: luckError, isLoading: luckLoading } = useSWR(
+    season && tab === "luck" ? ["team-luck", id, season] : null,
+    () => api.getTeamLuck(id, season),
     { revalidateOnFocus: false },
   );
   const { data: schedule } = useSWR(
@@ -203,6 +210,10 @@ export default function TeamPage({ params }: { params: { id: string } }) {
             id={id}
             setTab={setTab}
           />
+        </TabPanel>
+
+        <TabPanel active={tab} value="luck">
+          <LuckIndex luck={luck} teamId={id} loading={luckLoading} error={Boolean(luckError)} />
         </TabPanel>
 
         <TabPanel active={tab} value="performance">

@@ -58,10 +58,12 @@ DEFAULT_TIMEOUT_S = 45.0  # First-call parquet downloads can be slow.
 # single biggest lever on the backend's resident memory (the rest of the app is
 # small). Keep this list a superset of every column referenced in
 # analytics_service._team_pbp_aggregates and ml_predictions_service.
-PBP_COLUMNS: list[str] = [
+# Core projection used by existing ratings. ``ydstogo`` is required by
+# ``features.nfl.defs`` and was not in the historical list.
+_PBP_CORE: list[str] = [
     "game_id", "week", "posteam", "defteam", "home_team", "away_team",
     "play_type", "epa", "success", "yards_gained", "yardline_100",
-    "touchdown", "drive", "down", "first_down", "posteam_score",
+    "touchdown", "drive", "down", "ydstogo", "first_down", "posteam_score",
     "wp", "qtr", "interception", "fumble_lost", "sack",
     # Adjusted-EPA core (epa_adjust_service): QB accuracy over expectation,
     # pass-rate over expected, and clock context for neutral-situation pace.
@@ -71,6 +73,16 @@ PBP_COLUMNS: list[str] = [
     "pass", "rush", "qb_kneel", "qb_spike", "qb_dropback", "passer_player_id",
     "score_differential", "special_teams_play",
 ]
+# Luck residuals in features.nfl.defs. Optional on old seasons: a missing
+# column retries the core projection instead of reading every parquet column.
+_PBP_LUCK: list[str] = [
+    "season_type", "home_score", "away_score",
+    "fumble", "fumble_forced", "fumble_recovery_1_team",
+    "pass_attempt", "pass_defense_1_player_id", "pass_defense_2_player_id",
+    "field_goal_attempt", "field_goal_result", "kick_distance",
+    "fixed_drive",
+]
+PBP_COLUMNS: list[str] = _PBP_CORE + [col for col in _PBP_LUCK if col not in _PBP_CORE]
 
 
 def _import_pbp_lean(season: int):
@@ -88,9 +100,8 @@ def _import_pbp_lean(season: int):
         url = f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
         try:
             df = pd.read_parquet(url, columns=PBP_COLUMNS)
-        except Exception:  # noqa: BLE001 — a column missing in an old season
-            df = pd.read_parquet(url)
-            df = df[[c for c in PBP_COLUMNS if c in df.columns]]
+        except Exception:  # noqa: BLE001 — a luck column missing in an old season
+            df = pd.read_parquet(url, columns=_PBP_CORE)
         df = df.copy()
         df["season"] = season
         f64 = df.select_dtypes(include=["float64"]).columns
@@ -104,7 +115,8 @@ def _import_pbp_lean(season: int):
             [season], columns=PBP_COLUMNS, downcast=True, include_participation=False)
     except Exception:  # noqa: BLE001 — column set mismatch on an odd season
         log.debug("pbp_columns_fallback", season=season)
-        return nfl.import_pbp_data([season], downcast=True, include_participation=False)
+        return nfl.import_pbp_data(
+            [season], columns=_PBP_CORE, downcast=True, include_participation=False)
 
 
 # Circuit breaker: if a given (fn, args-key) fails this many times within the
