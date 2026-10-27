@@ -79,6 +79,8 @@ One path. For each season S from 2016 through 2025, in order:
 2. Fit that cell’s stage-2 coefficients on scored games in seasons strictly before S.
 3. Grade season S out of sample. Do not refit S. Do not change S’s cell after seeing S.
 
+Every grade is regular season only (`game_type == 'REG'`). Playoffs are excluded from all grading: the inner CRPS that picks the cell, the primary CRPS, ATS, CLV, and every other reported grade. The regular-season sample is n = 2,639.
+
 The inner score that picks the cell is itself walk-forward. For each of the six cells, mean per-game margin CRPS is computed on test seasons T with 2016 ≤ T < S, and season T is fit only on seasons before T. The cell with the lowest mean is the one used to grade S. Cells are not averaged. Season S is not in that mean.
 
 When S is 2016 there is no inner test season. The cell is then the one with the lowest in-sample margin CRPS on 2015, the only scored season before 2016. 2014 play-by-play may inform that 2015 fit. 2014 is not graded. This is the only edge case. It is part of the same path, not a second analysis.
@@ -170,12 +172,12 @@ v6’s paired number is the stored harness prediction for that game. This bundle
 
 ### Primary: margin CRPS
 
-Every nested out-of-sample game. The gate does not drop games from this comparison.
+Every nested out-of-sample regular-season game (`game_type == 'REG'`). Playoffs are excluded. The gate does not drop games from this comparison.
 
 Paired difference `d = CRPS(v6) − CRPS(bundle)` on each game.
 
 - One-sided paired t-test on `d`. The alternative is mean(`d`) > 0. Pass when p < 0.025.
-- Paired bootstrap of the mean of `d`. 10,000 resamples of games, seed `20261026`. The 95% lower bound is the 5th percentile of those 10,000 bootstrap means (`numpy.percentile`, 5). Pass when that bound is > 0.
+- Paired bootstrap of the mean of `d`. 10,000 resamples of games, seed `20261026`. The true 95% one-sided lower bound, matching p < 0.025, is the 2.5th percentile of those 10,000 bootstrap means (`numpy.percentile`, 2.5). Pass when that bound is > 0.
 
 Both must pass. The t-test threshold and the bootstrap bound are both required as written. They are not collapsed into one calculation.
 
@@ -183,7 +185,7 @@ Both must pass. The t-test threshold and the bootstrap bound are both required a
 
 In force because opener plays after the gate are about 113, under 400.
 
-Plays are nested 2016–25 games with `|pred_margin − spread_line| > 3.316`, pushes removed. On those plays, both of the following:
+Plays are nested 2016–25 regular-season games (`game_type == 'REG'`) with `|pred_margin − spread_line| > 3.316`, pushes removed. Playoffs are excluded. On those plays, both of the following:
 
 - Bundle ATS is at least 1 percentage point above v6-blind ATS on the same plays (`bundle ATS − v6 ATS ≥ 0.01`).
 - One-sided paired test, p < 0.025. The test is an exact one-sided binomial on the games where exactly one model covers the close. The null is that each model is equally likely to be the one that covers. The alternative is that the bundle is the one that covers more often.
@@ -203,8 +205,9 @@ ESPN BET only, 2023 week 7 through 2025, stale open-equals-close rows dropped, t
 
 Stated before any bundle grade, so the bars are read against what this sample can detect.
 
-- Margin CRPS: minimum detectable effect about **0.055 ×** the standard deviation of the paired per-game CRPS difference, at n = **2,639**.
+- Margin CRPS: minimum detectable effect about **0.055 ×** the standard deviation of the paired per-game CRPS difference, at n = **2,639** regular-season games.
 - ATS versus the close: minimum detectable effect about **±2.7** percentage points.
+- Opener subset, directional only: about 113 plays gives a minimum detectable effect of about **±13** percentage points of ATS and about **0.47** points of CLV. These are not bars.
 
 The +1 percentage point close bar is smaller than that ATS minimum detectable effect. The bar is unchanged by that fact.
 
