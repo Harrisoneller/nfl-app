@@ -28,6 +28,7 @@ out/
 *.db
 .cache/
 data_cache/
+data/nflverse/
 
 # Deploy artifacts (kept in env, not committed)
 .vercel/
