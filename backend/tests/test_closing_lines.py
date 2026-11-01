@@ -117,10 +117,12 @@ def test_snapshot_fill_flips_sportsbook_sign_and_grading_ignores_it():
     Game.__table__.create(bind=engine)
     OddsSnapshot.__table__.create(bind=engine)
     db = sessionmaker(bind=engine, future=True)()
+    kick = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
     db.add(Game(
         id="g1",
         season=2024,
         week=1,
+        start_time=kick,
         home_team_id="KC",
         away_team_id="BAL",
         home_score=27,
@@ -128,10 +130,10 @@ def test_snapshot_fill_flips_sportsbook_sign_and_grading_ignores_it():
         status="final",
         raw={},
     ))
-    captured = datetime(2024, 9, 5, tzinfo=timezone.utc)
     db.add(OddsSnapshot(
         event_id="odds-1",
-        captured_at=captured,
+        captured_at=kick,
+        commence_time=kick,
         snapshot_label="T4",
         book="dk",
         home_team_id="KC",
@@ -162,6 +164,70 @@ def test_snapshot_fill_flips_sportsbook_sign_and_grading_ignores_it():
     )
     # Close +4, model +1 takes away. Actual margin +7 covers, so the model lost.
     assert graded["spread"]["result"] == "lost"
+    db.close()
+
+
+def test_same_matchup_in_two_seasons_keeps_its_own_close():
+    engine = create_engine("sqlite://", future=True)
+    Game.__table__.create(bind=engine)
+    OddsSnapshot.__table__.create(bind=engine)
+    db = sessionmaker(bind=engine, future=True)()
+    kick_2023 = datetime(2023, 9, 7, 20, tzinfo=timezone.utc)
+    kick_2024 = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
+    db.add(Game(
+        id="2023", season=2023, week=1, start_time=kick_2023,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    db.add(Game(
+        id="2024", season=2024, week=1, start_time=kick_2024,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="2024-only",
+        captured_at=kick_2024,
+        commence_time=kick_2024,
+        snapshot_label="T4",
+        book="dk",
+        home_team_id="KC",
+        away_team_id="BAL",
+        home_spread=-6.0,
+        total=47.0,
+        raw={"season": 2024, "week": 1},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 1
+    assert db.get(Game, "2023").closing_spread is None
+    assert db.get(Game, "2024").closing_spread == 6.0
+    db.close()
+
+
+def test_a_future_games_close_is_never_used():
+    engine = create_engine("sqlite://", future=True)
+    Game.__table__.create(bind=engine)
+    OddsSnapshot.__table__.create(bind=engine)
+    db = sessionmaker(bind=engine, future=True)()
+    kick = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
+    db.add(Game(
+        id="this-year", season=2024, week=1, start_time=kick,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    future = datetime(2025, 9, 4, 20, tzinfo=timezone.utc)
+    db.add(OddsSnapshot(
+        event_id="next-year",
+        captured_at=kick,
+        commence_time=future,
+        snapshot_label="T4",
+        book="dk",
+        home_team_id="KC",
+        away_team_id="BAL",
+        home_spread=-10.0,
+        total=51.0,
+        raw={"season": 2025, "week": 1},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 0
+    assert db.get(Game, "this-year").closing_spread is None
+    assert db.get(Game, "this-year").closing_total is None
     db.close()
 
 
