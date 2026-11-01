@@ -116,10 +116,13 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
         ou_pushes = int((actual_total == sub2["total_line"]).sum())
 
     # Splits: as favorite / underdog. Positive spread_line means home is favored.
+    # A pick'em (0) is neither.
     home["is_fav"] = home["spread_line"] > 0
     away["is_fav"] = away["spread_line"] < 0
+    home["is_dog"] = home["spread_line"] < 0
+    away["is_dog"] = away["spread_line"] > 0
     fav_games = pd.concat([home[home["is_fav"]], away[away["is_fav"]]])
-    dog_games = pd.concat([home[~home["is_fav"]], away[~away["is_fav"]]])
+    dog_games = pd.concat([home[home["is_dog"]], away[away["is_dog"]]])
 
     return {
         "games": len(sub),

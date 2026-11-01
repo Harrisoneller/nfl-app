@@ -63,6 +63,18 @@ def test_positive_spread_line_is_a_home_favorite():
     assert covered["as_underdog"]["games"] == 1
     assert covered["ats"]["wins"] == 1
 
+    pickem = pd.DataFrame([{
+        "home_team": "KC", "away_team": "DET",
+        "home_score": 20, "away_score": 17,
+        "spread_line": 0.0, "total_line": 41.0,
+    }])
+    even = betting_service._record_from_subset("KC", pickem)
+    assert even["as_favorite"]["games"] == 0
+    assert even["as_underdog"]["games"] == 0
+    other = betting_service._record_from_subset("DET", pickem)
+    assert other["as_favorite"]["games"] == 0
+    assert other["as_underdog"]["games"] == 0
+
 
 def test_american_implied_positive_underdog():
     assert betting_service._american_implied(150) == pytest.approx(0.4, rel=1e-3)
