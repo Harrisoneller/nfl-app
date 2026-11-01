@@ -202,32 +202,37 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
 
 
 def _closing_snapshot(db: Session, leg: BetLeg) -> list[OddsSnapshot]:
-    """Closing-capture rows for the leg's event (T4 if present, else latest)."""
+    """Pre-kick prices for a moneyline.
+
+    T4 is preferred only when it was captured at or before kickoff. An
+    in-game T4 is a live line, not a close. With no pre-kick T4, the latest
+    capture at or before kickoff is used.
+    """
     if not leg.event_id:
         return []
     rows = (
         db.query(OddsSnapshot)
         .filter(OddsSnapshot.event_id == leg.event_id)
-        .filter(OddsSnapshot.snapshot_label == "T4")
         .all()
     )
-    if rows:
-        return rows
-    # Fallback: the latest capture time we have for this event.
-    latest = (
-        db.query(OddsSnapshot)
-        .filter(OddsSnapshot.event_id == leg.event_id)
-        .order_by(OddsSnapshot.captured_at.desc())
-        .first()
-    )
-    if latest is None:
+    game = _find_game(db, leg)
+    kick = _as_utc(game.start_time) if game is not None else None
+    if kick is None:
+        kick = _as_utc(leg.commence_time)
+    if kick is None:
         return []
-    return (
-        db.query(OddsSnapshot)
-        .filter(OddsSnapshot.event_id == leg.event_id)
-        .filter(OddsSnapshot.captured_at == latest.captured_at)
-        .all()
-    )
+    pre_kick = []
+    for row in rows:
+        captured = _as_utc(row.captured_at)
+        if captured is not None and captured <= kick:
+            pre_kick.append(row)
+    if not pre_kick:
+        return []
+    t4 = [row for row in pre_kick if row.snapshot_label == "T4"]
+    if t4:
+        return t4
+    latest = max(_as_utc(row.captured_at) for row in pre_kick)
+    return [row for row in pre_kick if _as_utc(row.captured_at) == latest]
 
 
 def _median(values: list[float]) -> float | None:
