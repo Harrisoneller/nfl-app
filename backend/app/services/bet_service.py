@@ -22,6 +22,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from ..models.bet import LOST, PENDING, PUSH, WON, Bet, BetLeg
 from ..models.game import Game
 from ..models.odds_snapshot import OddsSnapshot
+from . import closing_line
 from .bets import grading
 from .sparky.odds_math import american_to_decimal
 
@@ -235,41 +236,57 @@ def _median(values: list[float]) -> float | None:
 
 
 def _apply_clv(db: Session, leg: BetLeg) -> None:
-    """Compute + store CLV for a leg against the consensus closing number."""
+    """Compute + store CLV for a leg against the consensus closing number.
+
+    Spreads and totals use the close stored on the game. They do not read
+    odds snapshots. Moneylines still use the captured American price, because
+    the game row does not store one.
+    """
     if leg.market == "player_prop":
         _apply_prop_clv(db, leg)
+        return
+    if leg.market in ("spread", "total"):
+        _apply_stored_line_clv(db, leg)
         return
     snaps = _closing_snapshot(db, leg)
     if not snaps:
         return
+    if leg.market != "moneyline":
+        return
     is_home = leg.selection == leg.home_team_id
+    prices = [s.home_ml if is_home else s.away_ml for s in snaps]
+    close = _median([float(p) for p in prices if p is not None])
+    if close is None:
+        return
+    close_american = int(round(close))
+    leg.closing_odds_american = close_american
+    leg.clv_pct = round(grading.clv_moneyline(leg.odds_american, close_american), 2)
+    leg.beat_close = leg.clv_pct > 0
 
-    if leg.market == "moneyline":
-        prices = [s.home_ml if is_home else s.away_ml for s in snaps]
-        close = _median([float(p) for p in prices if p is not None])
-        if close is None:
+
+def _apply_stored_line_clv(db: Session, leg: BetLeg) -> None:
+    """CLV for a spread or total from ``Game.closing_spread`` / ``closing_total`` only."""
+    game = _find_game(db, leg)
+    if game is None or leg.line is None:
+        return
+    if leg.market == "spread":
+        if game.closing_spread is None:
             return
-        close_american = int(round(close))
-        leg.closing_odds_american = close_american
-        leg.clv_pct = round(grading.clv_moneyline(leg.odds_american, close_american), 2)
-        leg.beat_close = leg.clv_pct > 0
-    elif leg.market == "spread":
-        # Snapshot stores home_spread/away_spread; pick the selection's side.
-        nums = [s.home_spread if is_home else s.away_spread for s in snaps]
-        close = _median([float(n) for n in nums if n is not None])
-        if close is None or leg.line is None:
-            return
-        leg.closing_line = round(close, 1)
-        leg.clv_line = round(grading.clv_spread(leg.line, close), 1)
-        leg.beat_close = leg.clv_line > 0
-    elif leg.market == "total":
-        nums = [s.total for s in snaps]
-        close = _median([float(n) for n in nums if n is not None])
-        if close is None or leg.line is None:
+        if leg.selection == leg.home_team_id:
+            close = closing_line.selection_handicap(game.closing_spread, selection_is_home=True)
+        elif leg.selection == leg.away_team_id:
+            close = closing_line.selection_handicap(game.closing_spread, selection_is_home=False)
+        else:
             return
         leg.closing_line = round(close, 1)
-        leg.clv_line = round(grading.clv_total(leg.selection, leg.line, close), 1)
+        leg.clv_line = round(closing_line.spread_clv(leg.line, close), 1)
         leg.beat_close = leg.clv_line > 0
+        return
+    if game.closing_total is None:
+        return
+    leg.closing_line = round(float(game.closing_total), 1)
+    leg.clv_line = round(closing_line.total_clv(leg.selection, leg.line, game.closing_total), 1)
+    leg.beat_close = leg.clv_line > 0
 
 
 def _apply_prop_clv(db: Session, leg: BetLeg) -> None:
