@@ -26,6 +26,7 @@ from ..models.elo import TeamEloRating
 from ..utils.seasons import latest_completed_season
 from ..utils.teams import canonical_team
 from . import artifact_cache, elo_service, ml_predictions_service, prediction_dist
+from .closing_line import LOST, WON, ats_grade, home_margin_from_nflverse, home_margin_from_sportsbook
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -125,7 +126,7 @@ async def _backtest_elo_compute(
                 "pred_spread": pred_spread,        # negative = home favored
                 "actual_margin": actual_margin,
                 "home_won": home_won,
-                # Closing-line ATS for comparison if available
+                # nflverse spread_line: positive = home favored, in margin points.
                 "closing_spread": float(g["spread_line"]) if "spread_line" in g and pd.notna(g.get("spread_line")) else None,
             }
             season_rows.append(row)
@@ -194,15 +195,19 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if pred_home == r["home_won"]:
                 high_conf_correct += 1
 
-        # ATS: did we beat the closing line?
+        # ATS on one scale: home margin. pred_spread is sportsbook
+        # (negative = home favored); closing_spread is nflverse
+        # (positive = home favored). Pushes and picks with no side are omitted.
         if r["closing_spread"] is not None:
-            ats_n += 1
-            # Our model's pick relative to the close
-            model_picks_home = r["pred_spread"] < r["closing_spread"]
-            # Did the home team cover the close?
-            home_covered = r["actual_margin"] > r["closing_spread"]
-            if model_picks_home == home_covered:
-                ats_correct += 1
+            outcome = ats_grade(
+                home_margin_from_sportsbook(r["pred_spread"]),
+                home_margin_from_nflverse(r["closing_spread"]),
+                r["actual_margin"],
+            )
+            if outcome in (WON, LOST):
+                ats_n += 1
+                if outcome == WON:
+                    ats_correct += 1
 
     mae = sum(spread_errs) / n
     rmse = (sum(e * e for e in spread_errs) / n) ** 0.5
@@ -417,11 +422,10 @@ def _score_forecasts(
 def _baseline_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Elo vs a home-field-only forecast and vs the closing line.
 
-    ``closing_spread`` uses the same convention as ``pred_spread``: negative
-    means the home team is favored. The market's expected margin is therefore
-    ``-closing_spread``. Games missing a line are left out of the market
-    block, and ``elo_on_same_games`` rescores Elo on that subset so the
-    comparison is not mixed with unpriced games.
+    ``closing_spread`` is the nflverse home margin: positive means the home
+    team is favored by that many points, so the market margin equals the
+    close. Games missing a line are left out of the market block, and
+    ``elo_on_same_games`` rescores Elo on that subset.
     """
     if not rows:
         market = _empty_score()
@@ -451,7 +455,7 @@ def _baseline_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         closing = _finite(row.get("closing_spread"))
         if closing is None:
             continue
-        market_margin = -closing
+        market_margin = home_margin_from_nflverse(closing)
         market_rows.append((
             prediction_dist.win_prob(market_margin, sigma),
             market_margin,
