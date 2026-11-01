@@ -9,11 +9,11 @@ Two data sources combined:
   DB snapshot so user traffic can't blow the budget.
 - "Edge" = our predicted spread vs market spread. >|2.0| = notable.
 
-ATS convention: `spread_line` from nflverse is HOME perspective (negative =
+ATS convention: `spread_line` from nflverse is the home margin (positive =
 home favored). A team COVERS when their actual margin beats the spread.
 
-  home covered  iff  home_margin > spread_line          (e.g. -7 spread, won by 10 → covered)
-  away covered  iff  -(home_margin) > -(spread_line) iff away_margin > -spread_line
+  home covered  iff  home_margin > spread_line          (e.g. +7 spread, won by 10 → covered)
+  away covered  iff  away_margin > -spread_line
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
     su_losses = len(sub) - su_wins
     pushes = 0
 
-    # ATS — spread_line is home perspective (negative = home favored)
+    # ATS — spread_line is the home margin (positive = home favored).
     home["covered"] = (home["home_score"] - home["away_score"]) > home["spread_line"]
     home["push"] = (home["home_score"] - home["away_score"]) == home["spread_line"]
     away["covered"] = (away["away_score"] - away["home_score"]) > -away["spread_line"]
@@ -115,11 +115,14 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
         under_wins = int((actual_total < sub2["total_line"]).sum())
         ou_pushes = int((actual_total == sub2["total_line"]).sum())
 
-    # Splits: as favorite / underdog
-    home["is_fav"] = home["spread_line"] < 0
-    away["is_fav"] = away["spread_line"] > 0  # away favored when spread_line > 0
+    # Splits: as favorite / underdog. Positive spread_line means home is favored.
+    # A pick'em (0) is neither.
+    home["is_fav"] = home["spread_line"] > 0
+    away["is_fav"] = away["spread_line"] < 0
+    home["is_dog"] = home["spread_line"] < 0
+    away["is_dog"] = away["spread_line"] > 0
     fav_games = pd.concat([home[home["is_fav"]], away[away["is_fav"]]])
-    dog_games = pd.concat([home[~home["is_fav"]], away[~away["is_fav"]]])
+    dog_games = pd.concat([home[home["is_dog"]], away[away["is_dog"]]])
 
     return {
         "games": len(sub),
