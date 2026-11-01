@@ -262,9 +262,9 @@ def fill_closing_lines_from_snapshots(db: Session) -> int:
     favored) is stored as a home margin (positive = home favored). An
     nflverse number already on the game is left alone. A snapshot is used
     only when its kickoff is within ±12 hours of the game, or when its raw
-    season and week match the game and both teams match. T4 snapshots are
-    the close when any matched book captured one. Otherwise the latest
-    capture at or before kickoff is used, so an in-game number cannot win.
+    season and week match the game and both teams match. Every capture used
+    as a close, including T4, must have been taken at or before kickoff.
+    Among those, T4 wins; otherwise the latest pre-kick capture is used.
     """
     import statistics
 
@@ -286,22 +286,22 @@ def fill_closing_lines_from_snapshots(db: Session) -> int:
         ]
         if not snaps:
             continue
+        kick = _as_utc(game.start_time)
+        pre_kick = []
+        if kick is not None:
+            for snap in snaps:
+                captured = _as_utc(snap.captured_at)
+                if captured is not None and captured <= kick:
+                    pre_kick.append(snap)
+        if not pre_kick:
+            continue
         labeled = [
-            s for s in snaps
+            s for s in pre_kick
             if s.snapshot_label == "T4" and (s.home_spread is not None or s.total is not None)
         ]
         if labeled:
             chosen = labeled
         else:
-            kick = _as_utc(game.start_time)
-            pre_kick = []
-            if kick is not None:
-                for snap in snaps:
-                    captured = _as_utc(snap.captured_at)
-                    if captured is not None and captured <= kick:
-                        pre_kick.append(snap)
-            if not pre_kick:
-                continue
             latest = max(_as_utc(s.captured_at) for s in pre_kick)
             chosen = [s for s in pre_kick if _as_utc(s.captured_at) == latest]
         spreads = [float(s.home_spread) for s in chosen if s.home_spread is not None]

@@ -231,6 +231,90 @@ def test_a_future_games_close_is_never_used():
     db.close()
 
 
+def test_in_game_t4_cannot_become_the_close():
+    engine = create_engine("sqlite://", future=True)
+    Game.__table__.create(bind=engine)
+    OddsSnapshot.__table__.create(bind=engine)
+    db = sessionmaker(bind=engine, future=True)()
+    kick = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
+    db.add(Game(
+        id="g", season=2024, week=1, start_time=kick,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="pre", captured_at=kick.replace(hour=19), commence_time=kick,
+        snapshot_label="T3", book="dk",
+        home_team_id="KC", away_team_id="BAL",
+        home_spread=-3.0, total=46.5, raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="live-t4", captured_at=kick.replace(minute=15), commence_time=kick,
+        snapshot_label="T4", book="fd",
+        home_team_id="KC", away_team_id="BAL",
+        home_spread=-14.0, total=38.0, raw={},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 1
+    game = db.get(Game, "g")
+    assert game.closing_spread == 3.0
+    assert game.closing_total == 46.5
+
+    only = Game(
+        id="only-t4", season=2024, week=2, start_time=kick,
+        home_team_id="BUF", away_team_id="MIA", status="final", raw={},
+    )
+    db.add(only)
+    db.add(OddsSnapshot(
+        event_id="only-live-t4", captured_at=kick.replace(minute=10), commence_time=kick,
+        snapshot_label="T4", book="dk",
+        home_team_id="BUF", away_team_id="MIA",
+        home_spread=-9.0, total=44.0, raw={},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 0
+    assert db.get(Game, "only-t4").closing_spread is None
+    db.close()
+
+
+def test_moneyline_clv_ignores_in_game_t4():
+    engine = create_engine("sqlite://", future=True)
+    Game.__table__.create(bind=engine)
+    OddsSnapshot.__table__.create(bind=engine)
+    db = sessionmaker(bind=engine, future=True)()
+    kick = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
+    db.add(Game(
+        id="ml-game", season=2024, week=1, start_time=kick,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="ml-game", captured_at=kick.replace(hour=19), commence_time=kick,
+        snapshot_label="T3", book="dk",
+        home_team_id="KC", away_team_id="BAL",
+        home_ml=-150, raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="ml-game", captured_at=kick.replace(minute=20), commence_time=kick,
+        snapshot_label="T4", book="fd",
+        home_team_id="KC", away_team_id="BAL",
+        home_ml=-300, raw={},
+    ))
+    db.commit()
+    leg = BetLeg(
+        market="moneyline",
+        selection="KC",
+        selection_label="KC",
+        odds_american=-110,
+        odds_decimal=1.91,
+        event_id="ml-game",
+        home_team_id="KC",
+        away_team_id="BAL",
+        commence_time=kick,
+    )
+    bet_service._apply_clv(db, leg)
+    assert leg.closing_odds_american == -150
+    db.close()
+
+
 def test_in_game_snapshot_cannot_win_the_latest_capture():
     engine = create_engine("sqlite://", future=True)
     Game.__table__.create(bind=engine)
