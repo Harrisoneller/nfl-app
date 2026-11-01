@@ -231,6 +231,53 @@ def test_a_future_games_close_is_never_used():
     db.close()
 
 
+def test_in_game_snapshot_cannot_win_the_latest_capture():
+    engine = create_engine("sqlite://", future=True)
+    Game.__table__.create(bind=engine)
+    OddsSnapshot.__table__.create(bind=engine)
+    db = sessionmaker(bind=engine, future=True)()
+    kick = datetime(2024, 9, 5, 20, tzinfo=timezone.utc)
+    db.add(Game(
+        id="g", season=2024, week=1, start_time=kick,
+        home_team_id="KC", away_team_id="BAL", status="final", raw={},
+    ))
+    # No T4 label, so the fallback is the latest capture. The in-game row
+    # is later and must not replace the pre-kick number.
+    db.add(OddsSnapshot(
+        event_id="pre", captured_at=kick.replace(hour=18), commence_time=kick,
+        snapshot_label="T2", book="dk",
+        home_team_id="KC", away_team_id="BAL",
+        home_spread=-3.0, total=46.0, raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="live", captured_at=kick.replace(minute=20), commence_time=kick,
+        snapshot_label="T2", book="fd",
+        home_team_id="KC", away_team_id="BAL",
+        home_spread=-14.0, total=40.0, raw={},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 1
+    game = db.get(Game, "g")
+    assert game.closing_spread == 3.0
+    assert game.closing_total == 46.0
+
+    only_live = Game(
+        id="late", season=2024, week=2, start_time=kick,
+        home_team_id="BUF", away_team_id="MIA", status="final", raw={},
+    )
+    db.add(only_live)
+    db.add(OddsSnapshot(
+        event_id="only-live", captured_at=kick.replace(minute=30), commence_time=kick,
+        snapshot_label=None, book="dk",
+        home_team_id="BUF", away_team_id="MIA",
+        home_spread=-7.0, total=48.0, raw={},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 0
+    assert db.get(Game, "late").closing_spread is None
+    db.close()
+
+
 def test_bet_clv_uses_stored_close_for_both_sides():
     engine = create_engine("sqlite://", future=True)
     Game.__table__.create(bind=engine)
