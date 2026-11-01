@@ -10,7 +10,7 @@ import { MarketBlendLine } from "./MarketBlendLine";
 
 /**
  * Compact game prediction card. Logos for casual readability, Elo + win
- * prob + spread + total for analytics readers, ML overlay when it diverges.
+ * prob + spread + total for analytics readers.
  */
 export function PredictionCard({ game }: { game: GamePrediction }) {
   const { persona } = usePersona();
@@ -96,12 +96,6 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
             </div>
           )}
           {persona !== "fantasy" && <WhyPredictionPanel game={game} compact />}
-          {persona === "analyst" && game.ml_prediction && Math.abs(game.ml_prediction.predicted_spread - p.predicted_spread) > 0.5 && (
-            <div className="text-[10px] text-muted pt-0.5">
-              ML: {game.ml_prediction.predicted_spread <= 0 ? game.home_team_id : game.away_team_id}{" "}
-              -{Math.abs(game.ml_prediction.predicted_spread).toFixed(1)}
-            </div>
-          )}
         </>
       )}
     </div>

@@ -49,3 +49,31 @@ async def test_games_include_ml_opt_in_still_attaches_prediction(monkeypatch):
     body = await pred_router.games(Response(), season=2025, week=1, include_ml=True, db=None)
     assert body["games"][0]["ml_prediction"]["predicted_spread"] == -3.5
     assert body["_budget"]["ml"]["tier"] == "primary"
+
+
+@pytest.mark.asyncio
+async def test_include_ml_does_not_leak_into_the_cached_payload(monkeypatch):
+    shared = {"season": 2025, "week": 1, "games": [{"id": "g1"}]}
+
+    async def predict_week(_db, _season, _week):
+        return shared
+
+    async def predict_week_ml(_db, _season, _week):
+        return {
+            "available": True,
+            "games": [{
+                "game_id": "g1",
+                "predicted_spread": -6.0,
+                "predicted_home_margin": 6.0,
+            }],
+        }
+
+    monkeypatch.setattr(pred_router.predictions_service, "predict_week", predict_week)
+    monkeypatch.setattr(pred_router.ml_predictions_service, "predict_week_ml", predict_week_ml)
+
+    opted_in = await pred_router.games(Response(), season=2025, week=1, include_ml=True, db=None)
+    assert opted_in["games"][0]["ml_prediction"]["predicted_spread"] == -6.0
+    assert "ml_prediction" not in shared["games"][0]
+
+    default = await pred_router.games(Response(), season=2025, week=1, db=None)
+    assert "ml_prediction" not in default["games"][0]

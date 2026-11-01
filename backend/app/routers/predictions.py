@@ -1,6 +1,8 @@
 """Predictions API — Elo + ML, game-level + season-level."""
 from __future__ import annotations
 
+import copy
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
@@ -48,6 +50,9 @@ async def games(
             "partial": True,
         },
     )
+    # The week cache returns this dict by reference. Mutating it would leak
+    # ml_prediction into later include_ml=false responses for the L1 TTL.
+    base = copy.deepcopy(base)
     if include_ml and base["week"] is not None:
         ml, ml_budget = await request_budget_service.run_with_budget(
             budget_name="predictions.games.ml",
