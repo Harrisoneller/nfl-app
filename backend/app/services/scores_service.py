@@ -9,7 +9,7 @@ games use their `game_id` (e.g. '2024_01_PHI_GB') as the primary key.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -223,13 +223,48 @@ def _as_utc(value: Any) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+_CLOSE_KICKOFF_WINDOW = timedelta(hours=12)
+
+
+def _snapshot_matches_game(game: Game, snap: OddsSnapshot) -> bool:
+    """True when this snapshot is this game, not another meeting of the teams.
+
+    Match the kickoff within ±12 hours, or season, week, and both teams.
+    Season and week live on ``raw`` because the snapshot table has neither
+    column. A later game's close does not match an earlier kickoff.
+    """
+    if snap.home_team_id != game.home_team_id or snap.away_team_id != game.away_team_id:
+        return False
+    game_kick = _as_utc(game.start_time)
+    snap_kick = _as_utc(snap.commence_time)
+    if game_kick is not None and snap_kick is not None:
+        if abs(game_kick - snap_kick) <= _CLOSE_KICKOFF_WINDOW:
+            return True
+    raw = snap.raw if isinstance(snap.raw, dict) else {}
+    snap_season = raw.get("season")
+    snap_week = raw.get("week")
+    if (
+        game.season is not None
+        and game.week is not None
+        and snap_season is not None
+        and snap_week is not None
+        and int(snap_season) == int(game.season)
+        and int(snap_week) == int(game.week)
+    ):
+        return True
+    return False
+
+
 def fill_closing_lines_from_snapshots(db: Session) -> int:
     """Fill missing closes from odds rows already in the database.
 
     Does not call The Odds API. A sportsbook home spread (negative = home
     favored) is stored as a home margin (positive = home favored). An
-    nflverse number already on the game is left alone. T4 snapshots are the
-    close when any book captured one; otherwise the latest capture is used.
+    nflverse number already on the game is left alone. A snapshot is used
+    only when its kickoff is within ±12 hours of the game, or when its raw
+    season and week match the game and both teams match. T4 snapshots are
+    the close when any matched book captured one; otherwise the latest
+    matched capture is used.
     """
     import statistics
 
@@ -242,14 +277,13 @@ def fill_closing_lines_from_snapshots(db: Session) -> int:
     for game in games:
         if not game.home_team_id or not game.away_team_id:
             continue
-        snaps = (
-            db.query(OddsSnapshot)
-            .filter(
+        snaps = [
+            s for s in db.query(OddsSnapshot).filter(
                 OddsSnapshot.home_team_id == game.home_team_id,
                 OddsSnapshot.away_team_id == game.away_team_id,
-            )
-            .all()
-        )
+            ).all()
+            if _snapshot_matches_game(game, s)
+        ]
         if not snaps:
             continue
         labeled = [
