@@ -161,6 +161,7 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
         row = {
             "game_id": g["game_id"],
             "season": season,
+            "game_type": str(g.get("game_type") or ""),
             "week_number": week,
             "home_team": h,
             "away_team": a,
@@ -364,6 +365,11 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
         if task == task_modeling_service.TASK_SPREAD_EDGE:
             y = big["home_margin"] - big["market_baseline_home_margin"].fillna(0.0)
         else:
+            # Known exception to the market-blind directive on the legacy live
+            # v5 path. The label is the outcome minus the market home-win
+            # probability (0.5 when the moneyline is missing), so this residual
+            # is trained on the market's miss. Left unchanged pending Harrison's
+            # decision through the blind-model track.
             y = big["home_win"] - big["market_home_win_prob"].fillna(0.5)
         model.fit(X, y, sample_weight=weights)
         preds = model.predict(X)
