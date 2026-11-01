@@ -1,4 +1,4 @@
-from app.services import task_modeling_service
+from app.services import prediction_dist, task_modeling_service
 
 
 def test_exponential_recency_weight_decay():
@@ -14,6 +14,27 @@ def test_exponential_recency_weight_decay():
     )
     assert newest > older
     assert round(newest, 3) == 1.0
+
+
+def test_nflverse_spread_line_is_the_home_margin():
+    # 2023 week 1, KC home vs DET: spread_line is +4 and KC is favored.
+    # Negating it would call KC a 4-point dog.
+    assert task_modeling_service.nflverse_home_margin(4.0) == 4.0
+    assert task_modeling_service.nflverse_home_margin(None) is None
+    baseline = task_modeling_service.market_baseline(
+        market_spread_home=4.0,
+        market_home_win_prob=None,
+    )
+    assert baseline["baseline_home_margin"] == 4.0
+    away_fav = task_modeling_service.market_baseline(
+        market_spread_home=-3.0,
+        market_home_win_prob=None,
+    )
+    assert away_fav["baseline_home_margin"] == -3.0
+    # A +4 home margin is a home favorite, so the implied win probability is over 50%.
+    home_prob = prediction_dist.win_prob(4.0, prediction_dist.margin_sigma())
+    assert home_prob > 0.5
+    assert prediction_dist.win_prob(-4.0, prediction_dist.margin_sigma()) < 0.5
 
 
 def test_market_and_residual_combination_with_fallback():

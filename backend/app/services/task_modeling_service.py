@@ -86,12 +86,27 @@ def weather_class(
     return "mild"
 
 
+def nflverse_home_margin(spread_line: float | None) -> float | None:
+    """nflverse ``spread_line`` is the home margin. Positive means home is favored.
+
+    It is not a sportsbook spread, so callers must not negate it.
+    """
+    if spread_line is None:
+        return None
+    return float(spread_line)
+
+
 def market_baseline(
     *,
     market_spread_home: float | None,
     market_home_win_prob: float | None,
 ) -> dict[str, Any]:
-    baseline_margin = None if market_spread_home is None else -float(market_spread_home)
+    """Build the market anchor from an nflverse home margin and a win probability.
+
+    ``market_spread_home`` is ``spread_line`` (positive = home favored), despite
+    the sportsbook-sounding name. The home margin is that number, not its negation.
+    """
+    baseline_margin = nflverse_home_margin(market_spread_home)
     baseline_prob = None if market_home_win_prob is None else float(market_home_win_prob)
     return {
         "available": baseline_margin is not None or baseline_prob is not None,

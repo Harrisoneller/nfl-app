@@ -153,7 +153,8 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
         )
         weather_code = {"indoor": 0, "mild": 1, "cold": 2, "wet": 3, "windy": 4}.get(weather_class, 1)
         market_spread_home = _safe(g.get("spread_line"))
-        market_baseline_margin = None if market_spread_home is None else -market_spread_home
+        # spread_line is already the home margin (positive = home favored).
+        market_baseline_margin = task_modeling_service.nflverse_home_margin(market_spread_home)
         market_home_win_prob = _market_home_win_prob(g)
         travel_proxy = _travel_proxy(home_id=h, away_id=a)
 
@@ -203,7 +204,7 @@ async def _build_features_for_season(db: Session, season: int) -> pd.DataFrame |
     df["short_week_away"] = (df["rest_days_away"] <= 6).astype(int)
     df["market_home_win_prob"] = df["market_home_win_prob"].fillna(
         df["market_spread_home"].map(
-            lambda x: prediction_dist.win_prob(-float(x), prediction_dist.margin_sigma())
+            lambda x: prediction_dist.win_prob(float(x), prediction_dist.margin_sigma())
             if pd.notna(x)
             else 0.5
         )
