@@ -1,6 +1,8 @@
 """Predictions API — Elo + ML, game-level + season-level."""
 from __future__ import annotations
 
+import copy
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
@@ -25,13 +27,13 @@ async def games(
     response: Response,
     season: int | None = None,
     week: int | None = None,
-    include_ml: bool = True,
+    include_ml: bool = False,
     db: Session = Depends(get_db),
 ):
     """Predicted spread + win prob for each game in a week.
 
-    Defaults to the next upcoming week. Returns both Elo and (optionally)
-    XGBoost ML predictions side-by-side.
+    Defaults to the next upcoming week. Elo is always returned. XGBoost ML
+    predictions are off unless the caller passes include_ml=true.
     """
     season = season or current_or_upcoming_season()
     base, base_budget = await request_budget_service.run_with_budget(
@@ -48,6 +50,9 @@ async def games(
             "partial": True,
         },
     )
+    # The week cache returns this dict by reference. Mutating it would leak
+    # ml_prediction into later include_ml=false responses for the L1 TTL.
+    base = copy.deepcopy(base)
     if include_ml and base["week"] is not None:
         ml, ml_budget = await request_budget_service.run_with_budget(
             budget_name="predictions.games.ml",

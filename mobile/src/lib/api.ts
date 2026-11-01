@@ -1031,7 +1031,7 @@ export const api = {
   predictGames: (
     season?: number,
     week?: number,
-    includeML = true,
+    includeML = false,
     policy?: FetchPolicy,
   ) => {
     const qs = new URLSearchParams();
