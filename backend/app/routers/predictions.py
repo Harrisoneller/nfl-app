@@ -25,13 +25,13 @@ async def games(
     response: Response,
     season: int | None = None,
     week: int | None = None,
-    include_ml: bool = True,
+    include_ml: bool = False,
     db: Session = Depends(get_db),
 ):
     """Predicted spread + win prob for each game in a week.
 
-    Defaults to the next upcoming week. Returns both Elo and (optionally)
-    XGBoost ML predictions side-by-side.
+    Defaults to the next upcoming week. Elo is always returned. XGBoost ML
+    predictions are off unless the caller passes include_ml=true.
     """
     season = season or current_or_upcoming_season()
     base, base_budget = await request_budget_service.run_with_budget(

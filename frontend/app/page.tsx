@@ -78,7 +78,7 @@ export default async function HomePage() {
   const [scoreboard, predictionsRaw, eloRatings, freshness] = await Promise.all([
     safe(api.scoreboard(12, { revalidate: 15 }), [], "scoreboard"),
     safe(
-      api.predictGames(undefined, undefined, true, { revalidate: 60 }),
+      api.predictGames(undefined, undefined, false, { revalidate: 60 }),
       { season: 0, week: null, games: [], partial: true },
       "predictions",
       () => { predictionsFailed = true; },

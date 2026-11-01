@@ -85,7 +85,7 @@ export default function TeamPage({ params }: { params: { id: string } }) {
   );
   const { data: weekPreds } = useSWR(
     ["all-week-preds"],
-    () => api.predictGames(undefined, undefined, true),
+    () => api.predictGames(),
     { revalidateOnFocus: false },
   );
   const { data: teamSchedule } = useSWR(
@@ -443,7 +443,7 @@ function PredictionsTab({
 
       <TeamRemainingScheduleCard teamId={id} />
 
-      <Card title="Upcoming games — Elo + ML predictions">
+      <Card title="Upcoming games — Elo predictions">
         {myUpcoming.length === 0 ? (
           <p className="text-sm text-muted">
             No upcoming games found. The system shows predictions for the next unplayed
@@ -486,21 +486,13 @@ function UpcomingPredictionRow({
         homeTeam={g.home_team_id}
         homeProb={g.prediction.home_win_prob}
       />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-3 text-xs">
         <Mini label="Win prob" value={`${(myProb * 100).toFixed(0)}%`} />
         <Mini
           label="Predicted spread"
           value={`${g.prediction.predicted_spread <= 0 ? g.home_team_id : g.away_team_id} -${Math.abs(g.prediction.predicted_spread).toFixed(1)}`}
         />
         <Mini label="Predicted total" value={g.prediction.predicted_total.toFixed(1)} />
-        <Mini
-          label="ML spread"
-          value={
-            g.ml_prediction
-              ? `${g.ml_prediction.predicted_spread <= 0 ? g.home_team_id : g.away_team_id} -${Math.abs(g.ml_prediction.predicted_spread).toFixed(1)}`
-              : "n/a"
-          }
-        />
       </div>
     </div>
   );
