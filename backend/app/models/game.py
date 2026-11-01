@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,13 @@ class Game(Base, TimestampMixin):
     )
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Closing home margin from nflverse ``spread_line`` (or the negation of a
+    # stored sportsbook home spread). Positive = home favored by that many
+    # points. NULL until a close is copied from data we already have.
+    closing_spread: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Closing points total. Same number in nflverse ``total_line`` and in
+    # already-captured odds snapshots.
+    closing_total: Mapped[float | None] = mapped_column(Float, nullable=True)
     venue: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     broadcast: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
