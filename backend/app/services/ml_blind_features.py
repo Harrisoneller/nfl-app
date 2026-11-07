@@ -55,9 +55,9 @@ def team_game_epa(pbp: pd.DataFrame | None, schedule: pd.DataFrame) -> pd.DataFr
     """Mean pass/run EPA for and against, one row per team-game.
 
     Preseason plays are dropped when ``season_type`` is present. The gameday
-    comes from the schedule. Games the schedule marks PRE are dropped.
+    and season come from the schedule. Games the schedule marks PRE are dropped.
     """
-    empty = pd.DataFrame(columns=["game_id", "gameday", "team", "off_epa", "def_epa"])
+    empty = pd.DataFrame(columns=["game_id", "gameday", "season", "team", "off_epa", "def_epa"])
     if pbp is None or len(pbp) == 0 or "epa" not in pbp.columns:
         return empty
     df = pbp.copy()
@@ -74,8 +74,14 @@ def team_game_epa(pbp: pd.DataFrame | None, schedule: pd.DataFrame) -> pd.DataFr
     deff = df.groupby(["game_id", "defteam"], sort=False)["epa"].mean().reset_index()
     deff.columns = ["game_id", "team", "def_epa"]
     merged = off.merge(deff, on=["game_id", "team"], how="outer")
-    dates = schedule[["game_id", "gameday"]].drop_duplicates("game_id")
+    keep = ["game_id", "gameday"]
+    if "season" in schedule.columns:
+        keep.append("season")
+    dates = schedule[keep].drop_duplicates("game_id")
     merged = merged.merge(dates, on="game_id", how="left")
+    if "season" not in merged.columns and "season" in df.columns:
+        by_game = df.groupby("game_id", sort=False)["season"].first()
+        merged = merged.merge(by_game.rename("season"), left_on="game_id", right_index=True, how="left")
     if "game_type" in schedule.columns:
         pre = set(
             schedule.loc[

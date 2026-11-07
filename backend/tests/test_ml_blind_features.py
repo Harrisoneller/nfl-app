@@ -301,3 +301,43 @@ def test_prefit_coverage_accepts_2011_history_and_rejects_gaps():
     later["season"] = 2012
     with pytest.raises(ValueError, match="2011"):
         assert_prefit_coverage(no_prior, later)
+
+
+def _plays(game_id, season, offense, defense, epa):
+    return {
+        "game_id": game_id,
+        "season": season,
+        "season_type": "REG",
+        "play_type": "pass",
+        "posteam": offense,
+        "defteam": defense,
+        "epa": epa,
+    }
+
+
+def test_prefit_coverage_reads_season_from_the_real_epa_builder():
+    """The coverage check must see season on team_game_epa output, not a hand-built column."""
+    schedule = pd.DataFrame([
+        _slate("h", "2011-09-11", 2011, 1, "REG", "KC", "DEN"),
+        _slate("y", "2012-09-09", 2012, 1, "REG", "KC", "DEN"),
+    ])
+    plays = pd.DataFrame([
+        _plays("h", 2011, "KC", "DEN", 0.2),
+        _plays("h", 2011, "DEN", "KC", -0.1),
+        _plays("y", 2012, "KC", "DEN", 0.3),
+        _plays("y", 2012, "DEN", "KC", 0.0),
+    ])
+    built = team_game_epa(plays, schedule)
+    assert "season" in built.columns
+    assert set(built["season"].astype(int)) == {2011, 2012}
+    counts = assert_prefit_coverage(schedule, built)
+    assert counts == {
+        "reg_team_games": 2,
+        "missing_epa_history": 0,
+        "unknown_ids": 0,
+        "has_2011": 1,
+    }
+    only_2012 = team_game_epa(plays[plays["season"] == 2012], schedule[schedule["season"] == 2012])
+    assert "season" in only_2012.columns
+    with pytest.raises(ValueError, match="2011"):
+        assert_prefit_coverage(schedule[schedule["season"] == 2012], only_2012)

@@ -25,7 +25,7 @@ Season carry for Elo is applied for the target season before that row is read. T
 
 Rest uses the schedule only (`d < D`). Roof is indoor or not. Realized wind, temperature, and precipitation are not features. Market columns are not features. The allowlist and the trainer constants are `spec_document()` and `TRAIN_SPEC.json`.
 
-Pre-fit, and only after the external SHA matches, the script asserts: 2011 schedule and EPA history are present, every team id is known, and every REG 2012–2025 team-game has EPA from a game on or before its cutoff. That assertion is implemented and tested on synthetic fixtures. It is not run on the real seasons in this commit.
+Pre-fit, and only after the external SHA matches, the script asserts: 2011 schedule and EPA history are present, every team id is known, and every REG 2012–2025 team-game has EPA from a game on or before its cutoff. `team_game_epa` carries `season` from the schedule, or from the play-by-play file when the schedule has no season, so that assertion can see 2011. The fetch starts at 2011 (`HISTORY_SEASON`) and continues through 2025. 2011 is history only: it is not a selection season and not a final-evaluation season. The assertion is not dropped, and 2011 is not removed from the fetch. The check is tested by passing synthetic plays through `team_game_epa` and then into `assert_prefit_coverage`. It is not run on the real seasons in this commit.
 
 ## Targets
 
@@ -84,3 +84,11 @@ A passing verdict is the token SHIP with `enables_ml` false and `merge_authorize
 - `research/nfl-ml-blind/RESULTS.json` does not exist. The writer refuses if it does, and it does not overwrite.
 
 The run records SHA-256 of the schedule file, of each play-by-play parquet, and of the code and spec snapshot. None of that is computed in this commit.
+
+## Study record: e9130494 abort
+
+QA classified the run of `e9130494de29ad10ff8db472142c2e5b7f0ec943` as an execution failure before statistical exposure. The look is not spent. The script raised `ValueError: 2011 EPA history is required` inside `assert_prefit_coverage` because `team_game_epa` did not emit `season`. No selection z, power, n, or cluster count was computed. The 2016–2025 sample was not opened. `RESULTS.json` was not written.
+
+Original log SHA-256: `6e2df3aef82f06d685803d4fc797108e5391a323700dc905edcd68a32960d9fc`
+
+That log file is preserved and was not rewritten. This commit does not rerun the evaluation.
