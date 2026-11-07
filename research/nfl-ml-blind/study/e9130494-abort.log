@@ -1,0 +1,22 @@
+locked_sha=e9130494de29ad10ff8db472142c2e5b7f0ec943
+started_utc=2026-11-07T11:23:52Z
+command=cd /agent/repos/nfl-app/backend && NFL_ML_BLIND_LOCKED_SHA=e9130494de29ad10ff8db472142c2e5b7f0ec943 PYTHONUNBUFFERED=1 /tmp/nfl-venv/bin/python -m scripts.eval_nfl_ml_blind
+head=e9130494de29ad10ff8db472142c2e5b7f0ec943
+tracked_status<<END
+END
+prior_research_results=absent
+--- script stdout/stderr ---
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/agent/repos/nfl-app/backend/scripts/eval_nfl_ml_blind.py", line 229, in <module>
+    main()
+  File "/agent/repos/nfl-app/backend/scripts/eval_nfl_ml_blind.py", line 225, in main
+    run_locked_eval()
+  File "/agent/repos/nfl-app/backend/scripts/eval_nfl_ml_blind.py", line 77, in run_locked_eval
+    coverage = assert_prefit_coverage(sched, pd.concat(epa_frames, ignore_index=True))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/agent/repos/nfl-app/backend/app/services/ml_blind_features.py", line 328, in assert_prefit_coverage
+    raise ValueError("2011 EPA history is required")
+ValueError: 2011 EPA history is required
+EXIT:1

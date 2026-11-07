@@ -1,0 +1,20 @@
+locked_sha=44077c965fc4e430f88aa859be8ad2536811554c
+started_utc=2026-11-07T11:38:58Z
+command=cd /agent/repos/nfl-app/backend && NFL_ML_BLIND_LOCKED_SHA=44077c965fc4e430f88aa859be8ad2536811554c PYTHONUNBUFFERED=1 /tmp/nfl-venv/bin/python /opt/cursor/artifacts/run_nfl_ml_blind_44077c9.py
+head=44077c965fc4e430f88aa859be8ad2536811554c
+tracked_status<<END
+END
+prior_e913049_log_sha256=6e2df3aef82f06d685803d4fc797108e5391a323700dc905edcd68a32960d9fc
+prior_research_results=absent
+note=external runner logs coverage and selection return values; locked functions are otherwise unchanged
+--- script stdout/stderr ---
+COVERAGE_RECORD {"reg_team_games": 7326, "missing_epa_history": 0, "unknown_ids": 0, "has_2011": 1}
+SELECTION_RECORD {"n_rows": 768, "n_with_close": 768, "n_clusters_in_rows": 51, "decision": {"z": -5.218876433529135, "power": 0.9676390443967837, "open_final": false, "n_clusters_selection": 51, "n_clusters_final": 175}}
+Traceback (most recent call last):
+  File "/opt/cursor/artifacts/run_nfl_ml_blind_44077c9.py", line 65, in <module>
+    summary = ev.run_locked_eval()
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/agent/repos/nfl-app/backend/scripts/eval_nfl_ml_blind.py", line 87, in run_locked_eval
+    raise RuntimeError("selection did not open the final evaluation; 2016-2025 was not scored")
+RuntimeError: selection did not open the final evaluation; 2016-2025 was not scored
+WRAPPER_EXIT:1
