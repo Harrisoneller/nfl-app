@@ -531,14 +531,13 @@ async def _backtest_ml_compute(
     if len(test) == 0:
         return {"available": False, "reason": "test set is empty"}
 
-    feats = ml_predictions_service._FEATURES  # noqa: SLF001
-    X_train, y_train = train[feats], train["home_margin"]
-    X_test, y_test = test[feats], test["home_margin"]
+    from .ml_blind_features import model_matrix
+    from .ml_blind_spec import SPREAD_MODEL_PARAMS
 
-    model = xgb.XGBRegressor(
-        n_estimators=300, max_depth=4, learning_rate=0.05,
-        subsample=0.85, colsample_bytree=0.85, random_state=42,
-    )
+    X_train, y_train = model_matrix(train), train["home_margin"]
+    X_test, y_test = model_matrix(test), test["home_margin"]
+
+    model = xgb.XGBRegressor(**SPREAD_MODEL_PARAMS)
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
 
@@ -550,7 +549,7 @@ async def _backtest_ml_compute(
 
     # Feature importance
     importance = sorted(
-        zip(feats, model.feature_importances_.tolist()),
+        zip(list(X_train.columns), model.feature_importances_.tolist()),
         key=lambda x: -x[1],
     )
     feat_imp = [{"feature": f, "importance": round(imp, 4)} for f, imp in importance]
