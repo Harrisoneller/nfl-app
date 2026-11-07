@@ -237,22 +237,23 @@ def _snapshot_matches_game(game: Game, snap: OddsSnapshot) -> bool:
         return False
     game_kick = _as_utc(game.start_time)
     snap_kick = _as_utc(snap.commence_time)
-    if game_kick is not None and snap_kick is not None:
-        if abs(game_kick - snap_kick) <= _CLOSE_KICKOFF_WINDOW:
-            return True
+    if (
+        game_kick is not None
+        and snap_kick is not None
+        and abs(game_kick - snap_kick) <= _CLOSE_KICKOFF_WINDOW
+    ):
+        return True
     raw = snap.raw if isinstance(snap.raw, dict) else {}
     snap_season = raw.get("season")
     snap_week = raw.get("week")
-    if (
+    return (
         game.season is not None
         and game.week is not None
         and snap_season is not None
         and snap_week is not None
         and int(snap_season) == int(game.season)
         and int(snap_week) == int(game.week)
-    ):
-        return True
-    return False
+    )
 
 
 def fill_closing_lines_from_snapshots(db: Session) -> int:
