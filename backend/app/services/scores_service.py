@@ -9,7 +9,7 @@ games use their `game_id` (e.g. '2024_01_PHI_GB') as the primary key.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -18,8 +18,13 @@ from ..adapters.data.espn import ESPNScoreboardAdapter
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..logging_config import get_logger
 from ..models.game import Game
+from ..models.odds_snapshot import OddsSnapshot
 from ..models.team import Team
 from ..utils.teams import canonical_team
+from .closing_line import (
+    closing_numbers_from_nflverse,
+    closing_numbers_from_sportsbook,
+)
 
 log = get_logger(__name__)
 _nfl_data = NflDataPyAdapter()
@@ -138,7 +143,7 @@ def _schedule_values(row: dict[str, Any], season: int) -> dict[str, Any]:
         status, detail = "final", "Final"
     else:
         status, detail = "scheduled", ""
-    return {
+    values: dict[str, Any] = {
         "season": int(row.get("season") or season),
         "season_type": _season_type(row.get("game_type")),
         "week": _safe_int(row.get("week")),
@@ -152,6 +157,14 @@ def _schedule_values(row: dict[str, Any], season: int) -> dict[str, Any]:
         "venue": (row.get("stadium") or "")[:128],
         "broadcast": (row.get("network") or "")[:64],
     }
+    spread, total = closing_numbers_from_nflverse(row.get("spread_line"), row.get("total_line"))
+    # Only write a close we actually have. A later snapshot fill can set a
+    # missing number without this path blanking one that is already stored.
+    if spread is not None:
+        values["closing_spread"] = spread
+    if total is not None:
+        values["closing_total"] = total
+    return values
 
 
 def _upsert_game(db: Session, game_id: str, values: dict[str, Any]) -> str:
@@ -208,6 +221,108 @@ def _as_utc(value: Any) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+_CLOSE_KICKOFF_WINDOW = timedelta(hours=12)
+
+
+def _snapshot_matches_game(game: Game, snap: OddsSnapshot) -> bool:
+    """True when this snapshot is this game, not another meeting of the teams.
+
+    Match the kickoff within ±12 hours, or season, week, and both teams.
+    Season and week live on ``raw`` because the snapshot table has neither
+    column. A later game's close does not match an earlier kickoff.
+    """
+    if snap.home_team_id != game.home_team_id or snap.away_team_id != game.away_team_id:
+        return False
+    game_kick = _as_utc(game.start_time)
+    snap_kick = _as_utc(snap.commence_time)
+    if (
+        game_kick is not None
+        and snap_kick is not None
+        and abs(game_kick - snap_kick) <= _CLOSE_KICKOFF_WINDOW
+    ):
+        return True
+    raw = snap.raw if isinstance(snap.raw, dict) else {}
+    snap_season = raw.get("season")
+    snap_week = raw.get("week")
+    return (
+        game.season is not None
+        and game.week is not None
+        and snap_season is not None
+        and snap_week is not None
+        and int(snap_season) == int(game.season)
+        and int(snap_week) == int(game.week)
+    )
+
+
+def fill_closing_lines_from_snapshots(db: Session) -> int:
+    """Fill missing closes from odds rows already in the database.
+
+    Does not call The Odds API. A sportsbook home spread (negative = home
+    favored) is stored as a home margin (positive = home favored). An
+    nflverse number already on the game is left alone. A snapshot is used
+    only when its kickoff is within ±12 hours of the game, or when its raw
+    season and week match the game and both teams match. Every capture used
+    as a close, including T4, must have been taken at or before kickoff.
+    Among those, T4 wins; otherwise the latest pre-kick capture is used.
+    """
+    import statistics
+
+    games = (
+        db.query(Game)
+        .filter((Game.closing_spread.is_(None)) | (Game.closing_total.is_(None)))
+        .all()
+    )
+    written = 0
+    for game in games:
+        if not game.home_team_id or not game.away_team_id:
+            continue
+        snaps = [
+            s for s in db.query(OddsSnapshot).filter(
+                OddsSnapshot.home_team_id == game.home_team_id,
+                OddsSnapshot.away_team_id == game.away_team_id,
+            ).all()
+            if _snapshot_matches_game(game, s)
+        ]
+        if not snaps:
+            continue
+        kick = _as_utc(game.start_time)
+        pre_kick = []
+        if kick is not None:
+            for snap in snaps:
+                captured = _as_utc(snap.captured_at)
+                if captured is not None and captured <= kick:
+                    pre_kick.append(snap)
+        if not pre_kick:
+            continue
+        labeled = [
+            s for s in pre_kick
+            if s.snapshot_label == "T4" and (s.home_spread is not None or s.total is not None)
+        ]
+        if labeled:
+            chosen = labeled
+        else:
+            latest = max(_as_utc(s.captured_at) for s in pre_kick)
+            chosen = [s for s in pre_kick if _as_utc(s.captured_at) == latest]
+        spreads = [float(s.home_spread) for s in chosen if s.home_spread is not None]
+        totals = [float(s.total) for s in chosen if s.total is not None]
+        margin, total = closing_numbers_from_sportsbook(
+            statistics.median(spreads) if spreads else None,
+            statistics.median(totals) if totals else None,
+        )
+        changed = False
+        if game.closing_spread is None and margin is not None:
+            game.closing_spread = margin
+            changed = True
+        if game.closing_total is None and total is not None:
+            game.closing_total = total
+            changed = True
+        if changed:
+            written += 1
+    if written:
+        db.commit()
+    return written
 
 
 def list_current_games(db: Session, limit: int = 32) -> list[Game]:
