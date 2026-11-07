@@ -20,13 +20,18 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
-from ..cache import cache
 from ..logging_config import get_logger
 from ..models.elo import TeamEloRating
 from ..utils.seasons import latest_completed_season
 from ..utils.teams import canonical_team
 from . import artifact_cache, elo_service, ml_predictions_service, prediction_dist
-from .closing_line import LOST, WON, ats_grade, home_margin_from_nflverse, home_margin_from_sportsbook
+from .closing_line import (
+    LOST,
+    WON,
+    ats_grade,
+    home_margin_from_nflverse,
+    home_margin_from_sportsbook,
+)
 
 log = get_logger(__name__)
 _nfl = NflDataPyAdapter()
@@ -480,7 +485,10 @@ def _baseline_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def backtest_ml(
-    db: Session, test_season: int | None = None, train_seasons: list[int] | None = None,
+    db: Session,
+    test_season: int | None = None,
+    train_seasons: list[int] | None = None,
+    locked_sha: str | None = None,
 ) -> dict[str, Any]:
     """Train XGBoost on `train_seasons`, evaluate on `test_season` (out-of-sample).
 
@@ -488,18 +496,25 @@ async def backtest_ml(
     most recent completed season. Returns MAE/RMSE/accuracy for the held-out
     season + a feature-importance summary.
     """
+    from .ml_blind_guard import LockRefusal, assert_fit_allowed
+
+    try:
+        assert_fit_allowed(locked_sha)
+    except LockRefusal as exc:
+        return {"available": False, "reason": "qa_lock_required", "detail": str(exc)}
+
     latest = latest_completed_season()
     test_season = test_season or latest
     train_seasons = train_seasons or list(range(test_season - 4, test_season))
 
-    xgb = ml_predictions_service._xgb()  # noqa: SLF001
+    xgb = ml_predictions_service._xgb()
     if xgb is None:
         return {"available": False, "reason": "xgboost not installed"}
 
     artifact_key = f"test:{test_season}:train:{','.join(str(s) for s in train_seasons)}"
 
     async def _compute() -> dict[str, Any]:
-        return await _backtest_ml_compute(db, test_season, train_seasons, xgb)
+        return await _backtest_ml_compute(db, test_season, train_seasons, xgb, locked_sha)
 
     return await artifact_cache.get_or_compute(
         kind="backtest_ml",
@@ -512,19 +527,23 @@ async def backtest_ml(
 
 async def _backtest_ml_compute(
     db: Session, test_season: int, train_seasons: list[int], xgb,
+    locked_sha: str | None = None,
 ) -> dict[str, Any]:
+    from .ml_blind_guard import assert_fit_allowed
+
+    assert_fit_allowed(locked_sha)
 
     # Build training frame
     train_frames = []
     for s in train_seasons:
-        df = await ml_predictions_service._build_features_for_season(db, s)  # noqa: SLF001
+        df = await ml_predictions_service._build_features_for_season(db, s)
         if df is not None:
             train_frames.append(df.dropna(subset=["home_margin"]))
     if not train_frames:
         return {"available": False, "reason": "no training data"}
     train = pd.concat(train_frames, ignore_index=True)
 
-    test_df = await ml_predictions_service._build_features_for_season(db, test_season)  # noqa: SLF001
+    test_df = await ml_predictions_service._build_features_for_season(db, test_season)
     if test_df is None:
         return {"available": False, "reason": "no test data"}
     test = test_df.dropna(subset=["home_margin"])
@@ -558,8 +577,8 @@ async def _backtest_ml_compute(
         "available": True,
         "train_seasons": train_seasons,
         "test_season": test_season,
-        "n_train": int(len(train)),
-        "n_test": int(len(test)),
+        "n_train": len(train),
+        "n_test": len(test),
         "spread_mae": round(mae, 2),
         "spread_rmse": round(rmse, 2),
         "classifier_accuracy_pct": round(correct, 1),

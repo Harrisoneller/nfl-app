@@ -22,6 +22,8 @@ from ..logging_config import get_logger
 from ..utils.teams import canonical_team
 from . import feature_store_service, task_modeling_service
 from .ml_blind_features import build_market_blind_frame, model_matrix, team_game_epa
+from .ml_blind_guard import assert_fit_allowed
+from .ml_blind_protocol import inner_oof_plan
 from .ml_blind_spec import (
     FEATURE_COLUMNS,
     PLATT_EPOCHS,
@@ -166,8 +168,17 @@ def _training_rows(frame: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def fit_market_blind_models(frame: pd.DataFrame) -> dict[str, Any]:
-    """Fit the raw-margin regressor and the raw-win classifier. No market columns."""
+def fit_market_blind_models(
+    frame: pd.DataFrame,
+    locked_sha: str | None = None,
+    **guard_kwargs: Any,
+) -> dict[str, Any]:
+    """Fit the raw-margin regressor and the raw-win classifier. No market columns.
+
+    Platt uses inner-season out-of-fold probabilities only. The guard runs
+    before any tree is fit.
+    """
+    assert_fit_allowed(locked_sha, **guard_kwargs)
     xgb = _xgb()
     if xgb is None:
         return {"trained": False, "reason": "xgboost not installed"}
@@ -180,11 +191,10 @@ def fit_market_blind_models(frame: pd.DataFrame) -> dict[str, Any]:
     spread.fit(matrix, data["home_margin"].astype(float), sample_weight=weights)
     win = xgb.XGBClassifier(**WIN_MODEL_PARAMS)
     win.fit(matrix, data["home_win"].astype(int), sample_weight=weights)
-    raw_probs = [float(p) for p in win.predict_proba(matrix)[:, 1]]
-    outcomes = data["home_win"].astype(int).tolist()
+    oof_probs, oof_outcomes = _oof_win_probabilities(data, xgb)
     platt = task_modeling_service.fit_platt_calibration(
-        raw_probs=raw_probs,
-        outcomes=outcomes,
+        raw_probs=oof_probs,
+        outcomes=oof_outcomes,
         epochs=PLATT_EPOCHS,
         learning_rate=PLATT_LEARNING_RATE,
     )
@@ -196,7 +206,32 @@ def fit_market_blind_models(frame: pd.DataFrame) -> dict[str, Any]:
         "rows": len(data),
         "features": list(matrix.columns),
         "margin_mae": float(abs(spread.predict(matrix) - data["home_margin"].to_numpy()).mean()),
+        "oof_probs": oof_probs,
+        "oof_outcomes": oof_outcomes,
     }
+
+
+def _oof_win_probabilities(data: pd.DataFrame, xgb: Any) -> tuple[list[float], list[int]]:
+    """Probabilities for inner seasons from models fit only on earlier seasons."""
+    probs: list[float] = []
+    outcomes: list[int] = []
+    for cal_season, prior in inner_oof_plan(data["season"].tolist()):
+        if cal_season in prior:
+            raise RuntimeError("OOF calibration season leaked into its training fold")
+        train = data[data["season"].isin(prior)]
+        cal = data[data["season"] == cal_season]
+        if len(train) == 0 or len(cal) == 0:
+            continue
+        model = xgb.XGBClassifier(**WIN_MODEL_PARAMS)
+        model.fit(
+            model_matrix(train),
+            train["home_win"].astype(int),
+            sample_weight=_sample_weight(train),
+        )
+        folded = model.predict_proba(model_matrix(cal))[:, 1]
+        probs.extend(float(p) for p in folded)
+        outcomes.extend(int(y) for y in cal["home_win"].tolist())
+    return probs, outcomes
 
 
 def predict_market_blind(
@@ -214,8 +249,14 @@ def predict_market_blind(
     return margins, calibrated, raw
 
 
-async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
+async def train(
+    db: Session,
+    seasons: list[int],
+    locked_sha: str | None = None,
+    **guard_kwargs: Any,
+) -> dict[str, Any]:
     """Fit the raw-target models and write their artifacts. Does not enable serving."""
+    assert_fit_allowed(locked_sha, **guard_kwargs)
     frames: list[pd.DataFrame] = []
     for season in seasons:
         df = await _build_features_for_season(db, season)
@@ -224,7 +265,7 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
     if not frames:
         return {"trained": False, "reason": "no training data"}
     big = pd.concat(frames, ignore_index=True)
-    fitted = fit_market_blind_models(big)
+    fitted = fit_market_blind_models(big, locked_sha, **guard_kwargs)
     if not fitted.get("trained"):
         return fitted
 
@@ -249,10 +290,12 @@ async def train(db: Session, seasons: list[int]) -> dict[str, Any]:
         calibration_payload = None
         if task == task_modeling_service.TASK_WIN_PROBABILITY:
             previous = _load_task_calibration(task)
-            data = _training_rows(big)
-            _, calibrated, raw = predict_market_blind(fitted, data)
-            outcomes = data["home_win"].astype(int).tolist()
+            raw = fitted["oof_probs"]
+            outcomes = fitted["oof_outcomes"]
             platt = fitted["platt"]
+            calibrated = [
+                task_modeling_service.apply_platt_calibration(p, platt) for p in raw
+            ]
             metrics = {
                 "ece": round(task_modeling_service.expected_calibration_error(calibrated, outcomes), 6),
                 "brier": round(task_modeling_service.brier_score(calibrated, outcomes), 6),

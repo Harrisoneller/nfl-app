@@ -1,8 +1,8 @@
-"""Locked constants for the market-blind NFL ML retrain.
+"""Constants for the market-blind NFL ML lock candidate.
 
-The human contract is ``research/nfl-ml-blind/PREREG.md``.
-``research/nfl-ml-blind/TRAIN_SPEC.json`` must match this module.
-Do not change a value after the holdout has been scored.
+The contract is ``research/nfl-ml-blind/PREREG.md``.
+``research/nfl-ml-blind/TRAIN_SPEC.json`` must match ``spec_document()``.
+This module does not embed a commit SHA. QA identifies the lock commit from git.
 """
 from __future__ import annotations
 
@@ -12,11 +12,21 @@ SEED = 20261026
 SIGMA = 13.5
 RESULT_LAG_DAYS = 2
 TRAIN_FIRST_SEASON = 2012
-TEST_SEASON_FIRST = 2016
-TEST_SEASON_LAST = 2025
+HISTORY_SEASON = 2011
+SELECTION_SEASONS = (2013, 2014, 2015)
+FINAL_SEASON_FIRST = 2016
+FINAL_SEASON_LAST = 2025
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_PERCENTILES = (5.0, 95.0)
-ATS_NONINFERIORITY = -0.005
+# Candidate CRPS minus close CRPS. Cluster 95th percentile must be at or below this.
+CLOSE_NI_UPPER = 0.25
+# Candidate cover rate minus incumbent cover rate, in percentage points.
+ATS_CLUSTER_LOWER_PP = -2.0
+Z_MIN = 2.0
+POWER_MIN = 0.5
+MDE_CRPS = 0.25
+# Standard-normal 95th percentile. The 90% interval's upper end.
+Z_CRIT_95 = 1.6448536269514722
 
 EPA_WINDOW = 4
 EPA_HALF_LIFE_GAMES = 3.5
@@ -116,11 +126,13 @@ HISTORY_GAME_TYPES = frozenset({"REG", "POST"})
 GRADED_GAME_TYPE = "REG"
 
 INCUMBENT_MODEL_VERSION = "qb-ridge-v5"
+INCUMBENT_MODE = "walk_forward_stage2"
+FROZEN_PROD_REPLAY = "descriptive_only"
 INCUMBENT_COMMIT = "389498b7a060c8e62619b3369515f14ac00b72ff"
 INCUMBENT_DEPLOYMENT = "2d608399-7172-4007-874e-17c8ed19bfa5"
-PREREG_SHA = "dbbe0fbcf3f8345cc1e5d4f98ca9fc0e320c3604"
-QA_LOCK_ENV = "NFL_ML_BLIND_EVAL_CONFIRM"
-QA_LOCK_VALUE = "QA-LOCK"
+LOCKED_SHA_ENV = "NFL_ML_BLIND_LOCKED_SHA"
+PLATT_SCHEME = "inner_season_oof"
+SIGMA_ROLE = "scoring_convention_not_production_distribution"
 
 
 def is_market_name(name: str) -> bool:
@@ -145,5 +157,61 @@ def assert_feature_allowlist(columns: Iterable[str]) -> None:
         raise ValueError(f"columns are not on the feature allowlist: {unknown}")
 
 
+def final_seasons() -> list[int]:
+    return list(range(FINAL_SEASON_FIRST, FINAL_SEASON_LAST + 1))
+
+
 def test_seasons() -> list[int]:
-    return list(range(TEST_SEASON_FIRST, TEST_SEASON_LAST + 1))
+    """Final-evaluation seasons. Selection seasons are not included."""
+    return final_seasons()
+
+
+def ats_cluster_lower_rate() -> float:
+    return ATS_CLUSTER_LOWER_PP / 100.0
+
+
+def spec_document() -> dict:
+    """JSON-comparable copy of the lock constants. No commit SHA."""
+    return {
+        "seed": SEED,
+        "sigma": SIGMA,
+        "sigma_role": SIGMA_ROLE,
+        "result_lag_days": RESULT_LAG_DAYS,
+        "train_first_season": TRAIN_FIRST_SEASON,
+        "history_season": HISTORY_SEASON,
+        "selection_seasons": list(SELECTION_SEASONS),
+        "final_seasons": final_seasons(),
+        "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
+        "bootstrap_percentiles": list(BOOTSTRAP_PERCENTILES),
+        "bootstrap_cluster": "season_week",
+        "close_ni_upper": CLOSE_NI_UPPER,
+        "ats_cluster_lower_pp": ATS_CLUSTER_LOWER_PP,
+        "z_min": Z_MIN,
+        "power_min": POWER_MIN,
+        "mde_crps": MDE_CRPS,
+        "z_crit_95": Z_CRIT_95,
+        "incumbent": INCUMBENT_MODE,
+        "frozen_prod_replay": FROZEN_PROD_REPLAY,
+        "incumbent_model_version": INCUMBENT_MODEL_VERSION,
+        "incumbent_commit": INCUMBENT_COMMIT,
+        "incumbent_deployment": INCUMBENT_DEPLOYMENT,
+        "platt": PLATT_SCHEME,
+        "platt_fit": {
+            "epochs": PLATT_EPOCHS,
+            "learning_rate": PLATT_LEARNING_RATE,
+            "min_rows": PLATT_MIN_ROWS,
+        },
+        "elo": {
+            "k": ELO_K,
+            "home_field": ELO_HOME_FIELD,
+            "initial": ELO_INITIAL,
+            "season_carry": ELO_SEASON_CARRY,
+        },
+        "epa_window": EPA_WINDOW,
+        "epa_half_life_games": EPA_HALF_LIFE_GAMES,
+        "features": list(FEATURE_COLUMNS),
+        "spread_model": dict(SPREAD_MODEL_PARAMS),
+        "win_model": dict(WIN_MODEL_PARAMS),
+        "ship_enables_ml": False,
+        "ship_authorizes_merge": False,
+    }

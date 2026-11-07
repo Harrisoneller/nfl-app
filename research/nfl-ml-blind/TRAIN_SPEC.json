@@ -1,22 +1,58 @@
 {
-  "prereg_sha": "dbbe0fbcf3f8345cc1e5d4f98ca9fc0e320c3604",
   "seed": 20261026,
   "sigma": 13.5,
+  "sigma_role": "scoring_convention_not_production_distribution",
   "result_lag_days": 2,
   "train_first_season": 2012,
-  "test_seasons": [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+  "history_season": 2011,
+  "selection_seasons": [
+    2013,
+    2014,
+    2015
+  ],
+  "final_seasons": [
+    2016,
+    2017,
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
   "bootstrap_resamples": 10000,
-  "bootstrap_percentiles": [5.0, 95.0],
-  "ats_noninferiority": -0.005,
+  "bootstrap_percentiles": [
+    5.0,
+    95.0
+  ],
+  "bootstrap_cluster": "season_week",
+  "close_ni_upper": 0.25,
+  "ats_cluster_lower_pp": -2.0,
+  "z_min": 2.0,
+  "power_min": 0.5,
+  "mde_crps": 0.25,
+  "z_crit_95": 1.6448536269514722,
+  "incumbent": "walk_forward_stage2",
+  "frozen_prod_replay": "descriptive_only",
+  "incumbent_model_version": "qb-ridge-v5",
+  "incumbent_commit": "389498b7a060c8e62619b3369515f14ac00b72ff",
+  "incumbent_deployment": "2d608399-7172-4007-874e-17c8ed19bfa5",
+  "platt": "inner_season_oof",
+  "platt_fit": {
+    "epochs": 300,
+    "learning_rate": 0.08,
+    "min_rows": 20
+  },
+  "elo": {
+    "k": 20.0,
+    "home_field": 55.0,
+    "initial": 1500.0,
+    "season_carry": 0.75
+  },
   "epa_window": 4,
   "epa_half_life_games": 3.5,
-  "elo": {"k": 20.0, "home_field": 55.0, "initial": 1500.0, "season_carry": 0.75},
-  "platt": {"epochs": 300, "learning_rate": 0.08, "min_rows": 20},
-  "incumbent": {
-    "model_version": "qb-ridge-v5",
-    "commit": "389498b7a060c8e62619b3369515f14ac00b72ff",
-    "deployment": "2d608399-7172-4007-874e-17c8ed19bfa5"
-  },
   "features": [
     "home_elo",
     "away_elo",
@@ -70,5 +106,7 @@
     "random_state": 20261026,
     "objective": "binary:logistic",
     "eval_metric": "logloss"
-  }
+  },
+  "ship_enables_ml": false,
+  "ship_authorizes_merge": false
 }

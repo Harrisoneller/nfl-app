@@ -1,8 +1,10 @@
 """Point-in-time features for the market-blind NFL ML layer.
 
-A result may inform a target dated D only when the prior game's date is on or
-before D minus ``RESULT_LAG_DAYS``. Same-week and next-day results stay out,
-including the week-1 fallback. Market columns are never copied onto the frame.
+A result on date ``d`` may inform a target on date ``D`` only when
+``d <= D - RESULT_LAG_DAYS``. That is the whole date rule. It is not "every
+same-week game is excluded": a Monday game is eligible for Thursday of that
+week. Week-1 self-inclusion and any game on ``D`` or ``D - 1`` are excluded.
+Market columns are never copied onto the frame.
 """
 from __future__ import annotations
 
@@ -103,15 +105,20 @@ def build_market_blind_frame(
         if _finite(getattr(g, "home_score", None)) and _finite(getattr(g, "away_score", None))
     ]
     ratings: dict[str, float] = defaultdict(lambda: ELO_INITIAL)
-    last_season: int | None = None
+    elo_season: int | None = None
     elo_i = 0
     rows: list[dict[str, Any]] = []
     for game in hist.itertuples(index=False):
         target = pd.Timestamp(game.gameday)
         cutoff = target - pd.Timedelta(days=RESULT_LAG_DAYS)
         while elo_i < len(elo_games) and pd.Timestamp(elo_games[elo_i].gameday) <= cutoff:
-            last_season = _apply_elo(ratings, elo_games[elo_i], last_season)
+            ingested = elo_games[elo_i]
+            elo_season = _advance_elo_season(ratings, elo_season, int(ingested.season))
+            _apply_elo_result(ratings, ingested)
             elo_i += 1
+        # Carry into the target season before the row is read. The opener has
+        # no new-season result to ingest, so the carry cannot wait for one.
+        elo_season = _advance_elo_season(ratings, elo_season, int(game.season))
         home = str(game.home_team)
         away = str(game.away_team)
         home_epa = _epa_pair(by_team.get(home, ()), cutoff)
@@ -284,17 +291,78 @@ def _travel(home: str, away: str) -> float:
     return 0.2
 
 
-def _apply_elo(ratings: dict[str, float], game: Any, last_season: int | None) -> int:
-    season = int(game.season)
-    if last_season is not None and season > last_season:
-        for _ in range(season - last_season):
-            for team in list(ratings.keys()):
-                ratings[team] = ELO_SEASON_CARRY * ratings[team] + (1.0 - ELO_SEASON_CARRY) * ELO_INITIAL
+def _advance_elo_season(ratings: dict[str, float], elo_season: int | None, season: int) -> int:
+    """Regress stored ratings up to ``season`` before any row in that season is read."""
+    if elo_season is None:
+        return season
+    if season < elo_season:
+        raise ValueError(f"Elo season went backwards from {elo_season} to {season}")
+    steps = season - elo_season
+    for _ in range(steps):
+        for team in list(ratings):
+            ratings[team] = (
+                ELO_SEASON_CARRY * ratings[team] + (1.0 - ELO_SEASON_CARRY) * ELO_INITIAL
+            )
+    return season
+
+
+def _apply_elo_result(ratings: dict[str, float], game: Any) -> None:
     neutral = str(getattr(game, "location", "") or "") == "Neutral"
     margin = int(game.home_score) - int(game.away_score)
     home, away = str(game.home_team), str(game.away_team)
     ratings[home], ratings[away] = _update_elo(ratings[home], ratings[away], margin, neutral)
-    return season
+
+
+def assert_prefit_coverage(schedule: pd.DataFrame, team_games: pd.DataFrame) -> dict[str, int]:
+    """Count REG 2012–2025 team-games that lack a cutoff-eligible EPA row.
+
+    Raises unless 2011 history is present, every team id is known, and every
+    counted team-game has EPA from a game on or before its date minus the lag.
+    This does not score outcomes. Callers must not point it at a holdout file
+    until QA has locked the commit.
+    """
+    known = set(DIVISIONS)
+    hist = _history_schedule(schedule)
+    games = team_games if team_games is not None else pd.DataFrame()
+    if len(games) == 0 or "season" not in games.columns:
+        raise ValueError("2011 EPA history is required")
+    epa = games.copy()
+    epa["gameday"] = pd.to_datetime(epa["gameday"], errors="coerce").dt.normalize()
+    epa = epa.dropna(subset=["gameday", "team"])
+    epa["season"] = epa["season"].astype(int)
+    if not (epa["season"] == 2011).any():
+        raise ValueError("2011 EPA history is required")
+    if not (hist["season"] == 2011).any():
+        raise ValueError("2011 schedule history is required")
+    ids = set(hist["home_team"].astype(str)) | set(hist["away_team"].astype(str)) | set(epa["team"].astype(str))
+    unknown = sorted(team for team in ids if team not in known)
+    if unknown:
+        raise ValueError(f"unknown team ids: {unknown}")
+    by_team = _epa_index(epa)
+    if "game_type" in hist.columns:
+        reg_mask = hist["game_type"].astype(str).str.upper().eq("REG")
+    else:
+        reg_mask = pd.Series(True, index=hist.index)
+    reg = hist[reg_mask & hist["season"].between(2012, 2025)]
+    missing = 0
+    counted = 0
+    for game in reg.itertuples(index=False):
+        cutoff = pd.Timestamp(game.gameday) - pd.Timedelta(days=RESULT_LAG_DAYS)
+        for team in (str(game.home_team), str(game.away_team)):
+            counted += 1
+            dates = [event[0] for event in by_team.get(team, ())]
+            if bisect.bisect_right(dates, cutoff) == 0:
+                missing += 1
+    if counted == 0:
+        raise ValueError("no REG 2012-2025 team-games to check")
+    if missing:
+        raise ValueError(f"{missing} REG team-games in 2012-2025 have no eligible EPA history")
+    return {
+        "reg_team_games": counted,
+        "missing_epa_history": 0,
+        "unknown_ids": 0,
+        "has_2011": 1,
+    }
 
 
 def _update_elo(home: float, away: float, margin: int, neutral: bool) -> tuple[float, float]:

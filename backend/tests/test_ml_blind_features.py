@@ -8,41 +8,18 @@ import pandas as pd
 import pytest
 
 from app.services.ml_blind_features import (
+    _update_elo,
+    assert_prefit_coverage,
     build_market_blind_frame,
     model_matrix,
     team_game_epa,
 )
+from app.services.ml_blind_guard import LockRefusal
 from app.services.ml_blind_spec import (
-    ATS_NONINFERIORITY,
-    BOOTSTRAP_PERCENTILES,
-    BOOTSTRAP_RESAMPLES,
-    ELO_HOME_FIELD,
-    ELO_INITIAL,
-    ELO_K,
-    ELO_SEASON_CARRY,
-    EPA_HALF_LIFE_GAMES,
-    EPA_WINDOW,
     FEATURE_COLUMNS,
-    INCUMBENT_COMMIT,
-    INCUMBENT_DEPLOYMENT,
-    INCUMBENT_MODEL_VERSION,
-    PLATT_EPOCHS,
-    PLATT_LEARNING_RATE,
-    PLATT_MIN_ROWS,
-    PREREG_SHA,
-    RESULT_LAG_DAYS,
-    SEED,
-    SIGMA,
-    SPREAD_MODEL_PARAMS,
-    TEST_SEASON_FIRST,
-    TEST_SEASON_LAST,
-    TRAIN_FIRST_SEASON,
-    WIN_MODEL_PARAMS,
     assert_feature_allowlist,
     assert_no_market_columns,
-)
-from app.services.ml_blind_spec import (
-    test_seasons as locked_seasons,
+    spec_document,
 )
 from app.services.ml_predictions_service import fit_market_blind_models
 
@@ -108,36 +85,19 @@ def test_allowlist_rejects_market_names_and_unknown_columns():
 
 def test_train_spec_matches_the_prereg_constants():
     spec = json.loads(_SPEC.read_text())
-    assert spec["prereg_sha"] == PREREG_SHA
-    assert spec["seed"] == SEED == 20261026
-    assert spec["sigma"] == SIGMA == 13.5
-    assert spec["result_lag_days"] == RESULT_LAG_DAYS == 2
-    assert spec["train_first_season"] == TRAIN_FIRST_SEASON == 2012
-    assert spec["test_seasons"] == locked_seasons()
-    assert spec["test_seasons"][0] == TEST_SEASON_FIRST == 2016
-    assert spec["test_seasons"][-1] == TEST_SEASON_LAST == 2025
-    assert spec["bootstrap_resamples"] == BOOTSTRAP_RESAMPLES == 10_000
-    assert spec["bootstrap_percentiles"] == list(BOOTSTRAP_PERCENTILES)
-    assert spec["ats_noninferiority"] == ATS_NONINFERIORITY == -0.005
-    assert spec["epa_window"] == EPA_WINDOW == 4
-    assert spec["epa_half_life_games"] == EPA_HALF_LIFE_GAMES == 3.5
-    assert spec["features"] == list(FEATURE_COLUMNS)
-    assert spec["spread_model"] == SPREAD_MODEL_PARAMS
-    assert spec["win_model"] == WIN_MODEL_PARAMS
-    assert spec["platt"] == {
-        "epochs": PLATT_EPOCHS,
-        "learning_rate": PLATT_LEARNING_RATE,
-        "min_rows": PLATT_MIN_ROWS,
-    }
-    assert spec["elo"] == {
-        "k": ELO_K,
-        "home_field": ELO_HOME_FIELD,
-        "initial": ELO_INITIAL,
-        "season_carry": ELO_SEASON_CARRY,
-    }
-    assert spec["incumbent"]["model_version"] == INCUMBENT_MODEL_VERSION
-    assert spec["incumbent"]["commit"] == INCUMBENT_COMMIT
-    assert spec["incumbent"]["deployment"] == INCUMBENT_DEPLOYMENT
+    assert spec == spec_document()
+    assert "prereg_sha" not in spec
+    assert spec["close_ni_upper"] == 0.25
+    assert spec["ats_cluster_lower_pp"] == -2.0
+    assert spec["z_min"] == 2.0
+    assert spec["power_min"] == 0.5
+    assert spec["selection_seasons"] == [2013, 2014, 2015]
+    assert spec["final_seasons"][0] == 2016
+    assert spec["final_seasons"][-1] == 2025
+    assert spec["incumbent"] == "walk_forward_stage2"
+    assert spec["platt"] == "inner_season_oof"
+    assert spec["ship_enables_ml"] is False
+    assert spec["ship_authorizes_merge"] is False
 
 
 def test_week1_fallback_ignores_same_week_and_future_epa():
@@ -263,22 +223,81 @@ def test_pbp_week1_plays_do_not_enter_that_games_features():
     assert _row(frame, "w1")["home_off_epa"] == pytest.approx(2.0)
 
 
-def test_fit_targets_raw_margin_and_rejects_a_market_column():
-    rows = []
-    for i in range(40):
-        row = {col: 0.0 for col in FEATURE_COLUMNS}
-        row["season"] = 2020
-        row["week_number"] = (i % 17) + 1
-        row["game_type"] = "REG"
-        row["home_margin"] = 4.0 if i % 2 == 0 else -2.0
-        rows.append(row)
-    frame = pd.DataFrame(rows)
-    fitted = fit_market_blind_models(frame)
-    assert fitted["trained"] is True
-    assert list(fitted["spread_model"].feature_names_in_) == list(FEATURE_COLUMNS)
-    preds = fitted["spread_model"].predict(model_matrix(frame))
-    assert float(preds.mean()) == pytest.approx(1.0, abs=0.15)
-    dirty = frame.copy()
-    dirty["spread_line"] = -3.0
-    with pytest.raises(ValueError, match="market columns"):
-        fit_market_blind_models(dirty)
+def test_fit_refuses_before_any_tree_is_built():
+    with pytest.raises(LockRefusal, match="SHA"):
+        fit_market_blind_models(pd.DataFrame())
+
+
+def test_season_opener_elo_is_regressed_before_the_row_is_read():
+    schedule = pd.DataFrame([
+        _game("prior", "2023-12-31", "KC", "DEN", season=2023, week=17,
+              home_score=35, away_score=0),
+        _game("opener", "2024-09-08", "KC", "LV", season=2024, week=1,
+              home_score=20, away_score=17),
+    ])
+    frame = build_market_blind_frame(schedule)
+    raw_home, _raw_away = _update_elo(1500.0, 1500.0, 35, False)
+    carried = 0.75 * raw_home + 0.25 * 1500.0
+    opener = _row(frame, "opener")
+    assert opener["home_elo"] == pytest.approx(carried)
+    assert opener["home_elo"] != pytest.approx(raw_home)
+    assert opener["home_elo"] < raw_home
+
+
+def test_monday_is_eligible_for_thursday_and_the_day_before_is_not():
+    """D-3 is inside d <= D-2. D-1 is not. Same-week is not a blanket exclusion."""
+    schedule = pd.DataFrame([
+        _game("mon", "2024-09-09", "KC", "DEN", week=1, home_score=28, away_score=7),
+        _game("wed", "2024-09-11", "KC", "LV", week=1, home_score=3, away_score=30),
+        _game("thu", "2024-09-12", "KC", "BUF", week=1, home_score=21, away_score=17),
+    ])
+    base = pd.DataFrame([
+        _epa("mon", "2024-09-09", "KC", 2.0),
+        _epa("wed", "2024-09-11", "KC", 9.0),
+    ])
+    scrambled = base.copy()
+    scrambled.loc[scrambled["game_id"] == "wed", "off_epa"] = 40.0
+    original = _row(build_market_blind_frame(schedule, base), "thu")
+    mutated = _row(build_market_blind_frame(schedule, scrambled), "thu")
+    assert original["home_off_epa"] == pytest.approx(2.0)
+    assert mutated["home_off_epa"] == pytest.approx(2.0)
+
+
+def _slate(game_id, gameday, season, week, game_type, home, away):
+    return _game(
+        game_id, gameday, home, away, season=season, week=week, game_type=game_type,
+        home_score=20, away_score=10,
+    )
+
+
+def test_prefit_coverage_accepts_2011_history_and_rejects_gaps():
+    schedule = pd.DataFrame([
+        _slate("h", "2011-09-11", 2011, 1, "REG", "KC", "DEN"),
+        _slate("y", "2012-09-09", 2012, 1, "REG", "KC", "DEN"),
+    ])
+    history = pd.DataFrame([
+        _epa("h", "2011-09-11", "KC", 0.1),
+        _epa("h", "2011-09-11", "DEN", -0.1),
+    ])
+    history["season"] = 2011
+    assert assert_prefit_coverage(schedule, history) == {
+        "reg_team_games": 2,
+        "missing_epa_history": 0,
+        "unknown_ids": 0,
+        "has_2011": 1,
+    }
+    missing_den = history[history["team"] == "KC"]
+    with pytest.raises(ValueError, match="no eligible EPA"):
+        assert_prefit_coverage(schedule, missing_den)
+    unknown = schedule.copy()
+    unknown.loc[unknown["game_id"] == "y", "away_team"] = "XXX"
+    with pytest.raises(ValueError, match="unknown team ids"):
+        assert_prefit_coverage(unknown, history)
+    no_prior = schedule[schedule["season"] == 2012]
+    later = pd.DataFrame([
+        _epa("early", "2012-09-01", "KC", 0.2),
+        _epa("early", "2012-09-01", "DEN", 0.2),
+    ])
+    later["season"] = 2012
+    with pytest.raises(ValueError, match="2011"):
+        assert_prefit_coverage(no_prior, later)
