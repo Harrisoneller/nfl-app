@@ -182,6 +182,8 @@ export default function TeamPage({ params }: { params: { id: string } }) {
         predicted_total: upcoming.predicted_total,
         predicted_home_score: upcoming.predicted_total / 2 + -spread / 2,
         predicted_away_score: upcoming.predicted_total / 2 - -spread / 2,
+        model_version: upcoming.model_version ?? teamSchedule?.model_version ?? undefined,
+        prediction_basis: upcoming.prediction_basis ?? "model_only",
       },
     };
   }, [weekPreds, teamSchedule, id]);
@@ -487,12 +489,12 @@ function UpcomingPredictionRow({
         homeProb={g.prediction.home_win_prob}
       />
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-3 text-xs">
-        <Mini label="Win prob" value={`${(myProb * 100).toFixed(0)}%`} />
+        <Mini label="Model win %" value={`${(myProb * 100).toFixed(0)}%`} />
         <Mini
-          label="Predicted spread"
+          label="Model spread"
           value={`${g.prediction.predicted_spread <= 0 ? g.home_team_id : g.away_team_id} -${Math.abs(g.prediction.predicted_spread).toFixed(1)}`}
         />
-        <Mini label="Predicted total" value={g.prediction.predicted_total.toFixed(1)} />
+        <Mini label="Model total" value={g.prediction.predicted_total.toFixed(1)} />
       </div>
     </div>
   );

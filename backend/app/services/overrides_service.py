@@ -324,6 +324,9 @@ def apply_game_prediction(pred: dict[str, Any], ov: dict[str, float]) -> None:
         if isinstance(dist, dict):
             dist["home_win_prob"] = round(p, 3)
 
+    # A hand-set number is no longer the model that produced model_version.
+    pred["prediction_basis"] = "admin_override"
+
 
 def apply_week_game_overrides(
     db: Session, season: int, week: int | None, games: list[dict[str, Any]],

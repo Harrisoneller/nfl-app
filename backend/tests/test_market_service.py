@@ -98,50 +98,85 @@ def _fake_pred() -> dict:
     }
 
 
-class TestApplyMarketBlend:
+class TestAttachMarketContext:
     def test_no_market_annotates_model_only(self):
         pred = _fake_pred()
-        ms.apply_market_blend(pred, None)
+        ms.attach_market_context(pred, None)
         assert pred["prediction_basis"] == "model_only"
+        assert pred["prediction_basis"] != ms.BLEND_VERSION
         assert "market" not in pred
-        assert pred["home_win_prob"] == 0.55  # untouched
+        assert "edge" not in pred
+        assert pred["home_win_prob"] == 0.55
+        assert pred["model_only"]["predicted_spread"] == -1.7
 
-    def test_blend_moves_headline_toward_market(self):
+    def test_alias_does_not_blend_headline(self):
         pred = _fake_pred()
         market = {
             "consensus_home_prob": 0.70, "spread_home": -6.5, "total": 48.5,
             "books": 5, "effective_sources": 5.0, "movement": None,
             "sources": {"sportsbooks": 5, "kalshi": False},
         }
+        before = {k: pred[k] for k in ms.HEADLINE_FIELDS if k in pred}
         ms.apply_market_blend(pred, market)
-        assert pred["prediction_basis"] == ms.BLEND_VERSION
-        assert 0.55 < pred["home_win_prob"] < 0.70
-        assert -6.5 < pred["predicted_spread"] < -1.7
-        assert 44.0 < pred["predicted_total"] < 48.5
-        # Pure model preserved + edge = model − market.
+        after = {k: pred[k] for k in ms.HEADLINE_FIELDS if k in before}
+        assert after == before
+        assert pred["prediction_basis"] == "model_only"
+        assert pred["market"]["weight"] == 0.0
+        assert pred["market"]["spread_home"] == -6.5
+        assert pred["market"]["total"] == 48.5
+        # Edge = model − market. Home spread is negative when home is favored.
         assert pred["model_only"]["home_win_prob"] == 0.55
-        assert pred["edge"]["home_win_prob"] == pytest.approx(-0.15, abs=1e-9)
-        assert pred["edge"]["spread"] == pytest.approx(4.8)
-        # Scores stay internally consistent with blended spread/total.
-        s = pred["predicted_home_score"] + pred["predicted_away_score"]
-        assert s == pytest.approx(pred["predicted_total"], abs=0.15)
-        m = pred["predicted_home_score"] - pred["predicted_away_score"]
-        assert m == pytest.approx(-pred["predicted_spread"], abs=0.15)
-        # Distribution re-centered on the blended margin.
-        assert pred["distribution"]["expected_margin"] == pytest.approx(
-            -pred["predicted_spread"], abs=0.05,
-        )
+        assert pred["edge"]["home_win_prob"] == pytest.approx(0.55 - 0.70, abs=1e-9)
+        assert pred["edge"]["spread"] == pytest.approx(-1.7 - (-6.5))
+        assert pred["edge"]["total"] == pytest.approx(44.0 - 48.5)
+        # Headline scores stay the model's, not a blend of the market total.
+        assert pred["predicted_home_score"] + pred["predicted_away_score"] == pytest.approx(44.0, abs=0.15)
 
-    def test_missing_spread_derived_from_blended_prob(self):
+    def test_missing_spread_is_not_invented(self):
         pred = _fake_pred()
         market = {
             "consensus_home_prob": 0.70, "spread_home": None, "total": None,
             "books": 3, "effective_sources": 3.0, "movement": None,
             "sources": {"sportsbooks": 3, "kalshi": False},
         }
-        ms.apply_market_blend(pred, market)
-        # Spread must agree in sign with the blended favorite (home).
-        assert pred["home_win_prob"] > 0.5
-        assert pred["predicted_spread"] < 0
-        # Total absent from market → model total stands.
+        ms.attach_market_context(pred, market)
+        assert pred["predicted_spread"] == -1.7
         assert pred["predicted_total"] == 44.0
+        assert pred["home_win_prob"] == 0.55
+        assert pred["market"]["spread_home"] is None
+        assert pred["edge"]["spread"] is None
+        assert pred["edge"]["total"] is None
+        assert pred["edge"]["home_win_prob"] == pytest.approx(0.55 - 0.70, abs=1e-9)
+
+    def test_pickem_and_partial_total(self):
+        pred = _fake_pred()
+        ms.attach_market_context(pred, {
+            "consensus_home_prob": None,
+            "spread_home": 0.0,
+            "total": 47.0,
+            "books": 2,
+            "effective_sources": 2.0,
+        })
+        assert pred["predicted_spread"] == -1.7
+        assert pred["market"]["spread_home"] == 0.0
+        assert pred["market"]["consensus_home_prob"] is None
+        assert pred["edge"]["spread"] == pytest.approx(-1.7)
+        assert pred["edge"]["home_win_prob"] is None
+        assert pred["edge"]["total"] == pytest.approx(44.0 - 47.0)
+
+    def test_headline_invariant_when_the_line_changes(self):
+        first = _fake_pred()
+        second = _fake_pred()
+        ms.attach_market_context(first, {
+            "consensus_home_prob": 0.62, "spread_home": -3.0, "total": 41.0,
+            "books": 4, "effective_sources": 4,
+        })
+        ms.attach_market_context(second, {
+            "consensus_home_prob": 0.40, "spread_home": 6.5, "total": 54.5,
+            "books": 8, "effective_sources": 8,
+        })
+        for key in ms.HEADLINE_FIELDS:
+            assert first.get(key) == second.get(key)
+        assert first["edge"]["spread"] != second["edge"]["spread"]
+        assert first["market"]["spread_home"] == -3.0
+        assert second["market"]["spread_home"] == 6.5

@@ -203,6 +203,10 @@ async def _compute_head_to_head(
         a_off = (aggs.get(away) or {}).get("points_per_game")
         h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
         a_def = (aggs.get(away) or {}).get("points_allowed_per_game")
+        # Scheduled meetings on this page still use the legacy predictor.
+        # The week board is qb-ridge-v5 when that model is available; sharing
+        # one stored row across surfaces is a separate change. The version
+        # stamp below is what the UI is allowed to print.
         pred = predictions_service.predict_game(
             ratings.get(h, elo_service.INITIAL_RATING),
             ratings.get(away, elo_service.INITIAL_RATING),
@@ -210,6 +214,7 @@ async def _compute_head_to_head(
             home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
             home_aggs=aggs.get(h), away_aggs=aggs.get(away),
         )
+        pred["prediction_basis"] = "model_only"
         predicted_game = {**upcoming_game, "prediction": pred}
     else:
         # Hypothetical: simulate a neutral-site matchup between them this week.
@@ -224,6 +229,7 @@ async def _compute_head_to_head(
             neutral_site=True,
             home_aggs=aggs.get(a), away_aggs=aggs.get(b),
         )
+        pred["prediction_basis"] = "model_only"
         predicted_game = {
             "home_team": a, "away_team": b, "week": None, "gameday": None,
             "neutral_site": True, "hypothetical": True, "prediction": pred,
@@ -236,6 +242,7 @@ async def _compute_head_to_head(
             away_team_id=predicted_game["away_team"],
             prediction=predicted_game.get("prediction"),
         )
+        _attach_displayed_market(predicted_game.get("prediction"), market_context)
 
     # ---- Profile delta + cross-side matchup breakdown ----------------------
     profile_season = season - 1 if season > last_completed else season
@@ -295,6 +302,33 @@ async def _compute_head_to_head(
 
 
 # ---- Helpers ---------------------------------------------------------------
+
+
+def _attach_displayed_market(pred: dict[str, Any] | None, market_context: dict[str, Any] | None) -> None:
+    """Put the posted line on the prediction without changing the headline.
+
+    H2H already loaded this line for its decision metrics. The same numbers
+    are copied into the prediction's market/edge block so the page can label
+    them the same way the week board does. Spread sign is the home sportsbook
+    number (negative = home favored), matching ``market_service``.
+    """
+    if not isinstance(pred, dict) or isinstance(pred.get("market"), dict):
+        return
+    from . import market_service
+
+    entry = (market_context or {}).get("market") if isinstance(market_context, dict) else None
+    if not isinstance(entry, dict):
+        market_service.attach_market_context(pred, None)
+        return
+    books = entry.get("books") or 0
+    market_service.attach_market_context(pred, {
+        "consensus_home_prob": entry.get("market_home_win_prob"),
+        "spread_home": entry.get("market_spread_home"),
+        "total": entry.get("market_total"),
+        "books": books,
+        "effective_sources": float(books or 0),
+        "sources": {"sportsbooks": books, "kalshi": False},
+    })
 
 
 async def _scheduled_meeting(season: int, a: str, b: str) -> dict[str, Any] | None:

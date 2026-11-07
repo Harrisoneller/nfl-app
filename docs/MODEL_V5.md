@@ -111,14 +111,14 @@ in that plateau, so retuning them is unlikely to move results.
 
 ## Edge honesty
 
-- `market.w_base` 0.30 → **0.80**, `w_per_source` 0.10 → **0.02**, `w_cap`
-  0.85 → **0.92**. The walk-forward optimal model share against closing lines
-  was ~10% (2017–26) and ~0% (2021–26). Note: if these params have DB
-  overrides in prod, the overrides still win. Check Admin → Parameters.
-- `pred.edge` gains `spread_expected_pts` / `total_expected_pts` = raw
+- Game headlines are the model. They are not blended with the current line.
+  `market.w_base` / `w_per_source` / `w_cap` remain in the parameter registry
+  so old rows stay valid, and changing them does not move the headline.
+- `pred.edge` carries `spread_expected_pts` / `total_expected_pts` = raw
   disagreement × `market.edge_beta` (0.10) / `edge_beta_total` (0.0). The
-  frontend chip now reads "Model: KC +4.0 (exp 0.4)" with an explanatory
-  tooltip.
+  chip reads "Edge: KC +4.0 (exp 0.4)". That label does not change the
+  headline. qb-ridge-v5 itself still uses a prior from *previous* games'
+  closing spreads (`mkt_d`). That is inside the model, not this week's line.
 
 ## Player model: `player-opp-v1` (on top of `player-proj-v2`)
 

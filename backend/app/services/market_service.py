@@ -1,27 +1,24 @@
-"""Game-level market consensus + model↔market blending (market-aware layer v1).
+"""Game-level market consensus, shown next to the model — not blended into it.
 
-The single biggest in-season signal in football is the market itself: closing
-lines beat every public model, ours included. This module makes the headline
-game predictions *market-aware*:
+Headline spread, total, projected scores, and win probability stay the
+``predict_game`` output (qb-ridge-v5 when that model ran, otherwise the labeled
+v4 fallback). This module does not pull those numbers toward the current line.
 
 1. **Consensus** — read the persisted ``odds_lines`` snapshot (zero extra Odds
    API spend), de-vig every book's moneyline pair, and take medians across
    books for win prob, spread, and total. Optionally merge Kalshi
-   prediction-market prices as an additional "book" with configurable weight.
-2. **Movement** — from the append-only ``odds_snapshots`` history (Sparky's
-   feed): open→current consensus home-prob delta, surfaced as context. It is
-   deliberately NOT an extra nudge on the blend — the current line already
-   contains the movement; nudging again would double-count it.
-3. **Blend** — combine the model's numbers with consensus. Win probs blend in
-   logit space (proper for probabilities), spread/total linearly. The market
-   weight grows with the number of independent sources and is capped, so a
-   one-book line never drowns the model and an 8-book consensus mostly is the
-   forecast. The pure-model numbers are preserved under ``model_only`` and the
-   difference is exposed as ``edge`` — that gap *is* the product's value-finding
-   signal (spec: "treat the market as the prior and the model as the attempt
-   to find where it's wrong").
+   prediction-market prices as an additional "book" when building the
+   *displayed* consensus probability. That merge never writes the headline.
+2. **Movement** — from the append-only ``odds_snapshots`` history: open→current
+   consensus home-prob delta, surfaced as context on the market line only.
+3. **Edge** — model minus market, on the same home-spread sign convention.
+   Positive win-prob edge means the model likes the home team more than the
+   market. A spread of 0 is pick'em. A missing spread, total, or moneyline is
+   left missing; nothing is invented from the other number.
 
-All blend math is pure and unit-tested; only the consensus readers touch the DB.
+``blend_prob`` / ``blend_value`` remain as unused pure helpers so the old
+formula stays testable. ``attach_market_context`` does not call them.
+``apply_market_blend`` is a compatibility alias and also does not call them.
 """
 from __future__ import annotations
 
@@ -39,7 +36,6 @@ from ..models.odds import OddsLine
 from ..models.odds_snapshot import OddsSnapshot
 from ..models.seed import NFL_TEAMS
 from ..utils.teams import canonical_team
-from . import prediction_dist
 from .sparky import odds_math
 
 log = get_logger(__name__)
@@ -332,108 +328,121 @@ def context_for_game(
     return None
 
 
-# ---- Blend application -------------------------------------------------------
+# ---- Market attachment (headline stays the model) ---------------------------
+
+# Fields a caller must be able to round-trip unchanged after attachment.
+HEADLINE_FIELDS = (
+    "home_win_prob",
+    "away_win_prob",
+    "predicted_spread",
+    "predicted_total",
+    "predicted_home_score",
+    "predicted_away_score",
+    "distribution",
+    "game_script",
+    "margin_sd",
+    "model_version",
+)
+
+# prediction_basis when the published numbers are the model, not a blend.
+HEADLINE_BASIS = "model_only"
+
+
+def _line_present(market: dict[str, Any] | None) -> bool:
+    """True when at least one posted number exists. Zero is a real pick'em."""
+    if not isinstance(market, dict):
+        return False
+    return any(
+        market.get(key) is not None
+        for key in ("consensus_home_prob", "spread_home", "total")
+    )
+
+
+def _model_snapshot(pred: dict[str, Any]) -> dict[str, Any]:
+    """Copy of the headline the edge is measured against. Not a second model."""
+    return {
+        "home_win_prob": pred.get("home_win_prob"),
+        "away_win_prob": pred.get("away_win_prob"),
+        "predicted_spread": pred.get("predicted_spread"),
+        "predicted_total": pred.get("predicted_total"),
+    }
+
+
+def attach_market_context(pred: dict[str, Any], market: dict[str, Any] | None) -> None:
+    """Annotate one prediction with the market line and the model−market edge.
+
+    Does not change spread, total, scores, win probability, or distribution.
+    Sign convention (both model and market):
+
+    * ``predicted_spread`` / ``spread_home`` are the home team's sportsbook
+      spread. Negative means the home team is favored.
+    * ``edge.spread`` = model spread − market spread. Negative means the model
+      likes the home side more than the books do.
+    * A market spread of 0 is pick'em. ``None`` means the number was not posted
+      and is not filled in from the moneyline or the win probability.
+    """
+    pred["model_only"] = _model_snapshot(pred)
+    pred["prediction_basis"] = HEADLINE_BASIS
+    if not _line_present(market):
+        pred.pop("market", None)
+        pred.pop("edge", None)
+        return
+
+    assert market is not None  # _line_present
+    model_p = pred.get("home_win_prob")
+    model_spread = pred.get("predicted_spread")
+    model_total = pred.get("predicted_total")
+    mkt_p = market.get("consensus_home_prob")
+    mkt_spread = market.get("spread_home")
+    mkt_total = market.get("total")
+
+    pred["market"] = {
+        "consensus_home_prob": (
+            round(float(mkt_p), 4) if mkt_p is not None else None
+        ),
+        "spread_home": None if mkt_spread is None else float(mkt_spread),
+        "total": None if mkt_total is None else float(mkt_total),
+        "books": market.get("books", 0),
+        "kalshi_home_prob": market.get("kalshi_home_prob"),
+        "effective_sources": float(market.get("effective_sources") or 0.0),
+        "movement": market.get("movement"),
+        "sources": market.get("sources"),
+        # Older clients read weight as the market's share of the headline.
+        # The headline is not blended, so the share is zero.
+        "weight": 0.0,
+    }
+    edge: dict[str, Any] = {
+        # Positive win-prob edge = the model likes HOME more than the market.
+        "home_win_prob": (
+            round(float(model_p) - float(mkt_p), 3)
+            if model_p is not None and mkt_p is not None else None
+        ),
+        "spread": (
+            round(float(model_spread) - float(mkt_spread), 1)
+            if model_spread is not None and mkt_spread is not None else None
+        ),
+        "total": (
+            round(float(model_total) - float(mkt_total), 1)
+            if model_total is not None and mkt_total is not None else None
+        ),
+    }
+    # Raw disagreement is not a bet size. The displayed expected edge is the
+    # disagreement times the historical realization rate. It does not move
+    # the headline.
+    beta, beta_t = _p("market.edge_beta"), _p("market.edge_beta_total")
+    if edge["spread"] is not None:
+        edge["spread_expected_pts"] = round(edge["spread"] * beta, 2)
+    if edge["total"] is not None:
+        edge["total_expected_pts"] = round(edge["total"] * beta_t, 2)
+    edge["realization"] = {"spread": beta, "total": beta_t}
+    pred["edge"] = edge
 
 
 def apply_market_blend(pred: dict[str, Any], market: dict[str, Any] | None) -> None:
-    """Mutate one predict_game dict: headline ← blend, model ← model_only.
+    """Compatibility alias. Does not blend the headline into the market line.
 
-    No market → annotate basis and return; the model numbers stand unchanged.
-    Admin overrides run AFTER this and still supersede everything.
+    The historical implementation overwrote spread, total, scores, win
+    probability, and the distribution with a logit/linear blend. That step is
+    gone. Callers that still use this name get ``attach_market_context``.
     """
-    if not market or market.get("consensus_home_prob") is None:
-        pred["prediction_basis"] = "model_only"
-        return
-
-    n_eff = float(market.get("effective_sources") or 0.0)
-    w = market_weight(n_eff)
-    sigma = float(pred.get("margin_sd") or prediction_dist.margin_sigma())
-
-    model_p = float(pred["home_win_prob"])
-    model_spread = float(pred["predicted_spread"])
-    model_total = float(pred["predicted_total"])
-
-    mkt_p = float(market["consensus_home_prob"])
-    blended_p = blend_prob(model_p, mkt_p, w)
-
-    mkt_spread = market.get("spread_home")
-    if mkt_spread is not None:
-        blended_spread = blend_value(model_spread, float(mkt_spread), w)
-    else:
-        # Consistency over inertia: derive the spread from the blended win prob
-        # so the headline pair can't disagree about who's favored.
-        # win_prob = Φ(margin/σ)  ⇒  margin = σ·Φ⁻¹(p); spread = −margin.
-        blended_spread = -(sigma * prediction_dist.norm_ppf(blended_p))
-
-    mkt_total = market.get("total")
-    blended_total = (
-        blend_value(model_total, float(mkt_total), w)
-        if mkt_total is not None else model_total
-    )
-
-    expected_margin = -blended_spread
-    m_lo80, m_hi80 = prediction_dist.margin_interval(expected_margin, sigma, 0.80)
-    m_lo50, m_hi50 = prediction_dist.margin_interval(expected_margin, sigma, 0.50)
-
-    pred["model_only"] = {
-        "home_win_prob": round(model_p, 3),
-        "away_win_prob": round(1 - model_p, 3),
-        "predicted_spread": round(model_spread, 1),
-        "predicted_total": round(model_total, 1),
-    }
-    pred["home_win_prob"] = round(blended_p, 3)
-    pred["away_win_prob"] = round(1 - blended_p, 3)
-    pred["predicted_spread"] = round(blended_spread, 1)
-    pred["predicted_total"] = round(blended_total, 1)
-    pred["predicted_home_score"] = round((blended_total - blended_spread) / 2, 1)
-    pred["predicted_away_score"] = round((blended_total + blended_spread) / 2, 1)
-    pred["distribution"] = {
-        "expected_margin": round(expected_margin, 1),
-        "margin_sd": sigma,
-        "home_win_prob": round(blended_p, 3),
-        "margin_interval_50": [round(m_lo50, 1), round(m_hi50, 1)],
-        "margin_interval_80": [round(m_lo80, 1), round(m_hi80, 1)],
-        "home_score_range_80": [
-            round((blended_total + m_lo80) / 2, 1),
-            round((blended_total + m_hi80) / 2, 1),
-        ],
-        "away_score_range_80": [
-            round((blended_total - m_hi80) / 2, 1),
-            round((blended_total - m_lo80) / 2, 1),
-        ],
-    }
-    pred["market"] = {
-        "consensus_home_prob": round(mkt_p, 4),
-        "spread_home": mkt_spread,
-        "total": mkt_total,
-        "books": market.get("books", 0),
-        "kalshi_home_prob": market.get("kalshi_home_prob"),
-        "effective_sources": n_eff,
-        "movement": market.get("movement"),
-        "sources": market.get("sources"),
-        "weight": round(w, 2),
-    }
-    pred["edge"] = {
-        # Positive win-prob edge = the model likes HOME more than the market.
-        "home_win_prob": round(model_p - mkt_p, 3),
-        "spread": (
-            round(model_spread - float(mkt_spread), 1)
-            if mkt_spread is not None else None
-        ),
-        "total": (
-            round(model_total - float(mkt_total), 1)
-            if mkt_total is not None else None
-        ),
-    }
-    # Raw disagreement is not edge. Walk-forward against closing lines only a
-    # fraction of a spread disagreement showed up in results (and none of a
-    # totals disagreement), so the number we'd actually bet on is the
-    # disagreement times that realization rate. Shown next to the raw gap so
-    # nothing downstream mistakes a 4-point opinion for a 4-point edge.
-    beta, beta_t = _p("market.edge_beta"), _p("market.edge_beta_total")
-    if pred["edge"]["spread"] is not None:
-        pred["edge"]["spread_expected_pts"] = round(pred["edge"]["spread"] * beta, 2)
-    if pred["edge"]["total"] is not None:
-        pred["edge"]["total_expected_pts"] = round(pred["edge"]["total"] * beta_t, 2)
-    pred["edge"]["realization"] = {"spread": beta, "total": beta_t}
-    pred["prediction_basis"] = BLEND_VERSION
+    attach_market_context(pred, market)

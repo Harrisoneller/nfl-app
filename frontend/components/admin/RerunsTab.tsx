@@ -30,7 +30,7 @@ const SCOPES: {
     id: "quick",
     label: "Quick recompute",
     blurb:
-      "Evict the season sim and rewarm the game slate + player boards. Picks up market-blend, prior, weather, injury and output-pin changes.",
+      "Evict the season sim and rewarm the game slate + player boards. Picks up market line, prior, weather, injury and output-pin changes.",
     eta: "~seconds",
     recommended: true,
     cls: "bg-sky-500/15 text-sky-200 border-sky-500/40 hover:bg-sky-500/25",

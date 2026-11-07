@@ -176,6 +176,7 @@ def test_apply_game_prediction_coherence():
     assert pred["home_win_prob"] > 0.55
     assert pred["home_win_prob"] + pred["away_win_prob"] == pytest.approx(1.0)
     assert pred["distribution"]["expected_margin"] == 7.0
+    assert pred["prediction_basis"] == "admin_override"
 
     # Explicit prob override wins and clamps.
     overrides_service.apply_game_prediction(pred, {"home_win_prob": 0.9})

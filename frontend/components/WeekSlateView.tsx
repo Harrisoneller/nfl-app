@@ -6,6 +6,7 @@ import { useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api, type WeekSlateGame, type WeekSlateResponse } from "@/lib/api";
 import { spreadEdgeSide } from "@/lib/edge";
+import { formatHomeSpread, headlineSourceLabel } from "@/lib/headline";
 import { Card } from "@/components/Card";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
@@ -55,14 +56,14 @@ export function WeekSlateView({
       <div>
         <h1 className="text-2xl font-semibold">Week slate</h1>
         <p className="mt-1 text-sm text-muted max-w-2xl">
-          Production forecast uses the market as a prior and our ratings as a{" "}
-          <span className="text-text font-medium">bounded residual</span>.{" "}
-          <span className="text-team-primary font-medium">Model</span> = that
-          forecast;{" "}
+          <span className="text-team-primary font-medium">Model</span> is the
+          headline spread, total, score, and win probability (qb-ridge-v5 when
+          that model ran). It is not blended with this week&apos;s line.{" "}
           <span className="text-amber-700 dark:text-amber-300 font-medium">Market</span>{" "}
-          = sportsbooks;{" "}
+          is the sportsbook line, shown separately.{" "}
           <span className="text-emerald-700 dark:text-emerald-300 font-medium">Edge</span>{" "}
-          = model − market. Defaults to the next regular-season week.
+          is model minus market. qb-ridge-v5 still includes a prior from previous
+          games&apos; closing lines; that prior is inside the model, not this line.
         </p>
       </div>
 
@@ -157,13 +158,6 @@ function Legend() {
   );
 }
 
-function formatSpread(spread: number | null | undefined, homeId: string, awayId: string): string {
-  if (spread == null || Number.isNaN(spread)) return "—";
-  if (spread === 0) return "PK";
-  if (spread < 0) return `${homeId} ${spread.toFixed(1)}`;
-  return `${awayId} ${(-spread).toFixed(1)}`;
-}
-
 function GameRow({ g }: { g: WeekSlateGame }) {
   const homeId = g.home_team_id ?? "HOME";
   const awayId = g.away_team_id ?? "AWAY";
@@ -174,7 +168,10 @@ function GameRow({ g }: { g: WeekSlateGame }) {
   const modelHomePts = g.model_home_score ?? g.predicted_home_score ?? null;
   const modelAwayPts = g.model_away_score ?? g.predicted_away_score ?? null;
   const modelHomeWp = g.model_home_win_prob ?? g.home_win_prob ?? 0.5;
-  const rawSpread = g.model_raw_spread ?? g.model_only?.predicted_spread ?? null;
+  const sourceLabel = headlineSourceLabel({
+    prediction_basis: g.prediction_basis,
+    model_version: g.model_version,
+  });
 
   const marketSpread =
     g.market_spread ??
@@ -197,9 +194,9 @@ function GameRow({ g }: { g: WeekSlateGame }) {
             )}
             <span
               className="text-[10px] px-1.5 py-0.5 rounded bg-team-primary/15 text-team-primary border border-team-primary/20"
-              title="Scores and win % are the production (market-anchored) model."
+              title="Scores and win % are the model headline, not the current market line."
             >
-              model scores
+              {sourceLabel}
             </span>
           </div>
 
@@ -237,22 +234,13 @@ function GameRow({ g }: { g: WeekSlateGame }) {
               awayProb={1 - (modelHomeWp ?? 0.5)}
             />
             <div className="text-[9px] text-muted mt-0.5">
-              Win % & scores = production model (market-anchored residual)
+              Win % and scores = {sourceLabel}
               {modelSpread != null &&
                 modelHomePts != null &&
                 modelAwayPts != null && (
                   <span className="tabular-nums">
                     {" "}
                     · margin {(modelHomePts - modelAwayPts).toFixed(1)}
-                  </span>
-                )}
-              {rawSpread != null &&
-                modelSpread != null &&
-                Math.abs(rawSpread - modelSpread) >= 3 && (
-                  <span className="tabular-nums opacity-80">
-                    {" "}
-                    · raw power {formatSpread(rawSpread, homeId, awayId)} before
-                    market anchor
                   </span>
                 )}
             </div>
@@ -263,13 +251,17 @@ function GameRow({ g }: { g: WeekSlateGame }) {
           <Mini
             tone="model"
             label="Model spread"
-            value={formatSpread(modelSpread, homeId, awayId)}
+            value={formatHomeSpread(modelSpread, homeId, awayId)}
             hint="our projection"
           />
           <Mini
             tone="market"
             label="Market spread"
-            value={formatSpread(marketSpread ?? undefined, homeId, awayId)}
+            value={
+              marketSpread == null
+                ? "—"
+                : formatHomeSpread(marketSpread, homeId, awayId)
+            }
             hint="Vegas / books"
           />
           <Mini

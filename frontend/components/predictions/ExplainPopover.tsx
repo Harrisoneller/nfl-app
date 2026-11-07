@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { GamePrediction, PredictionInputs } from "@/lib/api";
+import { headlineSourceLabel } from "@/lib/headline";
 
 /**
  * Click-to-explain popover. Wraps any element and shows the math behind a
@@ -53,6 +54,11 @@ export function ExplainPopover({
       </button>
       {open && (
         <div className="absolute z-40 left-0 right-0 mt-2 panel p-3 shadow-xl text-xs space-y-2 min-w-[280px]">
+          <div className="text-[10px] uppercase tracking-wide text-muted">
+            Headline source: {headlineSourceLabel(game.prediction)}
+          </div>
+          {headlineSourceLabel(game.prediction) === "v4 fallback" ? (
+          <>
           <Section title="Win probability">
             <Math>
               ({game.home_team_id}) {inputs.home_elo} + {inputs.home_field_advantage_elo} HFA
@@ -80,6 +86,16 @@ export function ExplainPopover({
               Total = <b>{game.prediction.predicted_total.toFixed(1)}</b>
             </Math>
           </Section>
+          </>
+          ) : (
+            <p className="text-[11px] text-muted">
+              Published spread, total, score, and win probability come from{" "}
+              {headlineSourceLabel(game.prediction)}.
+              {headlineSourceLabel(game.prediction) === "qb-ridge-v5"
+                ? " That model is not blended with this week's line. It does use a prior from previous games' closing lines. Elo is not the published spread."
+                : " The Elo conversion is not the published number."}
+            </p>
+          )}
 
           {game.prediction.game_script && (
             <div className="text-[10px] text-muted pt-1 border-t divider">

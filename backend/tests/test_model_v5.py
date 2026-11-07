@@ -301,15 +301,21 @@ def test_season_gate_uses_published_data_not_calendar(monkeypatch):
     assert asyncio.run(pps._defense_season(2026)) == 2026
 
 
-def test_market_edge_reports_realized_share():
+def test_market_edge_reports_realized_share_without_moving_headline():
     from app.services import market_service as ms
 
     pred = ps.predict_game(1500, 1500, v5=_v5_payload(margin=6.0, total=44.0))
-    ms.apply_market_blend(pred, {"consensus_home_prob": 0.55, "spread_home": -2.0,
-                                 "total": 44.0, "effective_sources": 3})
+    headline = {k: pred[k] for k in ms.HEADLINE_FIELDS}
+    ms.attach_market_context(pred, {"consensus_home_prob": 0.55, "spread_home": -2.0,
+                                    "total": 44.0, "effective_sources": 3})
+    assert {k: pred[k] for k in headline} == headline
+    assert pred["model_version"] == ps.PREDICTION_MODEL_VERSION
+    assert pred["prediction_basis"] == "model_only"
+    # Model spread is -margin. Edge = model − market = -6 − (-2).
     assert pred["edge"]["spread"] == pytest.approx(-4.0)
     assert pred["edge"]["spread_expected_pts"] == pytest.approx(-0.4)
     assert pred["edge"]["total_expected_pts"] == pytest.approx(0.0)
+    assert pred["inputs"]["v5"]["uses_market_prior"] is False
 
 
 def test_project_stat_for_game_opportunity_path_ships_median_and_quantiles():
