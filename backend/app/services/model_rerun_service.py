@@ -80,13 +80,23 @@ async def _evict_season_sim(db, season: int) -> str:
 
 
 async def _rewarm_games(db, season: int, week: int | None) -> str:
-    """Recompute the game slate and the (now-evicted) season simulation."""
-    from . import predictions_service
+    """Recompute the game slate and the (now-evicted) season simulation.
 
+    Publication goes through the same locked writer as the worker. Reading
+    ``predict_week`` alone would leave the stored headline on the old pipeline.
+    """
+    from . import predictions_service
+    from .predictions_service import build_v5_week
+    from .published_predictions import refresh_future_games
+
+    published = await refresh_future_games(
+        db, compute_week=build_v5_week, reason="admin_rerun",
+    )
     games = await predictions_service.predict_week(db, season, week)
     sim = await predictions_service.simulate_season(db, season)
     return (
         f"games={len(games.get('games', []))} "
+        f"published={published.get('published', 0)} "
         f"sim_teams={len(sim.get('teams', {}))}"
     )
 

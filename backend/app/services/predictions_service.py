@@ -11,6 +11,7 @@ import asyncio
 import math
 import random
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -854,16 +855,174 @@ async def _season_schedule(season: int, db: Session | None = None) -> pd.DataFra
     return df
 
 
+def _schedule_kickoff(row: Any) -> datetime | None:
+    from .published_predictions import resolve_kickoff
+
+    start = row.get("start_time") if hasattr(row, "get") else None
+    if isinstance(start, datetime):
+        return start
+    return resolve_kickoff(
+        None,
+        str(row.get("gameday") or "") if hasattr(row, "get") else None,
+        str(row.get("gametime") or "") if hasattr(row, "get") else None,
+    )
+
+
+async def _assemble_week_from_store(
+    db: Session,
+    season: int,
+    week: int | None,
+    revision: str,
+) -> dict[str, Any]:
+    """One stored qb-ridge-v5 payload per game, else a labeled v5 fallback.
+
+    Post-kickoff and unknown-kickoff games are never computed here. A legacy
+    v4 result from the fallback builder is discarded.
+    """
+    from .published_predictions import (
+        label_full_v5,
+        load_published,
+        row_is_current,
+        serve_stored,
+        serving_state,
+        unavailable_game,
+    )
+
+    sched = await _season_schedule(season, db=db)
+    if sched is None:
+        return {
+            "season": season,
+            "week": week,
+            "games": [],
+            "model_version": PREDICTION_MODEL_VERSION,
+            "input_revision": revision,
+        }
+    if week is None:
+        unplayed = sched[sched["home_score"].isna() | sched["away_score"].isna()]
+        if len(unplayed) == 0:
+            return {
+                "season": season,
+                "week": None,
+                "games": [],
+                "model_version": PREDICTION_MODEL_VERSION,
+                "input_revision": revision,
+            }
+        week = int(unplayed["week"].min())
+    games = sched[sched["week"] == week]
+    if "game_type" in games.columns:
+        games = games[games["game_type"].astype(str).str.upper() == "REG"]
+    now = datetime.now(UTC)
+    ids = [str(row.get("game_id") or "") for _, row in games.iterrows()]
+    stored = load_published(db, [gid for gid in ids if gid])
+    clocks = _game_clocks(db, [gid for gid in ids if gid])
+    pending: list[Any] = []
+    built: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for _, row in games.iterrows():
+        home, away = row.get("home_team"), row.get("away_team")
+        if not home or not away:
+            continue
+        gid = str(row.get("game_id") or "")
+        order.append(gid)
+        if gid in clocks:
+            kick, status = clocks[gid]
+        else:
+            kick, status = _schedule_kickoff(row), ""
+        state = serving_state(status, kick, now)
+        row_payload = {
+            "id": gid,
+            "game_id": gid,
+            "season": season,
+            "week": week,
+            "gameday": str(row.get("gameday") or ""),
+            "gametime": str(row.get("gametime") or ""),
+            "home_team_id": home,
+            "away_team_id": away,
+            "home_team": home,
+            "away_team": away,
+            "home_score": _safe_int(row.get("home_score")),
+            "away_score": _safe_int(row.get("away_score")),
+        }
+        published = stored.get(gid)
+        if published is not None and row_is_current(published):
+            built[gid] = serve_stored(published, row_payload)
+            continue
+        if published is not None and state != "future":
+            # Kickoff has passed and this row was built by a different headline
+            # step. Do not relabel that number as the current model.
+            built[gid] = unavailable_game(row_payload, "stale_pipeline")
+            continue
+        if state != "future":
+            reason = {
+                "past": "post_kickoff",
+                "started": "started",
+            }.get(state, "kickoff_unknown")
+            built[gid] = unavailable_game(row_payload, reason)
+            continue
+        pending.append(row_payload)
+    if pending:
+        computed = await _predict_week_uncached(db, season, week, require_v5=True)
+        live = {}
+        for item in computed.get("games") or []:
+            labeled = label_full_v5(item)
+            if labeled is not None:
+                live[str(labeled.get("id") or "")] = labeled
+        for row_payload in pending:
+            gid = row_payload["id"]
+            if gid in live:
+                built[gid] = live[gid]
+            else:
+                built[gid] = unavailable_game(row_payload, "v5_inputs_missing")
+    return {
+        "season": season,
+        "week": week,
+        "games": [built[gid] for gid in order if gid in built],
+        "model_version": PREDICTION_MODEL_VERSION,
+        "input_revision": revision,
+    }
+
+
+def _game_clocks(db: Session, game_ids: list[str]) -> dict[str, tuple[datetime | None, str]]:
+    from ..models.game import Game
+
+    if not game_ids:
+        return {}
+    try:
+        rows = db.execute(
+            select(Game.id, Game.start_time, Game.status).where(Game.id.in_(game_ids))
+        ).all()
+    except Exception:  # noqa: BLE001 — schedule strings still resolve kickoff
+        return {}
+    out: dict[str, tuple[datetime | None, str]] = {}
+    for gid, start, status in rows:
+        kick = start if isinstance(start, datetime) or start is None else None
+        out[str(gid)] = (kick, str(status or ""))
+    return out
+
+
 async def predict_week(db: Session, season: int, week: int | None = None) -> dict[str, Any]:
     """Predictions for every game in the given week.
 
-    If `week` is None, picks the next upcoming week (lowest week with unplayed games).
-    Cached so the home-page hero isn't racing an 8–20s cold compute.
+    Serves the stored qb-ridge-v5 row for each game id. A future game with no
+    row gets one labeled full-v5 fallback. Nothing on this path serves
+    epa-elo-ctx-v4. The cache key includes the model version and the input
+    revision, so a ratings or param change does not reuse the previous payload.
     """
-    cache_key = f"{season}:{week if week is not None else 'next'}:{PREDICTION_MODEL_VERSION}"
+    from .published_predictions import (
+        input_revision,
+        note_if_stale,
+        publication_generation,
+        week_cache_key,
+    )
+
+    revision = input_revision(db, season=season)
+    generation = publication_generation(db)
+    cache_key = week_cache_key(
+        season, week, PREDICTION_MODEL_VERSION, revision, generation,
+    )
 
     async def _compute() -> dict[str, Any]:
-        return await _predict_week_uncached(db, season, week)
+        return await _assemble_week_from_store(db, season, week, revision)
 
     payload = await artifact_cache.get_or_compute(
         kind="week_predictions",
@@ -872,13 +1031,19 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
         ttl_seconds=CACHE_TTL,
         l1_ttl_seconds=60,
     )
-    if isinstance(payload, dict):
-        return payload
-    return await _predict_week_uncached(db, season, week)
+    if not isinstance(payload, dict):
+        payload = await _assemble_week_from_store(db, season, week, revision)
+    note_if_stale(db, revision)
+    return payload
+
+
+async def build_v5_week(db: Session, season: int, week: int) -> dict[str, Any]:
+    """Full v5 week used by the publisher. Does not read the stored rows."""
+    return await _predict_week_uncached(db, season, week, require_v5=True)
 
 
 async def _predict_week_uncached(
-    db: Session, season: int, week: int | None = None,
+    db: Session, season: int, week: int | None = None, *, require_v5: bool = False,
 ) -> dict[str, Any]:
     """Predictions for every game in the given week (uncached)."""
     sched = await _season_schedule(season, db=db)
@@ -946,7 +1111,8 @@ async def _predict_week_uncached(
         log.warning("weather_context_failed", error=str(e)[:200])
         weather_by_game = {}
 
-    # v5 ratings model for the whole slate (best-effort; {} → v4 path).
+    # v5 ratings for the slate. Request and publish paths pass require_v5, so a
+    # miss is left unpublished rather than silently served as epa-elo-ctx-v4.
     try:
         from . import game_model_v5_service
 
@@ -976,12 +1142,18 @@ async def _predict_week_uncached(
             model_version=pred.get("model_version") or PREDICTION_MODEL_VERSION,
             expected_calibration_error=expected_calibration_error,
         )
-        # Headline numbers become the market blend when consensus exists;
-        # pure-model values move to pred["model_only"] with pred["edge"]
-        # exposing the disagreement. Admin overrides (below) still win.
+        # Headline numbers become the market blend when consensus exists.
+        # The blend weight is unchanged (market.w_cap default 0.92). A later
+        # change removes this call; publication must keep serving whatever
+        # this function returns, including the blend, until that lands.
         market_service.apply_market_blend(
             pred, market_service.context_for_game(market_ctx, h, a),
         )
+        if require_v5:
+            from .published_predictions import is_full_v5
+
+            if not is_full_v5(pred):
+                continue
         explainability = pred.get("explainability")
         if isinstance(explainability, dict):
             explainability["confidence_context"] = {
@@ -1078,6 +1250,10 @@ def _flatten_slate_game(g: dict[str, Any]) -> dict[str, Any]:
         "home_elo": home_elo,
         "away_elo": away_elo,
         "elo_gap": elo_gap,
+        "model_version": p.get("model_version") or g.get("model_version"),
+        "prediction_source": g.get("prediction_source") or p.get("prediction_source"),
+        "prediction_basis": p.get("prediction_basis") or g.get("prediction_basis"),
+        "headline_pipeline": g.get("headline_pipeline") or p.get("headline_pipeline"),
         "model_spread": p.get("predicted_spread"),
         "model_total": p.get("predicted_total"),
         "model_home_score": p.get("predicted_home_score"),
@@ -1346,13 +1522,15 @@ async def team_remaining_schedule_predictions(
     team_games = sched[(sched["home_team"] == team_id) | (sched["away_team"] == team_id)]
     team_games = team_games.sort_values("week")
 
-    ratings = elo_service.current_ratings(db, season=season) or elo_service.current_ratings(db)
-    aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
-    if not aggs:
-        aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
-    from . import model_inputs_service
-
-    aggs = model_inputs_service.adjusted_team_aggregates(db, season, aggs or {})
+    # Same stored row the slate uses. Per-week context is already inside that
+    # row; this path does not run a second, context-free model.
+    canon: dict[str, dict[str, Any]] = {}
+    weeks = sorted({int(w) for w in team_games["week"].dropna().unique()})
+    for week_n in weeks:
+        payload = await predict_week(db, season, week_n)
+        for item in payload.get("games") or []:
+            if item.get("id"):
+                canon[str(item["id"])] = item
 
     out_games = []
     cumulative_expected_wins = 0.0
@@ -1365,21 +1543,12 @@ async def team_remaining_schedule_predictions(
         opp = a if is_home else h
         hs, as_ = g.get("home_score"), g.get("away_score")
         played = pd.notna(hs) and pd.notna(as_)
-
-        hr = ratings.get(h, elo_service.INITIAL_RATING)
-        ar = ratings.get(a, elo_service.INITIAL_RATING)
-        h_off = (aggs.get(h) or {}).get("points_per_game")
-        a_off = (aggs.get(a) or {}).get("points_per_game")
-        h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
-        a_def = (aggs.get(a) or {}).get("points_allowed_per_game")
-        # Deliberately uncontexted: this projects a team's whole remaining
-        # schedule, and this week's injury report says nothing about Week 14.
-        # Per-week context here needs a durability model (who is back by then),
-        # which is the season-context work, not this one.
-        pred = predict_game(hr, ar, home_off_ppg=h_off, away_off_ppg=a_off,
-                            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
-                            home_aggs=aggs.get(h), away_aggs=aggs.get(a))
-        my_win_prob = pred["home_win_prob"] if is_home else pred["away_win_prob"]
+        gid = str(g.get("game_id") or "")
+        served = canon.get(gid) or {}
+        pred = served.get("prediction") if isinstance(served.get("prediction"), dict) else None
+        my_win_prob = None
+        if pred is not None:
+            my_win_prob = pred["home_win_prob"] if is_home else pred["away_win_prob"]
 
         outcome: str | None = None
         if played:
@@ -1392,10 +1561,14 @@ async def team_remaining_schedule_predictions(
             else:
                 outcome = "L"
 
-        if not played:
+        if not played and my_win_prob is not None:
             cumulative_expected_wins += my_win_prob
+        spread_for_team = None
+        if pred is not None and pred.get("predicted_spread") is not None:
+            home_spread = float(pred["predicted_spread"])
+            spread_for_team = round(home_spread if is_home else -home_spread, 1)
         out_games.append({
-            "id": str(g.get("game_id") or ""),
+            "id": gid,
             "week": _safe_int(g.get("week")),
             "gameday": str(g.get("gameday") or ""),
             "opponent": opp,
@@ -1404,13 +1577,12 @@ async def team_remaining_schedule_predictions(
             "outcome": outcome,
             "my_score": _safe_int(hs if is_home else as_),
             "opp_score": _safe_int(as_ if is_home else hs),
-            "win_prob": round(my_win_prob, 3),
-            "predicted_spread_for_team": round(
-                pred["predicted_spread"] if is_home else -pred["predicted_spread"], 1
-            ),
-            "predicted_total": pred["predicted_total"],
+            "win_prob": None if my_win_prob is None else round(my_win_prob, 3),
+            "predicted_spread_for_team": spread_for_team,
+            "predicted_total": None if pred is None else pred.get("predicted_total"),
             "cumulative_projected_wins": round(banked_wins + cumulative_expected_wins, 2),
-            "opp_elo": round(ar if is_home else hr, 0),
+            "model_version": (pred or {}).get("model_version") or served.get("model_version"),
+            "prediction_source": served.get("prediction_source"),
         })
 
     final_projected = banked_wins + cumulative_expected_wins

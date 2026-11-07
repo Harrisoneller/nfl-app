@@ -78,6 +78,12 @@ async def lifespan(app: FastAPI):
         run_startup_doctor()
     except Exception as e:  # noqa: BLE001
         log.warning("startup_doctor_crashed", error=str(e)[:200])
+    from .services.published_predictions import enable_background_refresh
+
+    enable_background_refresh()
+    # Every deploy republishes future games off the request path. The worker
+    # also schedules this; the publication lock coalesces the two.
+    asyncio.create_task(_refresh_published_on_deploy())
     if settings.scheduler_enabled:
         start_scheduler()
     else:
@@ -96,6 +102,22 @@ async def lifespan(app: FastAPI):
         from .cache import close_cache
 
         close_cache()
+
+
+async def _refresh_published_on_deploy() -> None:
+    """Republish future games after this process starts. Does not block boot."""
+    try:
+        await asyncio.sleep(5)
+        from .db import SessionLocal
+        from .jobs.scheduler import _refresh_published_predictions
+
+        db = SessionLocal()
+        try:
+            await _refresh_published_predictions(db, "process_start")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        log.warning("prediction_deploy_refresh_failed", error=type(e).__name__)
 
 
 async def _web_role_h2h_warmup() -> None:

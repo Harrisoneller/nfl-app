@@ -19,6 +19,10 @@ from .news import NewsItem  # noqa: F401
 from .odds import OddsLine  # noqa: F401
 from .odds_snapshot import OddsSnapshot  # noqa: F401
 from .player import Player  # noqa: F401
+from .published_prediction import (  # noqa: F401
+    PredictionRefreshLease,
+    PublishedGamePrediction,
+)
 from .player_metric_value import PlayerMetricValue  # noqa: F401
 from .player_prop_snapshot import PlayerPropSnapshot  # noqa: F401
 from .player_season_stat import PlayerSeasonStat  # noqa: F401

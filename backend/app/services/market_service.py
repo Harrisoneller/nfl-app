@@ -45,6 +45,13 @@ from .sparky import odds_math
 log = get_logger(__name__)
 
 BLEND_VERSION = "market-blend-v1"
+# Identity of the post-model headline step. This branch still blends the
+# current line into the headline, so the id is the blend. Stored rows record
+# it. Draft PR 46 stops that blend and tags caches ``headline-model``; that
+# merge must set this constant to ``headline-model`` in the same commit.
+# Leaving it on ``market-blend-v1`` would let old blended rows match the new
+# pipeline and be served as raw qb-ridge-v5.
+HEADLINE_PIPELINE = BLEND_VERSION
 
 # ---- Tunables ----------------------------------------------------------------
 

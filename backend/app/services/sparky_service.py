@@ -342,6 +342,10 @@ async def _model_pred_map(db: Session) -> dict[tuple[str, str], dict[str, Any]]:
                     # negation.
                     "pred_margin": expected_margin,
                     "pred_total": pred_total,
+                    # Keep stored vs labeled v5-fallback distinct. A fallback
+                    # number must not be read later as the canonical stored row.
+                    "prediction_source": g.get("prediction_source") or pred.get("prediction_source"),
+                    "model_version": pred.get("model_version") or g.get("model_version"),
                     "dist": {
                         "expected_margin": expected_margin,
                         "expected_total": expected_total,

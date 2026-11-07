@@ -69,9 +69,20 @@ async def head_to_head(
     final_count = _final_games_count(db, season)
     # Completed seasons are immutable; the active/upcoming season gets a 24h
     # backstop on top of the version key (covers schedule corrections etc.).
+    # The key also carries the model version and input revision so a ratings
+    # change or a deploy cannot keep serving a cached epa-elo-ctx-v4 payload.
     is_completed = season < current_or_upcoming_season()
     ttl = None if is_completed else ACTIVE_TTL
-    key = f"{a}:{b}:{season}:v{final_count}"
+    from .published_predictions import h2h_cache_key, input_revision, publication_generation
+
+    revision = input_revision(db, season=season)
+    generation = publication_generation(db)
+    key = h2h_cache_key(
+        a, b, season, final_count,
+        predictions_service.PREDICTION_MODEL_VERSION,
+        revision,
+        generation,
+    )
     cache_args = dict(
         kind="h2h",
         key=key,
@@ -132,7 +143,9 @@ def _final_games_count(db: Session, season: int) -> int:
 
 def _latest_cached_h2h(a: str, b: str, season: int) -> dict[str, Any] | None:
     """Most recent H2H payload for this ordered pair/season (fresh or stale)."""
-    prefix = f"{a}:{b}:{season}:v"
+    from .published_predictions import h2h_cache_prefix
+
+    prefix = h2h_cache_prefix(a, b, season, predictions_service.PREDICTION_MODEL_VERSION)
     try:
         local = SessionLocal()
         try:
@@ -189,45 +202,29 @@ async def _compute_head_to_head(
     record_b = await analytics_service._team_record(b, last_completed)
 
     # ---- Predicted matchup ---------------------------------------------------
-    # If the two teams play in the current season, surface the game prediction.
-    upcoming_game = await _scheduled_meeting(season, a, b)
-    aggs = await analytics_service._team_pbp_aggregates(season, allow_live_fallback=False)
-    if not aggs:
-        aggs = await analytics_service._team_pbp_aggregates(season - 1, allow_live_fallback=False)
-
+    # The next meeting, not the first one on the schedule. The number is the
+    # stored qb-ridge-v5 row for that game id (same row as the slate).
+    upcoming_game = await _scheduled_meeting(db, season, a, b)
     predicted_game = None
     if upcoming_game:
-        h = upcoming_game["home_team"]
-        away = upcoming_game["away_team"]
-        h_off = (aggs.get(h) or {}).get("points_per_game")
-        a_off = (aggs.get(away) or {}).get("points_per_game")
-        h_def = (aggs.get(h) or {}).get("points_allowed_per_game")
-        a_def = (aggs.get(away) or {}).get("points_allowed_per_game")
-        pred = predictions_service.predict_game(
-            ratings.get(h, elo_service.INITIAL_RATING),
-            ratings.get(away, elo_service.INITIAL_RATING),
-            home_off_ppg=h_off, away_off_ppg=a_off,
-            home_def_ppg_allowed=h_def, away_def_ppg_allowed=a_def,
-            home_aggs=aggs.get(h), away_aggs=aggs.get(away),
-        )
-        predicted_game = {**upcoming_game, "prediction": pred}
-    else:
-        # Hypothetical: simulate a neutral-site matchup between them this week.
-        h_off = (aggs.get(a) or {}).get("points_per_game")
-        b_off = (aggs.get(b) or {}).get("points_per_game")
-        h_def = (aggs.get(a) or {}).get("points_allowed_per_game")
-        b_def = (aggs.get(b) or {}).get("points_allowed_per_game")
-        pred = predictions_service.predict_game(
-            elo_a, elo_b,
-            home_off_ppg=h_off, away_off_ppg=b_off,
-            home_def_ppg_allowed=h_def, away_def_ppg_allowed=b_def,
-            neutral_site=True,
-            home_aggs=aggs.get(a), away_aggs=aggs.get(b),
-        )
+        week = upcoming_game.get("week")
+        served = None
+        if week is not None:
+            slate = await predictions_service.predict_week(db, season, int(week))
+            served = next(
+                (g for g in slate.get("games") or [] if g.get("id") == upcoming_game.get("game_id")),
+                None,
+            )
+        prediction = (served or {}).get("prediction")
         predicted_game = {
-            "home_team": a, "away_team": b, "week": None, "gameday": None,
-            "neutral_site": True, "hypothetical": True, "prediction": pred,
+            **upcoming_game,
+            "prediction": prediction,
+            "prediction_source": (served or {}).get("prediction_source") or "unavailable",
+            "model_version": (served or {}).get("model_version")
+            or predictions_service.PREDICTION_MODEL_VERSION,
         }
+    else:
+        predicted_game = await _hypothetical_v5(a, b, season)
     market_context = None
     if predicted_game:
         market_context = await betting_service.matchup_market_context(
@@ -297,33 +294,128 @@ async def _compute_head_to_head(
 # ---- Helpers ---------------------------------------------------------------
 
 
-async def _scheduled_meeting(season: int, a: str, b: str) -> dict[str, Any] | None:
-    """Find the first game in the season where teams a and b face each other."""
-    df = await _nfl.schedules_df(season)
-    if df is None or len(df) == 0:
-        return None
-    df = df.copy()
-    df["home_team"] = df["home_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
-    df["away_team"] = df["away_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
-    sub = df[((df["home_team"] == a) & (df["away_team"] == b))
-             | ((df["home_team"] == b) & (df["away_team"] == a))]
-    sub = sub.dropna(subset=["home_team", "away_team"]).sort_values("week")
-    if len(sub) == 0:
-        return None
-    g = sub.iloc[0]
-    return {
-        "game_id": str(g.get("game_id") or ""),
-        "season": int(season),
-        "week": _safe_int(g.get("week")),
-        "gameday": str(g.get("gameday") or ""),
-        "home_team": g["home_team"],
-        "away_team": g["away_team"],
-        "venue": str(g.get("stadium") or ""),
-        "broadcast": str(g.get("network") or ""),
-        "played": pd.notna(g.get("home_score")) and pd.notna(g.get("away_score")),
-        "home_score": _safe_int(g.get("home_score")),
-        "away_score": _safe_int(g.get("away_score")),
+async def _hypothetical_v5(team_a: str, team_b: str, season: int) -> dict[str, Any]:
+    """Neutral-site v5 only. No stored game, and no silent v4 number."""
+    from . import game_model_v5_service, market_service
+
+    raw = None
+    try:
+        if game_model_v5_service.enabled():
+            model = await game_model_v5_service.week_model(season, 1)
+            raw = game_model_v5_service.predict_any(model, team_a, team_b, neutral=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("h2h_hypothetical_v5_failed", error=str(exc)[:160])
+        raw = None
+    base = {
+        "home_team": team_a,
+        "away_team": team_b,
+        "week": None,
+        "gameday": None,
+        "neutral_site": True,
+        "hypothetical": True,
+        "model_version": predictions_service.PREDICTION_MODEL_VERSION,
     }
+    if not isinstance(raw, dict) or raw.get("margin") is None or raw.get("total") is None:
+        return {
+            **base,
+            "prediction": None,
+            "prediction_source": "unavailable",
+            "unavailable_reason": "v5_inputs_missing",
+        }
+    pred = predictions_service.predict_game(
+        0, 0, neutral_site=True, v5=raw,
+    )
+    market_service.apply_market_blend(pred, None)
+    pred["prediction_source"] = "v5_fallback"
+    return {**base, "prediction": pred, "prediction_source": "v5_fallback"}
+
+
+def _meetings_from_db(db: Session, season: int, a: str, b: str) -> list[dict[str, Any]]:
+    rows = (
+        db.query(Game)
+        .filter(
+            Game.season == season,
+            Game.season_type == 2,
+            (
+                ((Game.home_team_id == a) & (Game.away_team_id == b))
+                | ((Game.home_team_id == b) & (Game.away_team_id == a))
+            ),
+        )
+        .all()
+    )
+    meetings = []
+    for game in rows:
+        played = game.status == "final" or (
+            game.home_score is not None and game.away_score is not None
+        )
+        meetings.append({
+            "game_id": game.id,
+            "season": season,
+            "week": game.week,
+            "gameday": game.start_time.strftime("%Y-%m-%d") if game.start_time else "",
+            "home_team": game.home_team_id,
+            "away_team": game.away_team_id,
+            "venue": game.venue or "",
+            "broadcast": game.broadcast or "",
+            "played": played,
+            "kickoff": game.start_time,
+            "home_score": game.home_score,
+            "away_score": game.away_score,
+        })
+    return meetings
+
+
+def _meetings_from_frame(df: pd.DataFrame, season: int, a: str, b: str) -> list[dict[str, Any]]:
+    from .published_predictions import resolve_kickoff
+
+    sub = df[
+        ((df["home_team"] == a) & (df["away_team"] == b))
+        | ((df["home_team"] == b) & (df["away_team"] == a))
+    ]
+    sub = sub.dropna(subset=["home_team", "away_team"])
+    meetings = []
+    for _, g in sub.iterrows():
+        played = pd.notna(g.get("home_score")) and pd.notna(g.get("away_score"))
+        gameday = str(g.get("gameday") or "")
+        gametime = str(g.get("gametime") or "")
+        meetings.append({
+            "game_id": str(g.get("game_id") or ""),
+            "season": int(season),
+            "week": _safe_int(g.get("week")),
+            "gameday": gameday,
+            "home_team": g["home_team"],
+            "away_team": g["away_team"],
+            "venue": str(g.get("stadium") or ""),
+            "broadcast": str(g.get("network") or ""),
+            "played": played,
+            "kickoff": resolve_kickoff(None, gameday, gametime),
+            "home_score": _safe_int(g.get("home_score")),
+            "away_score": _safe_int(g.get("away_score")),
+        })
+    return meetings
+
+
+async def _scheduled_meeting(
+    db: Session, season: int, a: str, b: str,
+) -> dict[str, Any] | None:
+    """The next meeting of these teams, not the earliest week on the schedule."""
+    from datetime import UTC, datetime
+
+    from .published_predictions import select_upcoming_meeting
+
+    meetings = _meetings_from_db(db, season, a, b)
+    if not meetings:
+        df = await _nfl.schedules_df(season)
+        if df is None or len(df) == 0:
+            return None
+        df = df.copy()
+        df["home_team"] = df["home_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
+        df["away_team"] = df["away_team"].map(lambda x: canonical_team(x) if isinstance(x, str) else x)
+        meetings = _meetings_from_frame(df, season, a, b)
+    chosen = select_upcoming_meeting(meetings, datetime.now(UTC))
+    if chosen is None:
+        return None
+    return {k: v for k, v in chosen.items() if k != "kickoff"}
 
 
 async def _historical_h2h(a: str, b: str, n_seasons: int) -> dict[str, Any]:
