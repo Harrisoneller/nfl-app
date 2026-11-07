@@ -35,7 +35,26 @@ def health() -> dict:
         "multi_user": s.multi_user_mode,
         "twitter_enabled": s.enable_twitter,
         "version": "0.3.0",
+        # Informational. A stale or diverged publication does not fail liveness.
+        "prediction_publication": _prediction_publication(),
     }
+
+
+def _prediction_publication() -> dict:
+    try:
+        from ..db import SessionLocal
+        from ..services.published_predictions import publication_status
+
+        db = SessionLocal()
+        try:
+            return publication_status(db)
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001 — health must stay a liveness answer
+        return {
+            "ok": False,
+            "alerts": [{"code": "publication_status_failed", "detail": type(exc).__name__}],
+        }
 
 
 @router.get("/live")

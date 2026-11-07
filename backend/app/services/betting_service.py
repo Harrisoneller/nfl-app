@@ -444,25 +444,43 @@ async def team_game_edge(
         opp = next_row["opponent"]
         home_id = tid if is_home else opp
         away_id = opp if is_home else tid
-        wp = next_row.get("win_prob", 0.5)
-        spread_for_team = next_row.get("predicted_spread_for_team", 0)
-        home_spread = spread_for_team if is_home else -spread_for_team
-        game = {
-            "id": next_row.get("id", ""),
-            "season": season,
-            "week": week,
-            "gameday": next_row.get("gameday", ""),
-            "home_team_id": home_id,
-            "away_team_id": away_id,
-            "home_score": None,
-            "away_score": None,
-            "prediction": {
-                "home_win_prob": wp if is_home else 1 - wp,
-                "away_win_prob": 1 - wp if is_home else wp,
-                "predicted_spread": home_spread,
-                "predicted_total": next_row.get("predicted_total"),
-            },
-        }
+        wp = next_row.get("win_prob")
+        spread_for_team = next_row.get("predicted_spread_for_team")
+        if wp is None or spread_for_team is None:
+            game = {
+                "id": next_row.get("id", ""),
+                "season": season,
+                "week": week,
+                "gameday": next_row.get("gameday", ""),
+                "home_team_id": tid if next_row.get("is_home", True) else next_row["opponent"],
+                "away_team_id": next_row["opponent"] if next_row.get("is_home", True) else tid,
+                "home_score": None,
+                "away_score": None,
+                "prediction": None,
+                "prediction_source": next_row.get("prediction_source") or "unavailable",
+                "model_version": next_row.get("model_version"),
+            }
+        else:
+            home_spread = spread_for_team if is_home else -spread_for_team
+            game = {
+                "id": next_row.get("id", ""),
+                "season": season,
+                "week": week,
+                "gameday": next_row.get("gameday", ""),
+                "home_team_id": home_id,
+                "away_team_id": away_id,
+                "home_score": None,
+                "away_score": None,
+                "prediction": {
+                    "home_win_prob": wp if is_home else 1 - wp,
+                    "away_win_prob": 1 - wp if is_home else wp,
+                    "predicted_spread": home_spread,
+                    "predicted_total": next_row.get("predicted_total"),
+                    "model_version": next_row.get("model_version"),
+                },
+                "prediction_source": next_row.get("prediction_source"),
+                "model_version": next_row.get("model_version"),
+            }
 
     market = await _current_market_odds(db)
     name_map = _full_name_to_id_map()

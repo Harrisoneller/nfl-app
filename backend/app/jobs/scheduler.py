@@ -89,8 +89,10 @@ async def _rebuild_elo(db: Session) -> int:
     # in-season results never reached Elo (2026 ran all of September on
     # end-of-2025 ratings).
     latest = latest_completed_season()
-    return await elo_service.rebuild_history(
+    n = await elo_service.rebuild_history(
         db, list(range(latest - 5, current_or_upcoming_season() + 1)))
+    await _refresh_published_predictions(db, "elo_rebuild")
+    return n
 
 
 async def _vacuum_cache(_db: Session) -> int:
@@ -150,7 +152,9 @@ async def _refresh_context(db: Session) -> dict:
         week = week_index.build(db, season).current_week()
     except Exception:  # noqa: BLE001 — week resolution must not block the refresh
         week = None
-    return await context_service.refresh_context(db, season, week)
+    result = await context_service.refresh_context(db, season, week)
+    await _refresh_published_predictions(db, "context_refresh")
+    return result
 
 
 def _reject_upstream_status(status: object, message: object) -> None:
@@ -165,8 +169,29 @@ def _reject_upstream_status(status: object, message: object) -> None:
     raise OddsUpstreamError(str(status), detail)
 
 
+async def _refresh_published_predictions(db: Session, reason: str) -> dict:
+    """Republish future games after a ratings or odds change. Failures stay local."""
+    from ..services.predictions_service import build_v5_week
+    from ..services.published_predictions import refresh_future_games
+
+    try:
+        return await refresh_future_games(db, compute_week=build_v5_week, reason=reason)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("prediction_refresh_trigger_failed", reason=reason, error=type(exc).__name__)
+        return {"status": "error"}
+
+
+async def _job_refresh_published_predictions() -> None:
+    await sync_run_service.run_job(
+        "prediction_publication",
+        lambda db: _refresh_published_predictions(db, "scheduler_interval"),
+    )
+
+
 async def _refresh_odds(db: Session) -> dict:
     result = await odds_service.refresh_odds(db)
+    if isinstance(result, dict) and result.get("status") == "ok":
+        await _refresh_published_predictions(db, "odds_refresh")
     # 429 / 5xx / timeout / empty odds payload must fail the job before we
     # spend more quota on props. 401/402 already raised inside refresh_odds.
     _reject_upstream_status(result.get("status"), result.get("message"))
@@ -439,6 +464,20 @@ def start_scheduler() -> None:
         IntervalTrigger(minutes=5),
         next_run_time=_soon(60 * 3),
         id="endpoint_slo_snapshot",
+        coalesce=True,
+        max_instances=1,
+    )
+    from ..services.published_predictions import (
+        SCHEDULER_INTERVAL_MINUTES,
+        enable_background_refresh,
+    )
+
+    enable_background_refresh()
+    sched.add_job(
+        _job_refresh_published_predictions,
+        IntervalTrigger(minutes=SCHEDULER_INTERVAL_MINUTES),
+        next_run_time=_soon(20),
+        id="prediction_publication",
         coalesce=True,
         max_instances=1,
     )
