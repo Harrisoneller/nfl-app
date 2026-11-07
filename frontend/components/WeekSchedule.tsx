@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { GamePrediction } from "@/lib/api";
+import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
 
@@ -74,14 +75,16 @@ export function MatchupPreviewRow({
   variant?: "default" | "compact";
 }) {
   const p = game.prediction;
-  const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
-  const absSpread = Math.abs(p.predicted_spread);
+  const headline = headlineNumbers(p);
+  const sourceLabel = headlineSourceLabel(p);
+  const fav = headline.spread <= 0 ? game.home_team_id : game.away_team_id;
+  const spreadLabel = formatHomeSpread(headline.spread, game.home_team_id, game.away_team_id);
   const eloDiff = Math.round(game.home_elo - game.away_elo);
   const played = game.home_score != null && game.away_score != null;
   const kickoff = formatKickoff(game.gameday, game.gametime);
   const compact = variant === "compact";
   const favProb = Math.round(
-    (fav === game.home_team_id ? p.home_win_prob : p.away_win_prob) * 100,
+    (fav === game.home_team_id ? headline.homeWinProb : headline.awayWinProb) * 100,
   );
 
   return (
@@ -118,25 +121,25 @@ export function MatchupPreviewRow({
           ) : (
             <WinProbBar
               awayTeam={game.away_team_id}
-              awayProb={p.away_win_prob}
+              awayProb={headline.awayWinProb}
               homeTeam={game.home_team_id}
-              homeProb={p.home_win_prob}
+              homeProb={headline.homeWinProb}
             />
           )}
 
           <div className="grid grid-cols-2 gap-1.5">
-            <MetricPill compact label="Win prob" value={`${fav} ${favProb}%`} />
+            <MetricPill compact label={`Win % · ${sourceLabel}`} value={`${fav} ${favProb}%`} />
             <MetricPill
               compact
               label="Elo Δ"
               value={`${eloDiff >= 0 ? "+" : ""}${eloDiff}`}
               hint="home − away"
             />
-            <MetricPill compact label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
+            <MetricPill compact label="Model spread" value={spreadLabel} />
             <MetricPill
               compact
-              label="Proj score"
-              value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`}
+              label="Model score"
+              value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`}
             />
           </div>
 
@@ -176,24 +179,24 @@ export function MatchupPreviewRow({
               <div className="w-full sm:w-44 shrink-0">
                 <WinProbBar
                   awayTeam={game.away_team_id}
-                  awayProb={p.away_win_prob}
+                  awayProb={headline.awayWinProb}
                   homeTeam={game.home_team_id}
-                  homeProb={p.home_win_prob}
+                  homeProb={headline.homeWinProb}
                 />
               </div>
             )}
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 shrink-0 w-full sm:w-auto sm:min-w-[280px]">
-              <MetricPill label="Win prob" value={`${fav} ${favProb}%`} />
+              <MetricPill label={`Win % · ${sourceLabel}`} value={`${fav} ${favProb}%`} />
               <MetricPill
                 label="Elo Δ"
                 value={`${eloDiff >= 0 ? "+" : ""}${eloDiff}`}
                 hint="home − away"
               />
-              <MetricPill label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
+              <MetricPill label="Model spread" value={spreadLabel} />
               <MetricPill
-                label="Proj score"
-                value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`}
+                label="Model score"
+                value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`}
               />
             </div>
           </div>

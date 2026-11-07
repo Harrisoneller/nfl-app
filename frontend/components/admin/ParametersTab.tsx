@@ -12,7 +12,7 @@ import { Card } from "@/components/Card";
 /**
  * Global model-parameter console.
  *
- * Every tunable in the projection stack — Elo, scoring model, market blend,
+ * Every tunable in the projection stack — Elo, scoring model, market edge,
  * player engine, prop anchors, defense adjustment, ADP, lever mechanics,
  * distributions — declared in the backend registry and editable here without
  * a deploy. Changes are bounds-validated, audited, and live within seconds.

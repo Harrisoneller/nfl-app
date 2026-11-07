@@ -426,23 +426,23 @@ typically allows.
 
 ---
 
-## 10. Market-Aware Layer (`market-blend-v1`)
+## 10. Market line next to the model
 
-The closing line beats every public model, ours included — so the headline
-predictions are now a **model↔market blend** rather than pure model output.
-Three components, all best-effort (any dead source degrades to model-only):
+Headline spread, total, projected score, and win probability are the model
+(`qb-ridge-v5` when that model ran, `epa-elo-ctx-v4` when it did not). They
+are not blended with the current sportsbook line.
 
-**Game blend** (`market_service.py`). The persisted `odds_lines` snapshot is
-de-vigged per book (h2h pairs), medianed across books, and optionally merged
-with Kalshi prediction-market prices (counted as 2 book-equivalents). Win
-probs blend in **logit space**, spread/total linearly, with market weight
-`min(0.85, 0.30 + 0.10 × effective_sources)` — one lonely book carries 40%,
-a full 5+-book consensus ~80%+. Pure-model numbers are preserved under
-`model_only`, and `edge` exposes model−market disagreement per game (that gap
-is the value signal, not an error). Line movement (open→latest from Sparky's
-append-only `odds_snapshots`) is attached as context but deliberately not used
-as an extra nudge — the current line already contains it. Admin overrides
-still supersede everything at read time.
+**Game market block** (`market_service.attach_market_context`). The persisted
+`odds_lines` snapshot is de-vigged per book (h2h pairs), medianed across books,
+and optionally merged with Kalshi prices for the *displayed* consensus
+probability. That block, plus `edge` (model − market on the home-spread
+convention), sits beside the headline. A spread of 0 is pick'em. A missing
+spread is left missing. `prediction_basis` is `model_only` for a model
+headline and `admin_override` when an output pin replaced it.
+`market-blend-v1` is retired and must not be labeled as qb-ridge-v5.
+`market.w_*` parameters are retained and no longer move headlines. Line
+movement is context only. Admin overrides still supersede the headline and
+are labeled.
 
 **Price-aware prop anchors** (`player_projection_engine.market_implied_mean`,
 `poisson_rate_from_over_prob`). Anchoring now uses the de-vigged over price,

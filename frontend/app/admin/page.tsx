@@ -68,12 +68,12 @@ export default function AdminPage() {
         <h1 className="text-xl font-bold">Projection Control Room</h1>
         <p className="text-sm text-muted mt-1 max-w-3xl">
           Three tuning layers: <strong>global parameters</strong> (Elo, market
-          blend, weather, injury, priors…), <strong>model-input levers</strong>{" "}
+          edge, weather, injury, priors…), <strong>model-input levers</strong>{" "}
           (pace, usage, defense, availability — recompute downstream), and{" "}
           <strong>output pins</strong> (spread/total/stat lines). Everything is
           audited, versioned into cache keys, and exportable. Reverting restores
-          pure model output instantly. Adjusted values are <em>not</em> flagged
-          on public pages.
+          the model headline. Output pins are labeled admin override on the
+          public headline.
         </p>
       </div>
 

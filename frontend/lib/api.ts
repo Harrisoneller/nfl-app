@@ -191,9 +191,11 @@ export type GamePrediction = {
     model_version?: string;
     inputs?: PredictionInputs;
     explainability?: PredictionExplainability;
-    // ---- Market-aware layer (market-blend-v1) ----
-    // "market-blend-v1" when headline numbers are blended with consensus,
-    // "model_only" when no market data existed for the game.
+    // Headline spread/total/scores/win prob are the model (or an admin
+    // override). "market-blend-v1" is a retired basis: if a cached payload
+    // still says that, the headline was blended and must not be labeled v5.
+    // "model_only" means the headline is the model, even when `market` is set.
+    // "admin_override" means a hand-set number replaced the model.
     prediction_basis?: string;
     model_only?: {
       home_win_prob: number;
@@ -202,7 +204,7 @@ export type GamePrediction = {
       predicted_total: number;
     };
     market?: {
-      consensus_home_prob: number;
+      consensus_home_prob: number | null;
       spread_home: number | null;
       total: number | null;
       books: number;
@@ -264,6 +266,8 @@ export type WeekSlateGame = {
   market_total?: number | null;
   spread_edge?: number | null;
   total_edge?: number | null;
+  model_version?: string | null;
+  prediction_basis?: string | null;
   confidence_tier?: "low" | "medium" | "high";
   game_script?: string | null;
   distribution?: { margin_interval_80?: [number, number] } | null;
@@ -553,11 +557,14 @@ export type TeamRemainingGame = {
   predicted_total: number;
   cumulative_projected_wins: number;
   opp_elo: number;
+  model_version?: string | null;
+  prediction_basis?: string | null;
 };
 
 export type TeamRemainingSchedule = {
   team_id: string;
   season: number;
+  model_version?: string | null;
   games: TeamRemainingGame[];
   banked_wins: number;
   projected_remaining_wins: number;

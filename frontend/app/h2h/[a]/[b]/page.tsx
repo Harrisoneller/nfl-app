@@ -14,6 +14,7 @@ import { TrendSeries } from "@/components/charts/MultiTrendLine";
 import { usePersona } from "@/context/PersonaProvider";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
 import { WhyPredictionPanel } from "@/components/predictions/WhyPredictionPanel";
+import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
 
 const MultiRadar = dynamic(
   () => import("@/components/charts/MultiRadar").then((m) => m.MultiRadar),
@@ -235,8 +236,8 @@ function PredictionHero({ data }: { data: H2HMatchup }) {
   const pred = data.predicted_matchup!;
   const isHypothetical = pred.hypothetical;
   const p = pred.prediction;
-  const fav = p.predicted_spread <= 0 ? pred.home_team : pred.away_team;
-  const absSpread = Math.abs(p.predicted_spread);
+  const headline = headlineNumbers(p);
+  const sourceLabel = headlineSourceLabel(p);
 
   return (
     <Card
@@ -251,14 +252,14 @@ function PredictionHero({ data }: { data: H2HMatchup }) {
     >
       <WinProbBar
         awayTeam={pred.away_team}
-        awayProb={p.away_win_prob}
+        awayProb={headline.awayWinProb}
         homeTeam={pred.home_team}
-        homeProb={p.home_win_prob}
+        homeProb={headline.homeWinProb}
       />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-sm">
-        <Mini label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
-        <Mini label="Total" value={p.predicted_total.toFixed(1)} />
-        <Mini label="Score" value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`} />
+        <Mini label={`Model spread · ${sourceLabel}`} value={formatHomeSpread(headline.spread, pred.home_team, pred.away_team)} />
+        <Mini label="Model total" value={headline.total.toFixed(1)} />
+        <Mini label="Model score" value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`} />
         <Mini label="Game script" value={(p as any).game_script || "—"} />
       </div>
       <div className="mt-3">

@@ -14,6 +14,7 @@ import { WeekSchedule } from "@/components/WeekSchedule";
 import { FreshnessBadges } from "@/components/FreshnessBadges";
 import { ExperimentedInsightCards } from "@/components/home/ExperimentedInsightCards";
 import { PersonaGate } from "@/components/persona/PersonaGate";
+import { formatHomeSpread, formatMarketLine, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
 
 export const revalidate = 60;
 export const maxDuration = 30;
@@ -475,8 +476,8 @@ function LiveScoreboardStrip({ games }: { games: Game[] }) {
 
 function FeaturedGame({ game, weekLabel }: { game: GamePrediction; weekLabel: string | null }) {
   const p = game.prediction;
-  const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
-  const absSpread = Math.abs(p.predicted_spread);
+  const headline = headlineNumbers(p);
+  const sourceLabel = headlineSourceLabel(p);
 
   return (
     <section className="panel hero-glow p-6 md:p-8 border-t-2 border-t-team-primary/40">
@@ -503,11 +504,11 @@ function FeaturedGame({ game, weekLabel }: { game: GamePrediction; weekLabel: st
         <div className="flex flex-col items-center gap-2">
           <span className="text-[10px] uppercase tracking-widest text-muted font-semibold">vs</span>
           <div className="text-3xl md:text-4xl font-bold tabular-nums">
-            <span className="text-team-primary">{Math.round(p.away_win_prob * 100)}%</span>
+            <span className="text-team-primary">{Math.round(headline.awayWinProb * 100)}%</span>
             <span className="text-muted mx-2 font-normal text-2xl">/</span>
-            <span className="text-team-secondary">{Math.round(p.home_win_prob * 100)}%</span>
+            <span className="text-team-secondary">{Math.round(headline.homeWinProb * 100)}%</span>
           </div>
-          <div className="text-[11px] text-muted">win probability</div>
+          <div className="text-[11px] text-muted">model win probability · {sourceLabel}</div>
         </div>
         <TeamLockup teamId={game.home_team_id} elo={game.home_elo} rightAligned />
       </div>
@@ -515,17 +516,20 @@ function FeaturedGame({ game, weekLabel }: { game: GamePrediction; weekLabel: st
       <div className="mt-6">
         <WinProbBar
           awayTeam={game.away_team_id}
-          awayProb={p.away_win_prob}
+          awayProb={headline.awayWinProb}
           homeTeam={game.home_team_id}
-          homeProb={p.home_win_prob}
+          homeProb={headline.homeWinProb}
         />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 text-sm">
-        <Stat label="Spread" value={`${fav} -${absSpread.toFixed(1)}`} />
-        <Stat label="Total" value={p.predicted_total.toFixed(1)} />
-        <Stat label="Predicted score" value={`${p.predicted_away_score.toFixed(0)}-${p.predicted_home_score.toFixed(0)}`} />
-        <Stat label="Game script" value={p.game_script ?? "—"} />
+        <Stat label="Model spread" value={formatHomeSpread(headline.spread, game.home_team_id, game.away_team_id)} />
+        <Stat label="Model total" value={headline.total.toFixed(1)} />
+        <Stat label="Model score" value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`} />
+        <Stat
+          label="Market line"
+          value={formatMarketLine(p.market, game.home_team_id, game.away_team_id)}
+        />
       </div>
     </section>
   );

@@ -42,6 +42,14 @@ CACHE_TTL = 60 * 30  # 30 minutes
 PREDICTION_MODEL_VERSION = "qb-ridge-v5"
 # Fallback path (Elo × adjusted EPA) when the v5 inputs are unavailable.
 LEGACY_MODEL_VERSION = "epa-elo-ctx-v4"
+# Bumped when headlines stopped being blended with the current market line,
+# so a cached blended slate is not served as the model.
+_HEADLINE_CACHE_TAG = "headline-model"
+
+
+def week_predictions_cache_key(season: int, week: int | None) -> str:
+    wk = week if week is not None else "next"
+    return f"{season}:{wk}:{PREDICTION_MODEL_VERSION}:{_HEADLINE_CACHE_TAG}"
 
 
 # Total scoring: league avg points/game per team is ~22; vary with team scoring.
@@ -860,7 +868,7 @@ async def predict_week(db: Session, season: int, week: int | None = None) -> dic
     If `week` is None, picks the next upcoming week (lowest week with unplayed games).
     Cached so the home-page hero isn't racing an 8–20s cold compute.
     """
-    cache_key = f"{season}:{week if week is not None else 'next'}:{PREDICTION_MODEL_VERSION}"
+    cache_key = week_predictions_cache_key(season, week)
 
     async def _compute() -> dict[str, Any]:
         return await _predict_week_uncached(db, season, week)
@@ -908,9 +916,8 @@ async def _predict_week_uncached(
         games = games[games["game_type"].astype(str).str.upper() == "REG"]
     out = []
     calibration_score, expected_calibration_error = await _calibration_context(db)
-    # Market-aware layer: de-vigged multi-book consensus (+ Kalshi when
-    # reachable) fetched once for the whole slate. Best-effort — an empty
-    # context leaves every game on model-only numbers.
+    # Displayed market line only. Best-effort — a failure leaves the model
+    # headline with no market block, and never substitutes the line for it.
     from . import market_service  # late import: market_service ← prediction_dist only
 
     try:
@@ -976,10 +983,10 @@ async def _predict_week_uncached(
             model_version=pred.get("model_version") or PREDICTION_MODEL_VERSION,
             expected_calibration_error=expected_calibration_error,
         )
-        # Headline numbers become the market blend when consensus exists;
-        # pure-model values move to pred["model_only"] with pred["edge"]
-        # exposing the disagreement. Admin overrides (below) still win.
-        market_service.apply_market_blend(
+        # Market line and edge are attached beside the model. They do not
+        # replace spread, total, scores, or win probability. Admin overrides
+        # (below) still replace the headline and label themselves.
+        market_service.attach_market_context(
             pred, market_service.context_for_game(market_ctx, h, a),
         )
         explainability = pred.get("explainability")
@@ -1099,6 +1106,8 @@ def _flatten_slate_game(g: dict[str, Any]) -> dict[str, Any]:
         "market": market,
         "model_only": model_only,
         "edge": edge,
+        "model_version": p.get("model_version"),
+        "prediction_basis": p.get("prediction_basis"),
     }
 
 
@@ -1122,11 +1131,27 @@ async def week_slate(
         "season": payload.get("season") or season,
         "week": payload.get("week") if payload.get("week") is not None else resolved,
         "n_games": len(games),
-        "model_version": PREDICTION_MODEL_VERSION,
+        "model_version": _slate_model_version(games),
         "weeks": weeks,
         "partial": bool(payload.get("partial")),
         "games": games,
     }
+
+
+def _slate_model_version(games: list[dict[str, Any]]) -> str:
+    """Label the slate from what each game actually published.
+
+    A blended row must not be described as qb-ridge-v5. A slate that fell
+    back to v4 must not be described as v5 either.
+    """
+    if any(g.get("prediction_basis") == "market-blend-v1" for g in games):
+        return "market-blend-v1"
+    versions = {g.get("model_version") for g in games if g.get("model_version")}
+    if not versions or versions == {PREDICTION_MODEL_VERSION}:
+        return PREDICTION_MODEL_VERSION
+    if versions == {LEGACY_MODEL_VERSION}:
+        return LEGACY_MODEL_VERSION
+    return "mixed"
 
 
 async def _calibration_context(db: Session) -> tuple[float, float | None]:
@@ -1411,12 +1436,25 @@ async def team_remaining_schedule_predictions(
             "predicted_total": pred["predicted_total"],
             "cumulative_projected_wins": round(banked_wins + cumulative_expected_wins, 2),
             "opp_elo": round(ar if is_home else hr, 0),
+            "model_version": pred.get("model_version"),
+            "prediction_basis": pred.get("prediction_basis") or "model_only",
         })
 
     final_projected = banked_wins + cumulative_expected_wins
+    versions = {g.get("model_version") for g in out_games if g.get("model_version")}
+    # This path does not load a v5 week model (the week board does). Report
+    # the version predict_game actually stamped so the UI does not call a
+    # v4 outlook qb-ridge-v5.
+    if len(versions) == 1:
+        outlook_version = next(iter(versions))
+    elif versions:
+        outlook_version = "mixed"
+    else:
+        outlook_version = None
     return {
         "team_id": team_id,
         "season": season,
+        "model_version": outlook_version,
         "games": out_games,
         "banked_wins": banked_wins,
         "projected_remaining_wins": round(cumulative_expected_wins, 2),

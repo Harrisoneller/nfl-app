@@ -7,6 +7,7 @@ import { TeamLogo } from "../TeamLogo";
 import { usePersona } from "@/context/PersonaProvider";
 import { WhyPredictionPanel } from "./WhyPredictionPanel";
 import { MarketBlendLine } from "./MarketBlendLine";
+import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
 
 /**
  * Compact game prediction card. Logos for casual readability, Elo + win
@@ -15,8 +16,9 @@ import { MarketBlendLine } from "./MarketBlendLine";
 export function PredictionCard({ game }: { game: GamePrediction }) {
   const { persona } = usePersona();
   const p = game.prediction;
-  const fav = p.predicted_spread <= 0 ? game.home_team_id : game.away_team_id;
-  const absSpread = Math.abs(p.predicted_spread);
+  const headline = headlineNumbers(p);
+  const sourceLabel = headlineSourceLabel(p);
+  const spreadLabel = formatHomeSpread(headline.spread, game.home_team_id, game.away_team_id);
   const played = game.home_score != null && game.away_score != null;
   const winner = played ? (
     (game.home_score! > game.away_score!) ? game.home_team_id : (game.away_score! > game.home_score!) ? game.away_team_id : null
@@ -53,25 +55,31 @@ export function PredictionCard({ game }: { game: GamePrediction }) {
           <ExplainPopover game={game}>
             <WinProbBar
               awayTeam={game.away_team_id}
-              awayProb={p.away_win_prob}
+              awayProb={headline.awayWinProb}
               homeTeam={game.home_team_id}
-              homeProb={p.home_win_prob}
+              homeProb={headline.homeWinProb}
             />
           </ExplainPopover>
           {persona !== "fantasy" && (
             <div className="flex items-center justify-between text-[11px] text-muted pt-1">
               <span>
-                Pick: <span className="text-text font-medium">{fav} -{absSpread.toFixed(1)}</span>
-                {p.prediction_basis === "market-blend-v1" && (
-                  <span
-                    className="ml-1.5 rounded px-1 py-px text-[9px] uppercase tracking-wide bg-sky-500/10 text-sky-300"
-                    title="Headline numbers blend the model with de-vigged sportsbook consensus (and Kalshi when available)."
-                  >
-                    blend
-                  </span>
-                )}
+                Model spread: <span className="text-text font-medium">{spreadLabel}</span>
+                <span
+                  className="ml-1.5 rounded px-1 py-px text-[9px] uppercase tracking-wide bg-team-primary/10 text-team-primary"
+                  title={
+                    sourceLabel === "Market blend"
+                      ? "This cached headline was blended with the current line. It is not qb-ridge-v5."
+                      : sourceLabel === "qb-ridge-v5"
+                        ? "qb-ridge-v5 model. Not blended with this week's line. The model still uses a prior from previous games' closing lines."
+                        : sourceLabel === "v4 fallback"
+                          ? "v5 inputs were not used for this row. The number is the legacy model."
+                          : "Headline source."
+                  }
+                >
+                  {sourceLabel}
+                </span>
               </span>
-              <span>O/U <span className="text-text tabular-nums">{p.predicted_total.toFixed(1)}</span></span>
+              <span>Model O/U <span className="text-text tabular-nums">{headline.total.toFixed(1)}</span></span>
             </div>
           )}
           {persona !== "fantasy" && <MarketBlendLine game={game} />}

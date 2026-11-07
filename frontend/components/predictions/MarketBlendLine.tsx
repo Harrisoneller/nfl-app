@@ -1,11 +1,11 @@
 "use client";
 
 import { GamePrediction } from "@/lib/api";
+import { formatMarketLine, formatSpreadEdge } from "@/lib/headline";
 
 /**
- * Compact market-context line for a prediction card: consensus line + sources,
- * line-movement arrow, and a model-edge chip when the model materially
- * disagrees with the market. Renders nothing for model-only games.
+ * Market line and model-vs-market edge, labeled separately from the headline.
+ * Missing lines stay missing. A spread of 0 renders as pick'em.
  */
 export function MarketBlendLine({
   game,
@@ -14,32 +14,20 @@ export function MarketBlendLine({
 }) {
   const p = game.prediction;
   const m = p.market;
-  if (!m) return null;
-
-  const mktFav = m.spread_home != null
-    ? (m.spread_home <= 0 ? game.home_team_id : game.away_team_id)
-    : (m.consensus_home_prob >= 0.5 ? game.home_team_id : game.away_team_id);
-
-  const sources =
-    (m.books > 0 ? `${m.books} book${m.books === 1 ? "" : "s"}` : "") +
-    (m.sources?.kalshi ? (m.books > 0 ? " + Kalshi" : "Kalshi") : "");
-
-  // Line movement: which side has the money coming in since open.
-  const delta = m.movement?.delta_home_prob ?? 0;
-  const moveSide = Math.abs(delta) >= 0.02
+  const line = formatMarketLine(m, game.home_team_id, game.away_team_id);
+  const sources = m
+    ? (m.books > 0 ? `${m.books} book${m.books === 1 ? "" : "s"}` : "") +
+      (m.sources?.kalshi ? (m.books > 0 ? " + Kalshi" : "Kalshi") : "")
+    : "";
+  const delta = m?.movement?.delta_home_prob ?? 0;
+  const moveSide = m && Math.abs(delta) >= 0.02
     ? (delta > 0 ? game.home_team_id : game.away_team_id)
     : null;
 
   return (
     <div className="flex items-center justify-between gap-2 text-[10px] text-muted pt-0.5">
       <span className="truncate">
-        Mkt:{" "}
-        <span className="text-text">
-          {m.spread_home != null
-            ? `${mktFav} -${Math.abs(m.spread_home).toFixed(1)}`
-            : `${mktFav} ${Math.round(Math.max(m.consensus_home_prob, 1 - m.consensus_home_prob) * 100)}%`}
-        </span>
-        {m.total != null && <> · O/U <span className="tabular-nums text-text">{m.total.toFixed(1)}</span></>}
+        Market: <span className="text-text">{line}</span>
         {sources && <> · {sources}</>}
         {moveSide && (
           <span className="text-sky-300"> · line → {moveSide}</span>
@@ -60,10 +48,9 @@ export function EdgeChip({
   if (!edge) return null;
 
   // Prefer the spread expression when available; fall back to win prob.
-  if (edge.spread != null && Math.abs(edge.spread) >= 1.0) {
-    // edge.spread = model − market (home line). Negative = model likes HOME
-    // more than the market (model's home line is more negative).
-    const side = edge.spread < 0 ? game.home_team_id : game.away_team_id;
+  // edge.spread = model − market on the home line. Negative = model likes HOME.
+  const spreadLabel = formatSpreadEdge(edge.spread, game.home_team_id, game.away_team_id);
+  if (edge.spread != null && Math.abs(edge.spread) >= 1.0 && spreadLabel && spreadLabel !== "Pick'em") {
     const exp = edge.spread_expected_pts;
     return (
       <span
@@ -76,7 +63,7 @@ export function EdgeChip({
             : undefined
         }
       >
-        Model: {side} +{Math.abs(edge.spread).toFixed(1)}
+        Edge: {spreadLabel}
         {exp != null && <span className="text-muted"> (exp {Math.abs(exp).toFixed(1)})</span>}
       </span>
     );

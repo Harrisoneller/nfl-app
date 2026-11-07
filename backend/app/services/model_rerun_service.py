@@ -9,7 +9,7 @@ Most already do automatically:
   token* in their cache keys (see ``overrides_service.version``), so any param
   write busts them and the next read recomputes. They're live within seconds.
 * **Game predictions** (``predict_week``) recompute per request and read param
-  values live, so market-blend / prior / weather / injury / output-pin changes
+  values live, so market-line / prior / weather / injury / output-pin changes
   are also picked up on the next read.
 
 Two things do **not** self-heal after a tuning change, and that's the gap this

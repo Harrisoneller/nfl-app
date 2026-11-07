@@ -51,6 +51,7 @@ export function TeamRemainingScheduleCard({ teamId }: { teamId: string }) {
       action={
         <span className="text-xs text-muted tabular-nums">
           {data.banked_wins} banked + {data.projected_remaining_wins.toFixed(1)} projected = {data.projected_total_wins.toFixed(1)} wins
+          {data.model_version ? ` · ${data.model_version === "qb-ridge-v5" ? "qb-ridge-v5" : data.model_version === "epa-elo-ctx-v4" ? "v4 fallback" : data.model_version}` : ""}
         </span>
       }
     >
