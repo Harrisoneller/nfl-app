@@ -25,15 +25,15 @@ class TaskModelConfig:
 TASK_CONFIGS: dict[str, TaskModelConfig] = {
     TASK_WIN_PROBABILITY: TaskModelConfig(
         task=TASK_WIN_PROBABILITY,
-        target_kind="residual_probability",
-        model_version="ml-win-residual-v1",
-        feature_set_version="ml-win-features-v1",
+        target_kind="home_win",
+        model_version="ml-win-raw-v1",
+        feature_set_version="ml-blind-features-v1",
     ),
     TASK_SPREAD_EDGE: TaskModelConfig(
         task=TASK_SPREAD_EDGE,
-        target_kind="residual_margin",
-        model_version="ml-spread-residual-v1",
-        feature_set_version="ml-spread-features-v1",
+        target_kind="home_margin",
+        model_version="ml-spread-raw-v1",
+        feature_set_version="ml-blind-features-v1",
     ),
     TASK_PLAYER_PROPS: TaskModelConfig(
         task=TASK_PLAYER_PROPS,
@@ -91,6 +91,7 @@ def market_baseline(
     market_spread_home: float | None,
     market_home_win_prob: float | None,
 ) -> dict[str, Any]:
+    """Legacy helper. The market-blind NFL trainer does not call this."""
     baseline_margin = None if market_spread_home is None else -float(market_spread_home)
     baseline_prob = None if market_home_win_prob is None else float(market_home_win_prob)
     return {

@@ -234,6 +234,7 @@ async def backtest_elo(seasons: str | None = None, db: Session = Depends(get_db)
 async def backtest_ml_endpoint(
     test_season: int | None = None,
     train_seasons: str | None = None,
+    locked_sha: str | None = None,
     db: Session = Depends(get_db),
 ):
     ts = None
@@ -242,7 +243,7 @@ async def backtest_ml_endpoint(
             ts = [int(s) for s in train_seasons.split(",") if s.strip()]
         except ValueError:
             pass
-    return await backtest_service.backtest_ml(db, test_season, ts)
+    return await backtest_service.backtest_ml(db, test_season, ts, locked_sha)
 
 
 @router.get("/awards")
@@ -286,14 +287,24 @@ async def rebuild_elo(seasons: str | None = None, db: Session = Depends(get_db))
 
 
 @router.post("/admin/ml/train")
-async def train_ml(seasons: str | None = None, db: Session = Depends(get_db)):
-    """Train the XGBoost margin model. Defaults to last 4 seasons."""
+async def train_ml(
+    seasons: str | None = None,
+    locked_sha: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Train the XGBoost margin model. Refuses unless QA supplies the lock SHA."""
+    from ..services.ml_blind_guard import LockRefusal, assert_fit_allowed
+
+    try:
+        assert_fit_allowed(locked_sha)
+    except LockRefusal as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if seasons:
         season_list = [int(s) for s in seasons.split(",") if s.strip()]
     else:
         latest = latest_completed_season()
         season_list = list(range(latest - 3, latest + 1))
-    return await ml_predictions_service.train(db, season_list)
+    return await ml_predictions_service.train(db, season_list, locked_sha)
 
 
 @router.get("/admin/lifecycle/latest")
