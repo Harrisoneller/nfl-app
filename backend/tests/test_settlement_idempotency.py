@@ -714,12 +714,12 @@ def test_score_refresh_is_idempotent_and_rolls_back_one_game(db, monkeypatch):
     events = [_event("good", home_score=21, away_score=14)]
     monkeypatch.setattr(scores_service, "ESPNScoreboardAdapter", lambda: _Board(events))
 
-    assert asyncio.run(scores_service.refresh_scoreboard(db)) == 1
+    assert asyncio.run(scores_service.refresh_scoreboard(db, force=True)) == 1
     assert db.query(Game).count() == 1
     assert db.get(Game, "good").home_score == 21
 
     writes = _capture_writes(engine, "games")
-    assert asyncio.run(scores_service.refresh_scoreboard(db)) == 1
+    assert asyncio.run(scores_service.refresh_scoreboard(db, force=True)) == 1
     assert writes == []
     db.expire_all()
     assert db.query(Game).count() == 1
@@ -730,7 +730,7 @@ def test_score_refresh_is_idempotent_and_rolls_back_one_game(db, monkeypatch):
     db.commit()
     events[0] = _event("good", home_score=99, away_score=0)
     writes.clear()
-    asyncio.run(scores_service.refresh_scoreboard(db))
+    asyncio.run(scores_service.refresh_scoreboard(db, force=True))
     db.expire_all()
     assert db.get(Game, "good").home_score == 21
     assert db.get(Game, "good").away_score == 14
@@ -746,7 +746,7 @@ def test_score_refresh_is_idempotent_and_rolls_back_one_game(db, monkeypatch):
         return real(session, game_id, values)
 
     monkeypatch.setattr(scores_service, "_upsert_game", explode)
-    assert asyncio.run(scores_service.refresh_scoreboard(db)) == 1
+    assert asyncio.run(scores_service.refresh_scoreboard(db, force=True)) == 1
     db.expire_all()
     assert db.get(Game, "bad") is None
     assert db.get(Game, "good").home_score == 21

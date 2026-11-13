@@ -166,6 +166,16 @@ class Settings(BaseSettings):
     # Boot: none | minimal (seed + current-season schedule) | full (legacy dev warmups)
     boot_warmup_level: Literal["none", "minimal", "full"] = "minimal"
     schedule_scores_seconds: int = 30
+    # ESPN is hit on that 30s tick when a numeric ESPN game is live, already
+    # started and not final (no duration cutoff), or inside
+    # score_live_lookahead_hours of a UTC kickoff. nflverse clocks are
+    # Eastern times labeled UTC, so those rows cannot idle the slate. A
+    # later ESPN game inside 18 hours ("near") and a quiet trusted slate
+    # ("idle") no-op until these floors. Empty, unknown, or no successful
+    # fetch yet stays on the fast tick.
+    score_live_lookahead_hours: float = 4.0
+    score_near_refresh_seconds: int = 180
+    score_idle_refresh_seconds: int = 900
     # A game left in settlement_status='settling' is reclaimed after this
     # many seconds. The next scores tick grades it again and logs a warning.
     settlement_claim_ttl_seconds: int = 15 * 60

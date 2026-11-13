@@ -34,7 +34,7 @@ def refresh_teams(db: Session = Depends(get_db)):
 
 @router.post("/refresh/scores")
 async def refresh_scores(db: Session = Depends(get_db)):
-    return {"events": await scores_service.refresh_scoreboard(db)}
+    return {"events": await scores_service.refresh_scoreboard(db, force=True)}
 
 
 @router.post("/refresh/schedules")
