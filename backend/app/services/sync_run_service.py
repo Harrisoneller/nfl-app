@@ -86,6 +86,13 @@ async def run_job(
         # and the other writers (model reruns, lifecycle) already use "error".
         # APScheduler logs "executed successfully" only when this returns;
         # re-raising keeps the job on the error path.
+        #
+        # A failed statement deactivates the session. finish() commits the
+        # error row; calling it first raises PendingRollbackError and drops
+        # the original failure. A still-active session keeps its pending
+        # writes, which finish() commits with the error status as before.
+        if not db.is_active:
+            db.rollback()
         safe = redact_secrets(str(e))
         finish(db, run, status="error", message=safe[:4000])
         payload: dict[str, Any] = {"domain": domain, "error": safe[:200], "status": "error"}
