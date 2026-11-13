@@ -1,7 +1,9 @@
 """APScheduler bootstrap (worker role only).
 
 Phase B/C layout:
-- **Boot (minimal):** seed, players, current schedule, news — no PBP at boot.
+- **Boot (minimal):** seed, players, current schedule — no PBP at boot.
+  News is only the interval job below. Its first run is at startup
+  (``next_run_time``), so a second date-trigger boot job is not registered.
 - **Derive cron (06:15 + 18:15 UTC):** schedules → materialize nflverse → elo
   → profiles → MC → awards.
 - **H2H cron (03:30 UTC nightly):** prewarm matchups only.
@@ -338,7 +340,6 @@ def start_scheduler() -> None:
         sched.add_job(
             _job_sync_schedules_current, "date", run_date=_soon(6), id="boot_schedules_current",
         )
-        sched.add_job(_job_refresh_news, "date", run_date=_soon(12), id="boot_news")
 
     if boot == "full":
         sched.add_job(_job_materialize_only, "date", run_date=_soon(20), id="boot_materialize")
@@ -389,6 +390,10 @@ def start_scheduler() -> None:
         max_instances=1,
     )
 
+    # One news refresh. A date-trigger boot job used to share this next_run_time,
+    # so both ran at startup, inserted the same ids, and one died on
+    # news_items_pkey. max_instances=1 keeps a slow run from overlapping the
+    # next tick of this same job.
     news_seconds = settings.schedule_news_seconds if live else 60 * 60 * 24
     sched.add_job(
         _job_refresh_news,
