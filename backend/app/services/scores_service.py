@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,11 @@ from .closing_line import (
 
 log = get_logger(__name__)
 _nfl_data = NflDataPyAdapter()
+
+# nflverse gameday + gametime are Eastern wall-clock times, not UTC.
+_EASTERN = ZoneInfo("America/New_York")
+KICKOFF_ZONE = "America/New_York"
+KICKOFF_ZONE_KEY = "kickoff_zone"
 
 
 # A stored final score is the one settlement graded. Later feeds must not
@@ -248,7 +254,8 @@ async def refresh_season_schedule(db: Session, season: int) -> int:
         if not gid:
             continue
         try:
-            outcome = _upsert_game(db, gid, _schedule_values(row, season))
+            values = _with_kickoff_zone(db, gid, _schedule_values(row, season))
+            outcome = _upsert_game(db, gid, values)
             db.commit()
             n += 1
             if outcome in ("inserted", "updated"):
@@ -514,14 +521,79 @@ def _parse_iso(s: Any) -> datetime | None:
 
 
 def _parse_kickoff(date_str: Any, time_str: Any) -> datetime | None:
+    """Eastern wall clock (nflverse) as a real UTC instant.
+
+    ``13:00`` on an EST date is 18:00 UTC. ``13:00`` on an EDT date is 17:00 UTC.
+    A missing gametime stays the nflverse default of 1:00 PM Eastern.
+    """
     if not date_str:
         return None
     try:
         d = str(date_str)[:10]
-        t = (str(time_str) or "13:00")[:5]
-        return datetime.fromisoformat(f"{d}T{t}:00").replace(tzinfo=timezone.utc)
+        t = (str(time_str).strip() if time_str else "")[:5] or "13:00"
+        local = datetime.fromisoformat(f"{d}T{t}:00").replace(tzinfo=_EASTERN)
+        return local.astimezone(UTC)
     except Exception:
         return None
+
+
+def eastern_schedule_clock(start: datetime | None) -> tuple[str, str]:
+    """NFL calendar date and clock in America/New_York."""
+    if start is None:
+        return "", ""
+    instant = start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
+    et = instant.astimezone(_EASTERN)
+    return et.strftime("%Y-%m-%d"), et.strftime("%H:%M")
+
+
+def repair_mislabeled_kickoff(start: datetime) -> datetime:
+    """Re-read a pre-fix UTC label as Eastern and convert it once.
+
+    The old parser stored the Eastern clock with a UTC tzinfo, so the digits
+    are the wall time. Applying this to an already-correct UTC instant shifts
+    it again. Callers must skip rows stamped with ``kickoff_zone``.
+    """
+    digits = start.replace(tzinfo=None)
+    return digits.replace(tzinfo=_EASTERN).astimezone(UTC)
+
+
+def _is_nflverse_game_id(game_id: object) -> bool:
+    text = str(game_id or "")
+    return "_" in text and text[:4].isdigit()
+
+
+def kickoff_repair_needed(game: Game) -> bool:
+    """True for an unstamped nflverse row that still has a kickoff."""
+    if not _is_nflverse_game_id(game.id) or game.start_time is None:
+        return False
+    raw = game.raw if isinstance(game.raw, dict) else {}
+    return raw.get(KICKOFF_ZONE_KEY) != KICKOFF_ZONE
+
+
+def apply_kickoff_repair(game: Game) -> bool:
+    """Shift one pre-fix row and stamp it. A stamped row is left alone."""
+    if not kickoff_repair_needed(game) or game.start_time is None:
+        return False
+    fixed = repair_mislabeled_kickoff(game.start_time)
+    raw = dict(game.raw or {})
+    raw[KICKOFF_ZONE_KEY] = KICKOFF_ZONE
+    changed = _as_utc(fixed) != _as_utc(game.start_time)
+    if changed:
+        game.start_time = fixed
+    game.raw = raw
+    return changed
+
+
+def _with_kickoff_zone(db: Session, game_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Mark a schedule write so the repair script does not shift it again."""
+    existing = db.get(Game, game_id)
+    raw: dict = {}
+    if existing is not None and isinstance(existing.raw, dict):
+        raw = dict(existing.raw)
+    raw[KICKOFF_ZONE_KEY] = KICKOFF_ZONE
+    merged = dict(values)
+    merged["raw"] = raw
+    return merged
 
 
 def _safe_int(v) -> int | None:

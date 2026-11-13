@@ -281,16 +281,16 @@ async def test_refresh_hits_network_when_live_even_if_just_fetched(db, monkeypat
 
 
 def test_eastern_clock_does_not_override_espn_utc(db):
-    # 1:00 PM America/New_York on this date is 18:00 UTC. nflverse stores
-    # the Eastern clock with a UTC label (13:00Z).
+    # 1:00 PM America/New_York on this date is 18:00 UTC. A row stored before
+    # the parser fix still has the Eastern clock labeled 13:00Z. The poll
+    # plan ignores that nflverse id.
     real_utc = datetime(2026, 11, 15, 13, 0, tzinfo=ZoneInfo("America/New_York")).astimezone(UTC)
-    buggy = scores_service._parse_kickoff("2026-11-15", "13:00")
-    assert real_utc == datetime(2026, 11, 15, 18, 0, tzinfo=UTC)
-    assert buggy == datetime(2026, 11, 15, 13, 0, tzinfo=UTC)
+    assert scores_service._parse_kickoff("2026-11-15", "13:00") == real_utc
+    stale = datetime(2026, 11, 15, 13, 0, tzinfo=UTC)
 
     now = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
     _game(db, gid="401547320", start=real_utc, status="scheduled")
-    _game(db, gid="2026_10_BUF_KC", start=buggy, status="scheduled")
+    _game(db, gid="2026_10_BUF_KC", start=stale, status="scheduled")
     plan = scores_service.scoreboard_poll_plan(db, now=now, last_fetch_at=now)
     # ESPN kickoff is 6h away (near). The mislabeled 13:00Z row is 1h away
     # and would be live if it were trusted.
