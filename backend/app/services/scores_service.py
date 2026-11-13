@@ -9,7 +9,7 @@ games use their `game_id` (e.g. '2024_01_PHI_GB') as the primary key.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -56,14 +56,14 @@ ScorePollMode = Literal["live", "near", "idle"]
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
