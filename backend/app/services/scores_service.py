@@ -133,6 +133,9 @@ def scoreboard_poll_plan(
     saw_untrusted = False
     for gid, status, start in rows:
         st = (status or "").strip().lower()
+        # Numeric ESPN ids store real UTC. nflverse ids are ignored here so a
+        # pre-fix Eastern clock cannot idle the slate. trusted_kickoff covers
+        # every other reader.
         if not _is_espn_game_id(gid):
             saw_untrusted = True
             continue
@@ -396,7 +399,7 @@ def _snapshot_matches_game(game: Game, snap: OddsSnapshot) -> bool:
     """
     if snap.home_team_id != game.home_team_id or snap.away_team_id != game.away_team_id:
         return False
-    game_kick = _as_utc(game.start_time)
+    game_kick = trusted_kickoff_of(game)
     snap_kick = _as_utc(snap.commence_time)
     if (
         game_kick is not None
@@ -448,7 +451,7 @@ def fill_closing_lines_from_snapshots(db: Session) -> int:
         ]
         if not snaps:
             continue
-        kick = _as_utc(game.start_time)
+        kick = trusted_kickoff_of(game)
         pre_kick = []
         if kick is not None:
             for snap in snaps:
@@ -560,6 +563,38 @@ def repair_mislabeled_kickoff(start: datetime) -> datetime:
 def _is_nflverse_game_id(game_id: object) -> bool:
     text = str(game_id or "")
     return "_" in text and text[:4].isdigit()
+
+
+def trusted_kickoff(
+    game_id: object,
+    start: datetime | None,
+    raw: dict | None = None,
+) -> datetime | None:
+    """Real UTC kickoff for display and comparisons.
+
+    ESPN ids and nflverse rows stamped ``kickoff_zone=America/New_York``
+    already store UTC. An unstamped nflverse row still has the Eastern wall
+    clock labeled UTC, so those digits are converted once. Anything else is
+    left as UTC and is not shifted.
+    """
+    if start is None:
+        return None
+    instant = start if start.tzinfo is not None else start.replace(tzinfo=UTC)
+    instant = instant.astimezone(UTC)
+    if _is_espn_game_id(game_id):
+        return instant
+    zone = raw.get(KICKOFF_ZONE_KEY) if isinstance(raw, dict) else None
+    if zone == KICKOFF_ZONE or not _is_nflverse_game_id(game_id):
+        return instant
+    return repair_mislabeled_kickoff(instant)
+
+
+def trusted_kickoff_of(game: Any) -> datetime | None:
+    return trusted_kickoff(
+        getattr(game, "id", None),
+        getattr(game, "start_time", None),
+        getattr(game, "raw", None),
+    )
 
 
 def kickoff_repair_needed(game: Game) -> bool:

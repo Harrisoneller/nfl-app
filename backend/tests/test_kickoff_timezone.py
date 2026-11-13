@@ -80,6 +80,83 @@ def test_pre_kick_snapshot_counts_against_real_utc_kickoff():
     db.close()
 
 
+def test_unrepaired_repaired_and_mixed_weeks_emit_true_utc():
+    """A 1:00 PM ET kick is 18:00Z in November and 17:00Z in September.
+
+    Unrepaired rows still store the Eastern clock labeled UTC. Repaired and
+    ESPN rows store the real instant. A mixed week must emit both correctly.
+    """
+    db = _db()
+    cases = (
+        ("2026_11_BUF_KC", datetime(2026, 11, 15, 13, 0, tzinfo=UTC), {}, datetime(2026, 11, 15, 18, 0, tzinfo=UTC)),
+        ("2026_11_DAL_PHI", datetime(2026, 11, 15, 18, 0, tzinfo=UTC), {"kickoff_zone": "America/New_York"}, datetime(2026, 11, 15, 18, 0, tzinfo=UTC)),
+        ("401547320", datetime(2026, 11, 15, 18, 0, tzinfo=UTC), {}, datetime(2026, 11, 15, 18, 0, tzinfo=UTC)),
+        ("2026_01_NYG_DAL", datetime(2026, 9, 13, 13, 0, tzinfo=UTC), {}, datetime(2026, 9, 13, 17, 0, tzinfo=UTC)),
+        ("2026_01_PHI_ATL", datetime(2026, 9, 13, 17, 0, tzinfo=UTC), {"kickoff_zone": "America/New_York"}, datetime(2026, 9, 13, 17, 0, tzinfo=UTC)),
+    )
+    teams = {
+        "2026_11_BUF_KC": ("KC", "BUF"),
+        "2026_11_DAL_PHI": ("PHI", "DAL"),
+        "401547320": ("NYJ", "NE"),
+        "2026_01_NYG_DAL": ("DAL", "NYG"),
+        "2026_01_PHI_ATL": ("ATL", "PHI"),
+    }
+    for gid, stored, raw, _expected in cases:
+        week = 10 if gid.startswith("2026_11") or gid.startswith("401") else 1
+        home, away = teams[gid]
+        db.add(Game(
+            id=gid, season=2026, week=week, season_type=2,
+            start_time=stored, status="scheduled",
+            home_team_id=home, away_team_id=away, raw=raw,
+        ))
+    db.commit()
+    for gid, _stored, _raw, expected in cases:
+        assert scores_service.trusted_kickoff_of(db.get(Game, gid)) == expected
+
+    from app.services.predictions_service import _schedule_from_db
+
+    slate = _schedule_from_db(db, 2026)
+    by_id = {row.game_id: row for _, row in slate.iterrows()}
+    assert by_id["2026_11_BUF_KC"].start_time.startswith("2026-11-15T18:00:00")
+    assert by_id["2026_11_DAL_PHI"].start_time.startswith("2026-11-15T18:00:00")
+    assert by_id["401547320"].start_time.startswith("2026-11-15T18:00:00")
+    assert by_id["2026_11_BUF_KC"].gametime == "13:00"
+    assert by_id["2026_01_NYG_DAL"].start_time.startswith("2026-09-13T17:00:00")
+    assert by_id["2026_01_NYG_DAL"].gametime == "13:00"
+    db.close()
+
+
+def test_unrepaired_row_still_matches_closing_line_and_sparky():
+    db = _db()
+    stored = datetime(2026, 11, 15, 13, 0, tzinfo=UTC)
+    real = datetime(2026, 11, 15, 18, 0, tzinfo=UTC)
+    db.add(Game(
+        id="2026_10_BUF_KC", season=2026, week=10, start_time=stored,
+        status="scheduled", home_team_id="KC", away_team_id="BUF", raw={},
+    ))
+    db.add(OddsSnapshot(
+        event_id="odds-unrepaired",
+        captured_at=datetime(2026, 11, 15, 17, 30, tzinfo=UTC),
+        commence_time=real,
+        book="dk",
+        home_team_id="KC",
+        away_team_id="BUF",
+        home_spread=-3.5,
+        total=47.5,
+        raw={"season": 2026, "week": 10},
+    ))
+    db.commit()
+    assert scores_service.fill_closing_lines_from_snapshots(db) == 1
+    pred = type("Pred", (), {
+        "event_id": "odds-unrepaired",
+        "commence_time": real,
+        "home_team_id": "KC",
+        "away_team_id": "BUF",
+    })()
+    assert sparky_service._resolve_prediction_game(db, pred).id == "2026_10_BUF_KC"
+    db.close()
+
+
 def test_sparky_match_uses_real_utc_window():
     db = _db()
     kick = datetime(2026, 11, 15, 18, 0, tzinfo=UTC)
@@ -91,7 +168,7 @@ def test_sparky_match_uses_real_utc_window():
         status="scheduled",
         home_team_id="KC",
         away_team_id="BUF",
-        raw={},
+        raw={"kickoff_zone": "America/New_York"},
     ))
     db.commit()
     pred = type("Pred", (), {
@@ -102,7 +179,13 @@ def test_sparky_match_uses_real_utc_window():
     })()
     assert sparky_service._resolve_prediction_game(db, pred).id == "2026_10_BUF_KC"
 
-    db.get(Game, "2026_10_BUF_KC").start_time = datetime(2026, 11, 15, 13, 0, tzinfo=UTC)
+    game = db.get(Game, "2026_10_BUF_KC")
+    game.start_time = datetime(2026, 11, 15, 13, 0, tzinfo=UTC)
+    game.raw = {}
+    db.commit()
+    assert sparky_service._resolve_prediction_game(db, pred).id == "2026_10_BUF_KC"
+    game.start_time = datetime(2026, 11, 14, 18, 0, tzinfo=UTC)
+    game.raw = {"kickoff_zone": "America/New_York"}
     db.commit()
     assert sparky_service._resolve_prediction_game(db, pred) is None
     db.close()

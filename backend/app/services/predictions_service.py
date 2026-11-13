@@ -11,7 +11,6 @@ import asyncio
 import math
 import random
 from collections import Counter, defaultdict
-from datetime import UTC
 from typing import Any
 
 import pandas as pd
@@ -818,15 +817,11 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
     for g in games:
         key = (g.week, g.home_team_id, g.away_team_id)
         is_nflverse_id = g.id and "_" in g.id and g.id[:4].isdigit()
-        from .scores_service import eastern_schedule_clock
+        from .scores_service import eastern_schedule_clock, trusted_kickoff_of
 
-        gameday, gametime = eastern_schedule_clock(g.start_time)
-        start_iso = None
-        if g.start_time is not None:
-            instant = g.start_time
-            if instant.tzinfo is None:
-                instant = instant.replace(tzinfo=UTC)
-            start_iso = instant.astimezone(UTC).isoformat()
+        instant = trusted_kickoff_of(g)
+        gameday, gametime = eastern_schedule_clock(instant)
+        start_iso = instant.isoformat() if instant is not None else None
         row = {
             "game_id": g.id,
             "season": g.season,

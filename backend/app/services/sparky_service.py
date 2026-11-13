@@ -26,7 +26,7 @@ from __future__ import annotations
 import random
 import statistics
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func
@@ -450,21 +450,25 @@ def _days_rest_for_team(db: Session, team_id: str, reference: datetime) -> float
     if not team_id or not reference:
         return None
 
-    last = (
+    from .scores_service import trusted_kickoff_of
+
+    ref = reference if reference.tzinfo is not None else reference.replace(tzinfo=UTC)
+    rows = (
         db.query(Game)
         .filter(
             ((Game.home_team_id == team_id) | (Game.away_team_id == team_id))
             & (Game.status.in_(("final", "Final", "STATUS_FINAL", "complete")))
-            & (Game.start_time < reference)
+            & (Game.start_time.isnot(None))
         )
-        .order_by(Game.start_time.desc())
-        .first()
+        .all()
     )
-    if last is None or last.start_time is None:
+    kicks = [
+        kick for game in rows
+        if (kick := trusted_kickoff_of(game)) is not None and kick < ref
+    ]
+    if not kicks:
         return None
-
-    delta = reference - last.start_time
-    return max(0.0, delta.total_seconds() / 86400.0)  # convert to days (float)
+    return max(0.0, (ref - max(kicks)).total_seconds() / 86400.0)
 
 
 async def build_slate(
@@ -1416,23 +1420,32 @@ def _resolve_prediction_game(db: Session, pred: SparkyGamePrediction) -> Game | 
     game = db.get(Game, pred.event_id)
     if game is not None or pred.commence_time is None:
         return game
+    from .scores_service import trusted_kickoff_of
+
+    commence = pred.commence_time
+    if commence.tzinfo is None:
+        commence = commence.replace(tzinfo=UTC)
+    else:
+        commence = commence.astimezone(UTC)
     candidates = (
         db.query(Game)
         .filter(
             ((Game.home_team_id == pred.home_team_id) & (Game.away_team_id == pred.away_team_id))
             | ((Game.home_team_id == pred.away_team_id) & (Game.away_team_id == pred.home_team_id))
         )
-        .filter(Game.start_time.between(
-            pred.commence_time - timedelta(hours=4),
-            pred.commence_time + timedelta(hours=4),
-        ))
+        .filter(Game.start_time.isnot(None))
         .all()
     )
-    if not candidates:
+    window = []
+    for game in candidates:
+        kick = trusted_kickoff_of(game)
+        if kick is not None and abs(kick - commence) <= timedelta(hours=4):
+            window.append(game)
+    if not window:
         return None
     return min(
-        candidates,
-        key=lambda game: _kickoff_key(game.start_time, pred.commence_time, game.id),
+        window,
+        key=lambda game: _kickoff_key(trusted_kickoff_of(game), pred.commence_time, game.id),
     )
 
 

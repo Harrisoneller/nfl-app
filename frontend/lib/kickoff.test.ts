@@ -23,6 +23,15 @@ test("1:00 PM ET in September (EDT) is also 12:00 PM Central", () => {
   assert.match(label ?? "", /PM/);
 });
 
+test("a supplied UTC instant is not reinterpreted as Eastern", () => {
+  const label = formatScheduleKickoff(
+    { start_time: "2026-11-15T13:00:00Z", gameday: "2026-11-15", gametime: "13:00" },
+    "America/Chicago",
+  );
+  assert.match(label ?? "", /7:00/);
+  assert.match(label ?? "", /AM/);
+});
+
 test("legacy Eastern digits convert once and are not treated as local or UTC", () => {
   const fromWall = formatScheduleKickoff(
     { gameday: "2026-11-15", gametime: "13:00" },
