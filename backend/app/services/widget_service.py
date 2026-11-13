@@ -85,9 +85,12 @@ async def render(db: Session, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _game_dict(g) -> dict[str, Any]:
+    from .scores_service import trusted_kickoff_of
+
+    kick = trusted_kickoff_of(g)
     return {
         "id": g.id, "season": g.season, "week": g.week,
-        "start_time": g.start_time.isoformat() if g.start_time else None,
+        "start_time": kick.isoformat() if kick else None,
         "status": g.status, "status_detail": g.status_detail,
         "home_team_id": g.home_team_id, "away_team_id": g.away_team_id,
         "home_score": g.home_score, "away_score": g.away_score,

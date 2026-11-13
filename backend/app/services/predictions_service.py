@@ -817,6 +817,11 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
     for g in games:
         key = (g.week, g.home_team_id, g.away_team_id)
         is_nflverse_id = g.id and "_" in g.id and g.id[:4].isdigit()
+        from .scores_service import eastern_schedule_clock, trusted_kickoff_of
+
+        instant = trusted_kickoff_of(g)
+        gameday, gametime = eastern_schedule_clock(instant)
+        start_iso = instant.isoformat() if instant is not None else None
         row = {
             "game_id": g.id,
             "season": g.season,
@@ -825,8 +830,9 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
             "away_team": g.away_team_id,
             "home_score": g.home_score,
             "away_score": g.away_score,
-            "gameday": g.start_time.strftime("%Y-%m-%d") if g.start_time else "",
-            "gametime": g.start_time.strftime("%H:%M") if g.start_time else "",
+            "gameday": gameday,
+            "gametime": gametime,
+            "start_time": start_iso,
             "game_type": "REG",
             "_is_nflverse": is_nflverse_id,
         }
@@ -998,12 +1004,20 @@ async def _predict_week_uncached(
                 "interval_80_home_win_prob": pred.get("home_win_prob_interval_80"),
             }
         pred["global_calibration_score"] = calibration_score
+        raw_start = g.get("start_time")
+        start_iso = raw_start if isinstance(raw_start, str) and raw_start else None
+        if start_iso is None and g.get("gameday"):
+            from .scores_service import _parse_kickoff
+
+            kick = _parse_kickoff(g.get("gameday"), g.get("gametime") or "13:00")
+            start_iso = kick.isoformat() if kick is not None else None
         out.append({
             "id": str(g.get("game_id") or ""),
             "season": season,
             "week": week,
             "gameday": str(g.get("gameday") or ""),
             "gametime": str(g.get("gametime") or ""),
+            "start_time": start_iso,
             "home_team_id": h,
             "away_team_id": a,
             "home_score": _safe_int(g.get("home_score")),
@@ -1078,6 +1092,7 @@ def _flatten_slate_game(g: dict[str, Any]) -> dict[str, Any]:
         "week": g.get("week"),
         "gameday": g.get("gameday"),
         "gametime": g.get("gametime"),
+        "start_time": g.get("start_time"),
         "home_team_id": g.get("home_team_id"),
         "away_team_id": g.get("away_team_id"),
         "home_score": g.get("home_score"),

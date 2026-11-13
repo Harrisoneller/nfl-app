@@ -156,19 +156,28 @@ def _set_last_refresh(db: Session, status: str, lines_in_db: int) -> None:
 
 def _has_game_within(db: Session, days: int) -> bool:
     """True if any game kicks off between ~now and now+`days` (offseason guard)."""
+    from .scores_service import trusted_kickoff
+
     now = _now()
+    pad = timedelta(hours=6)
     try:
-        row = (
-            db.query(Game.id)
+        rows = (
+            db.query(Game.id, Game.start_time, Game.raw)
             .filter(Game.start_time.isnot(None))
-            .filter(Game.start_time >= now - timedelta(days=1))
-            .filter(Game.start_time <= now + timedelta(days=days))
-            .first()
+            .filter(Game.start_time >= now - timedelta(days=1) - pad)
+            .filter(Game.start_time <= now + timedelta(days=days) + pad)
+            .all()
         )
     except Exception as e:  # noqa: BLE001 — never let the guard take down a refresh
         log.debug("odds_offseason_guard_failed", error=str(e)[:120])
         return True  # fail open: if we can't tell, allow the pull
-    return row is not None
+    lo = now - timedelta(days=1)
+    hi = now + timedelta(days=days)
+    for gid, start, raw in rows:
+        kick = trusted_kickoff(gid, start, raw)
+        if kick is not None and lo <= kick <= hi:
+            return True
+    return False
 
 
 async def refresh_odds(db: Session, *, force: bool = False) -> OddsRefreshResult:

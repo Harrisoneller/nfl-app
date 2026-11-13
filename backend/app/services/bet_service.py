@@ -173,31 +173,35 @@ def _find_game(db: Session, leg: BetLeg) -> Game | None:
         if g is not None:
             return g
     if leg.home_team_id and leg.away_team_id and leg.commence_time:
+        from .scores_service import trusted_kickoff_of
+
         candidates = (
             db.query(Game)
             .filter(
                 ((Game.home_team_id == leg.home_team_id) & (Game.away_team_id == leg.away_team_id))
                 | ((Game.home_team_id == leg.away_team_id) & (Game.away_team_id == leg.home_team_id))
             )
-            .filter(
-                Game.start_time.between(
-                    leg.commence_time - timedelta(hours=6),
-                    leg.commence_time + timedelta(hours=6),
-                )
-            )
+            .filter(Game.start_time.isnot(None))
             .all()
         )
-        if not candidates:
-            return None
         commence = _as_utc(leg.commence_time)
+        if commence is None:
+            return None
+        window = []
+        for game in candidates:
+            start = trusted_kickoff_of(game)
+            if start is not None and abs(start - commence) <= timedelta(hours=6):
+                window.append(game)
+        if not window:
+            return None
 
         def distance(game: Game) -> tuple[float, str]:
-            start = _as_utc(game.start_time)
-            if start is None or commence is None:
+            start = trusted_kickoff_of(game)
+            if start is None:
                 return (float("inf"), game.id)
             return (abs((start - commence).total_seconds()), game.id)
 
-        return min(candidates, key=distance)
+        return min(window, key=distance)
     return None
 
 
@@ -215,8 +219,10 @@ def _closing_snapshot(db: Session, leg: BetLeg) -> list[OddsSnapshot]:
         .filter(OddsSnapshot.event_id == leg.event_id)
         .all()
     )
+    from .scores_service import trusted_kickoff_of
+
     game = _find_game(db, leg)
-    kick = _as_utc(game.start_time) if game is not None else None
+    kick = trusted_kickoff_of(game) if game is not None else None
     if kick is None:
         kick = _as_utc(leg.commence_time)
     if kick is None:

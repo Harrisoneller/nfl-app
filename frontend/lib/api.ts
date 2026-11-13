@@ -169,6 +169,8 @@ export type GamePrediction = {
   week: number;
   gameday: string;
   gametime?: string;
+  /** Real UTC instant. Display this; do not also shift gametime. */
+  start_time?: string | null;
   home_team_id: string;
   away_team_id: string;
   home_score: number | null;
@@ -244,6 +246,8 @@ export type WeekSlateGame = {
   week: number;
   gameday?: string;
   gametime?: string;
+  /** Real UTC instant. Display this; do not also shift gametime. */
+  start_time?: string | null;
   home_team_id: string;
   away_team_id: string;
   home_score: number | null;

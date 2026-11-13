@@ -7,6 +7,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { api, type WeekSlateGame, type WeekSlateResponse } from "@/lib/api";
 import { spreadEdgeSide } from "@/lib/edge";
 import { formatHomeSpread, headlineSourceLabel } from "@/lib/headline";
+import { formatScheduleKickoff } from "@/lib/kickoff";
 import { Card } from "@/components/Card";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
@@ -345,9 +346,9 @@ function GameRow({ g }: { g: WeekSlateGame }) {
           </div>
         </div>
       </div>
-      {(g.gameday || g.gametime) && (
+      {formatScheduleKickoff(g) && (
         <div className="mt-2 text-[11px] text-muted">
-          {[g.gameday, g.gametime].filter(Boolean).join(" · ")}
+          {formatScheduleKickoff(g)}
         </div>
       )}
     </Card>

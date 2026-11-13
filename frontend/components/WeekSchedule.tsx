@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { GamePrediction } from "@/lib/api";
 import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
+import { formatScheduleKickoff } from "@/lib/kickoff";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
 
@@ -22,8 +23,8 @@ export function WeekSchedule({ season, games, failed = false }: Props) {
   }
 
   const sorted = [...games].sort((a, b) => {
-    const da = parseGameday(a.gameday)?.getTime() ?? 0;
-    const db = parseGameday(b.gameday)?.getTime() ?? 0;
+    const da = kickoffSortKey(a);
+    const db = kickoffSortKey(b);
     return da - db || a.away_team_id.localeCompare(b.away_team_id);
   });
 
@@ -81,7 +82,7 @@ export function MatchupPreviewRow({
   const spreadLabel = formatHomeSpread(headline.spread, game.home_team_id, game.away_team_id);
   const eloDiff = Math.round(game.home_elo - game.away_elo);
   const played = game.home_score != null && game.away_score != null;
-  const kickoff = formatKickoff(game.gameday, game.gametime);
+  const kickoff = formatScheduleKickoff(game);
   const compact = variant === "compact";
   const favProb = Math.round(
     (fav === game.home_team_id ? headline.homeWinProb : headline.awayWinProb) * 100,
@@ -254,33 +255,11 @@ function MetricPill({
   );
 }
 
-function parseGameday(gameday: string): Date | null {
-  if (!gameday) return null;
-  const d = new Date(`${gameday}T12:00:00`);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function formatKickoff(gameday: string, gametime?: string): string | null {
-  const d = parseGameday(gameday);
-  if (!d) return gameday || null;
-  if (gametime) {
-    const parts = gametime.split(":");
-    const h = Number(parts[0]);
-    const m = Number(parts[1] ?? 0);
-    if (!Number.isNaN(h)) {
-      d.setHours(h, m, 0, 0);
-      return d.toLocaleString(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    }
+function kickoffSortKey(game: GamePrediction): number {
+  if (game.start_time) {
+    const t = Date.parse(game.start_time);
+    if (!Number.isNaN(t)) return t;
   }
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
+  const day = game.gameday ? Date.parse(`${game.gameday}T12:00:00Z`) : NaN;
+  return Number.isNaN(day) ? 0 : day;
 }

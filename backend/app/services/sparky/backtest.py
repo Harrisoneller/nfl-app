@@ -327,14 +327,26 @@ def _load_historical_games(
     db: Session, start: date, end: date
 ) -> dict[str, Game]:
     """Load all games in the window that have final scores."""
+    from ..scores_service import trusted_kickoff_of
+
+    lo = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1)
+    hi = datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc) + timedelta(days=1)
     games = (
         db.query(Game)
-        .filter(Game.start_time >= datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc))
-        .filter(Game.start_time <= datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc))
+        .filter(Game.start_time >= lo)
+        .filter(Game.start_time <= hi)
         .filter(Game.status.in_(("final", "Final", "STATUS_FINAL", "complete")))
         .all()
     )
-    return {g.id: g for g in games if g.home_score is not None and g.away_score is not None}
+    kept = {}
+    for game in games:
+        if game.home_score is None or game.away_score is None:
+            continue
+        kick = trusted_kickoff_of(game)
+        if kick is None or not (start <= kick.date() <= end):
+            continue
+        kept[game.id] = game
+    return kept
 
 
 def _load_snapshots_for_period(

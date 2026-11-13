@@ -185,8 +185,10 @@ def build(db: Session, season: int | None = None) -> WeekIndex:
     if season is None:
         season = current_or_upcoming_season()
 
+    from .scores_service import trusted_kickoff
+
     rows = (
-        db.query(Game.week, Game.home_team_id, Game.away_team_id, Game.start_time)
+        db.query(Game.id, Game.week, Game.home_team_id, Game.away_team_id, Game.start_time, Game.raw)
         .filter(Game.season == season)
         .filter(Game.week.isnot(None))
         .filter(Game.season_type.in_(SEASON_TYPES))
@@ -195,13 +197,13 @@ def build(db: Session, season: int | None = None) -> WeekIndex:
 
     by_pair: dict[tuple[str, str], int] = {}
     raw_bounds: dict[int, tuple[datetime, datetime]] = {}
-    for wk, home, away, start in rows:
+    for gid, wk, home, away, start, raw in rows:
         week = int(wk)
         if home and away:
             by_pair[(home, away)] = week
-        if start is None:
+        ts = trusted_kickoff(gid, start, raw)
+        if ts is None:
             continue
-        ts = _as_utc(start)
         lo, hi = raw_bounds.get(week, (ts, ts))
         raw_bounds[week] = (min(lo, ts), max(hi, ts))
 
