@@ -119,7 +119,7 @@ async def _warmup_h2h(db: Session) -> int:
     return await h2h_service.prewarm_h2h(db)
 
 
-async def _refresh_scores(db: Session) -> int:
+async def _refresh_scores(db: Session) -> int | dict:
     n = await scores_service.refresh_scoreboard(db)
     # Best-effort: settle any newly-final games into Sparky historical accuracy.
     # This is what makes the accuracy dashboard reflect real outcomes over time.
@@ -364,6 +364,9 @@ def start_scheduler() -> None:
     )
 
     if live:
+        # The tick stays at schedule_scores_seconds. refresh_scoreboard
+        # applies the live / near / idle floors, so a quiet week does not
+        # call ESPN every 30s and a kickoff still goes fast on the next tick.
         sched.add_job(
             _job_refresh_scores,
             IntervalTrigger(seconds=settings.schedule_scores_seconds),

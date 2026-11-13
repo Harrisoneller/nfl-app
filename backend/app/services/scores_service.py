@@ -10,12 +10,13 @@ games use their `game_id` (e.g. '2024_01_PHI_GB') as the primary key.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from ..adapters.data.espn import ESPNScoreboardAdapter
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
+from ..config import get_settings
 from ..logging_config import get_logger
 from ..models.game import Game
 from ..models.odds_snapshot import OddsSnapshot
@@ -37,18 +38,136 @@ _INCOMING_LIVE = (
     "final", "in", "live", "in progress", "status_final", "complete", "finished", "post",
 )
 
+# ESPN stores state ("pre" / "in" / "post"). nflverse stores "scheduled" / "final".
+_LIVE_STATUSES = frozenset({
+    "in", "live", "in progress", "in_progress", "halftime",
+    "end of period", "end", "delayed", "status_in_progress",
+})
+_DONE_STATUSES = frozenset({
+    "final", "post", "postponed", "canceled", "cancelled",
+    "status_final", "forfeit", "completed",
+})
+_NEAR_HORIZON = timedelta(hours=18)
+_STARTED_RECENTLY = timedelta(hours=4)
+_LOOKBACK = timedelta(hours=12)
 
-async def refresh_scoreboard(db: Session) -> int:
+_last_espn_fetch_at: datetime | None = None
+ScorePollMode = Literal["live", "near", "idle"]
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def scoreboard_poll_plan(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    last_fetch_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Decide whether this scores tick should call ESPN.
+
+    Live (in progress, kickoff inside the lookahead, or started within the
+    last four hours and not final) fetches on every tick. Near (a not-final
+    game inside 18 hours) and idle wait out their floors. A query failure
+    fetches, so a bad read cannot hide a kickoff.
+    """
+    settings = get_settings()
+    now = _aware(now) or _now()
+    lookahead = timedelta(hours=float(settings.score_live_lookahead_hours))
+    mode: ScorePollMode = "idle"
+    try:
+        rows = (
+            db.query(Game.status, Game.start_time)
+            .filter(Game.start_time.isnot(None))
+            .filter(Game.start_time >= now - _LOOKBACK)
+            .filter(Game.start_time <= now + _NEAR_HORIZON)
+            .all()
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("scoreboard_poll_plan_failed", error=str(e)[:120])
+        return {
+            "mode": "live",
+            "should_fetch": True,
+            "reason": "query_failed",
+            "games_in_window": 0,
+        }
+    n = 0
+    for status, start in rows:
+        start_aw = _aware(start)
+        if start_aw is None:
+            continue
+        n += 1
+        st = (status or "").strip().lower()
+        if st in _LIVE_STATUSES:
+            mode = "live"
+            break
+        if st not in _DONE_STATUSES and now <= start_aw <= now + lookahead:
+            mode = "live"
+            break
+        if st not in _DONE_STATUSES and now - _STARTED_RECENTLY <= start_aw <= now:
+            mode = "live"
+            break
+        if mode != "live" and now <= start_aw <= now + _NEAR_HORIZON:
+            mode = "near"
+    last = _aware(last_fetch_at)
+    age_s = (now - last).total_seconds() if last is not None else None
+    if mode == "live":
+        should, reason = True, "live_window"
+    elif mode == "near":
+        floor = int(settings.score_near_refresh_seconds)
+        should = age_s is None or age_s >= floor
+        reason = "near_due" if should else "near_fresh"
+    else:
+        floor = int(settings.score_idle_refresh_seconds)
+        should = age_s is None or age_s >= floor
+        reason = "idle_due" if should else "idle_fresh"
+    return {
+        "mode": mode,
+        "should_fetch": should,
+        "reason": reason,
+        "games_in_window": n,
+        "age_seconds": None if age_s is None else round(age_s, 1),
+    }
+
+
+async def refresh_scoreboard(db: Session, *, force: bool = False) -> int | dict[str, Any]:
     """Refresh the live scoreboard from ESPN, one game per transaction.
 
     Re-applying the same payload does not write. A failure rolls that game
-    back and the rest of the scoreboard still commits.
+    back and the rest of the scoreboard still commits. Unless ``force``,
+    a near or idle slate skips the network until its floor elapses.
     """
+    global _last_espn_fetch_at
+    if not force:
+        plan = scoreboard_poll_plan(db, last_fetch_at=_last_espn_fetch_at)
+        if not plan["should_fetch"]:
+            log.debug(
+                "scoreboard_refresh_skipped",
+                mode=plan["mode"],
+                reason=plan["reason"],
+                games_in_window=plan["games_in_window"],
+            )
+            return {
+                "status": "skipped_fresh",
+                "mode": plan["mode"],
+                "reason": plan["reason"],
+                "games": 0,
+            }
     adapter = ESPNScoreboardAdapter()
     try:
         events = await adapter.fetch_current_scoreboard()
     finally:
         await adapter.aclose()
+    _last_espn_fetch_at = _now()
 
     by_espn_id = {
         t.espn_id: t.id for t in db.query(Team).all() if t.espn_id is not None
