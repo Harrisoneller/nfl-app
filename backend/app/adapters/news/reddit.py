@@ -1,13 +1,53 @@
-"""Reddit adapter — uses public JSON endpoint, no auth."""
+"""Reddit adapter — uses public JSON endpoint, no auth.
+
+News refresh runs every five minutes. A 403 or 429 starts a process-local
+cooldown of ``REDDIT_BLOCK_TTL_SECONDS`` (15 minutes) and logs one warning.
+Later Reddit calls in that window return no items and do not hit the network.
+The cooldown is not configurable and does not cover other status codes or
+other news sources. A process restart clears it.
+"""
 from __future__ import annotations
 
 import hashlib
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
+from ...logging_config import get_logger
 from ...utils.team_aliases import TEAM_SUBREDDITS
+
+log = get_logger(__name__)
+
+# Two skipped news ticks, then one retry. 403/429 from the public JSON
+# endpoint are usually a block, not a one-off miss.
+REDDIT_BLOCK_TTL_SECONDS = 15 * 60
+_BLOCKED_STATUSES = frozenset({403, 429})
+_blocked_until = 0.0
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _start_cooldown(status_code: int) -> None:
+    """Start the cooldown and warn once. A later 403/429 in-window is silent."""
+    global _blocked_until
+    now = _now()
+    if now < _blocked_until:
+        return
+    _blocked_until = now + REDDIT_BLOCK_TTL_SECONDS
+    log.warning(
+        "reddit_cooldown",
+        status_code=status_code,
+        ttl_seconds=REDDIT_BLOCK_TTL_SECONDS,
+        detail="Skipping Reddit until the cooldown ends.",
+    )
+
+
+def reddit_cooldown_active() -> bool:
+    return _now() < _blocked_until
 
 
 class RedditAdapter:
@@ -24,11 +64,13 @@ class RedditAdapter:
         return f"https://www.reddit.com/r/{self.subreddit}/hot.json?limit={self.limit}"
 
     async def fetch(self) -> list[dict[str, Any]]:
-        try:
-            r = await self.client.get(self.url)
-            r.raise_for_status()
-        except Exception:
+        if reddit_cooldown_active():
             return []
+        r = await self.client.get(self.url)
+        if r.status_code in _BLOCKED_STATUSES:
+            _start_cooldown(r.status_code)
+            return []
+        r.raise_for_status()
         data = r.json()
         items: list[dict[str, Any]] = []
         for post in data.get("data", {}).get("children", []):
