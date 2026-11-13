@@ -43,12 +43,13 @@ _LIVE_STATUSES = frozenset({
     "in", "live", "in progress", "in_progress", "halftime",
     "end of period", "end", "delayed", "status_in_progress",
 })
-_DONE_STATUSES = frozenset({
-    "final", "post", "postponed", "canceled", "cancelled",
+# Postponed and suspended are not final: a started game in either state
+# stays on the fast tick. Canceled games do not.
+_CADENCE_DONE = frozenset({
+    "final", "post", "canceled", "cancelled",
     "status_final", "forfeit", "completed",
 })
 _NEAR_HORIZON = timedelta(hours=18)
-_STARTED_RECENTLY = timedelta(hours=4)
 _LOOKBACK = timedelta(hours=12)
 
 _last_espn_fetch_at: datetime | None = None
@@ -67,6 +68,34 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def _is_espn_game_id(game_id: object) -> bool:
+    """ESPN event ids are numeric. nflverse ids look like ``2026_10_BUF_KC``."""
+    return str(game_id or "").isdigit()
+
+
+def _utc_kickoff(start: datetime | None) -> datetime | None:
+    """UTC instant for an ESPN row.
+
+    Postgres timestamptz comes back aware. SQLite drops the zone, so a naive
+    value is the same UTC instant. nflverse rows never reach this helper.
+    """
+    if start is None:
+        return None
+    if start.tzinfo is None:
+        return start.replace(tzinfo=UTC)
+    return start.astimezone(UTC)
+
+
+def _live_plan(reason: str, *, games: int = 0) -> dict[str, Any]:
+    return {
+        "mode": "live",
+        "should_fetch": True,
+        "reason": reason,
+        "games_in_window": games,
+        "age_seconds": None,
+    }
+
+
 def scoreboard_poll_plan(
     db: Session,
     *,
@@ -75,49 +104,50 @@ def scoreboard_poll_plan(
 ) -> dict[str, Any]:
     """Decide whether this scores tick should call ESPN.
 
-    Live (in progress, kickoff inside the lookahead, or started within the
-    last four hours and not final) fetches on every tick. Near (a not-final
-    game inside 18 hours) and idle wait out their floors. A query failure
-    fetches, so a bad read cannot hide a kickoff.
+    Kickoff classification uses numeric ESPN ids with timezone-aware UTC
+    start times. nflverse rows store an Eastern clock labeled UTC, so they
+    are ignored and cannot make the slate idle. A started game that is not
+    final stays live with no duration cutoff. Near (a not-yet-started ESPN
+    game inside 18 hours) and a quiet trusted slate wait out their floors.
+    Empty, unknown, or a process with no successful fetch yet stays live.
     """
     settings = get_settings()
     now = _aware(now) or _now()
+    if last_fetch_at is None:
+        return _live_plan("no_successful_fetch")
     lookahead = timedelta(hours=float(settings.score_live_lookahead_hours))
-    mode: ScorePollMode = "idle"
     try:
-        rows = (
-            db.query(Game.status, Game.start_time)
-            .filter(Game.start_time.isnot(None))
-            .filter(Game.start_time >= now - _LOOKBACK)
-            .filter(Game.start_time <= now + _NEAR_HORIZON)
-            .all()
-        )
+        rows = db.query(Game.id, Game.status, Game.start_time).all()
     except Exception as e:  # noqa: BLE001
         log.debug("scoreboard_poll_plan_failed", error=str(e)[:120])
-        return {
-            "mode": "live",
-            "should_fetch": True,
-            "reason": "query_failed",
-            "games_in_window": 0,
-        }
+        return _live_plan("query_failed")
+    mode: ScorePollMode = "idle"
     n = 0
-    for status, start in rows:
-        start_aw = _aware(start)
-        if start_aw is None:
-            continue
-        n += 1
+    saw_trusted = False
+    saw_untrusted = False
+    for gid, status, start in rows:
         st = (status or "").strip().lower()
-        if st in _LIVE_STATUSES:
+        if not _is_espn_game_id(gid):
+            saw_untrusted = True
+            continue
+        kick = _utc_kickoff(start)
+        if kick is None:
+            if st not in _CADENCE_DONE:
+                saw_untrusted = True
+            continue
+        saw_trusted = True
+        if now - _LOOKBACK <= kick <= now + _NEAR_HORIZON:
+            n += 1
+        done = st in _CADENCE_DONE
+        # kick <= now + lookahead is every started game plus the pre-kick
+        # window, so OT, delays, postponements, and suspensions stay live.
+        if st in _LIVE_STATUSES or (not done and kick <= now + lookahead):
             mode = "live"
-            break
-        if st not in _DONE_STATUSES and now <= start_aw <= now + lookahead:
-            mode = "live"
-            break
-        if st not in _DONE_STATUSES and now - _STARTED_RECENTLY <= start_aw <= now:
-            mode = "live"
-            break
-        if mode != "live" and now <= start_aw <= now + _NEAR_HORIZON:
+        elif mode != "live" and not done and kick <= now + _NEAR_HORIZON:
             mode = "near"
+    if not saw_trusted:
+        reason = "untrusted_rows" if saw_untrusted else "empty"
+        return _live_plan(reason)
     last = _aware(last_fetch_at)
     age_s = (now - last).total_seconds() if last is not None else None
     if mode == "live":
@@ -167,6 +197,11 @@ async def refresh_scoreboard(db: Session, *, force: bool = False) -> int | dict[
         events = await adapter.fetch_current_scoreboard()
     finally:
         await adapter.aclose()
+    # An empty or failed payload must not look like a fresh slate. The
+    # exception path never reaches this assignment.
+    if not events:
+        log.info("scoreboard_refreshed", events=0, written=0)
+        return 0
     _last_espn_fetch_at = _now()
 
     by_espn_id = {

@@ -365,8 +365,8 @@ def start_scheduler() -> None:
 
     if live:
         # The tick stays at schedule_scores_seconds. refresh_scoreboard
-        # applies the live / near / idle floors, so a quiet week does not
-        # call ESPN every 30s and a kickoff still goes fast on the next tick.
+        # skips ESPN only for a quiet trusted slate. A started non-final
+        # game, a near kickoff, or any doubt stays on this fast tick.
         sched.add_job(
             _job_refresh_scores,
             IntervalTrigger(seconds=settings.schedule_scores_seconds),
