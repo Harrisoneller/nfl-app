@@ -43,6 +43,7 @@ from research.nfl_single_feature.pressure import (
     residualize_rate,
     ridge_effects,
     season_centers,
+    team_games_from_plays,
 )
 from research.nfl_single_feature.specs import (
     ATS_LB_LIMIT,
@@ -279,7 +280,8 @@ def test_pressure_interaction_is_antisymmetric_and_ignores_the_future_and_main_e
          "qb_att_time": "2018-09-29 12:00", "kickoff": "2018-09-30 13:00"},
     ])
     games = pd.DataFrame([
-        {"game_id": "w3", "season": 2018, "week": 3, "home": "AAA", "away": "BBB"},
+        {"game_id": "w3", "season": 2018, "week": 3, "home": "AAA", "away": "BBB",
+         "kickoff": "2018-09-23 13:00"},
     ])
     feature = pressure_matchup_feature(team_games, games)
     assert list(feature.columns) == ["game_id", "season", "week", "pressure_x"]
@@ -324,7 +326,7 @@ def test_residual_removes_time_to_throw_and_shrinkage_pulls_effects_in():
          "qb_att_time": "2018-09-15 12:00", "kickoff": "2018-09-16 13:00"},
     ]))
     assert np.isnan(centered.loc[centered["week"] == 1, "center"]).all()
-    assert effects_asof(centered, 2018, 1) is None
+    assert effects_asof(centered, "2018-09-09 13:00") is None
 
 
 def _snap(season, week, team, player, position, snaps, team_snaps):
@@ -552,7 +554,8 @@ def test_pressure_halts_on_season_grain_and_late_time_to_throw():
     late["qb_att_time"] = "2018-09-09 18:00"
     late.loc[late["week"] == 2, "qb_att_time"] = "2018-09-16 18:00"
     games = pd.DataFrame([
-        {"game_id": "w3", "season": 2018, "week": 3, "home": "AAA", "away": "BBB"},
+        {"game_id": "w3", "season": 2018, "week": 3, "home": "AAA", "away": "BBB",
+         "kickoff": "2018-09-23 13:00"},
     ])
     with pytest.raises(DesignError):
         pressure_matchup_feature(late, games)
@@ -637,3 +640,78 @@ def test_stages_drop_screen_failures_and_guard_dates():
     stages = run_stages(bad_sign)
     assert "pressure_x" not in stages["retained"]
     assert "pressure_x" not in stages["harms"]
+
+
+def _dropback(game_id, kickoff, team, opp, att, pressure, week):
+    return {
+        "game_id": game_id, "season": 2018, "week": week, "posteam": team, "defteam": opp,
+        "qb_dropback": 1, "wp": 0.5, "qb_kneel": 0, "qb_spike": 0, "pressure": pressure,
+        "qb_att": att, "kickoff": kickoff, "pass": 1, "rush": 0,
+    }
+
+
+def test_qb_att_and_qb_change_ignore_this_game_and_later_games():
+    early = _dropback("early", "2018-09-06 20:20", "AAA", "BBB", 2.0, 1, 1)
+    target = _dropback("target", "2018-09-09 13:00", "AAA", "BBB", 9.0, 40, 1)
+    later = _dropback("later", "2018-09-16 13:00", "AAA", "BBB", 20.0, 1, 2)
+    own_only = team_games_from_plays(pd.DataFrame([target]))
+    assert np.isnan(own_only["qb_att"].iloc[0])
+    with_early = team_games_from_plays(pd.DataFrame([early, target, later]))
+    target_row = with_early[with_early["game_id"] == "target"].iloc[0]
+    assert target_row["qb_att"] == pytest.approx(2.0)
+    without_later = team_games_from_plays(pd.DataFrame([early, target]))
+    assert without_later[without_later["game_id"] == "target"]["qb_att"].iloc[0] == pytest.approx(2.0)
+    changed_own = target.copy()
+    changed_own["qb_att"] = 3.0
+    changed_own["pressure"] = 0
+    still = team_games_from_plays(pd.DataFrame([early, changed_own, later]))
+    assert still[still["game_id"] == "target"]["qb_att"].iloc[0] == pytest.approx(2.0)
+
+    games = pd.DataFrame([
+        {"game_id": "sun", "season": 2018, "week": 1, "kickoff": "2018-09-09 13:00",
+         "home": "HOM", "away": "AWY", "home_qb": "NEW", "away_qb": "AWY-QB",
+         "home_qb_asof": "2018-09-09 10:00", "away_qb_asof": "2018-09-09 10:00"},
+        {"game_id": "thu", "season": 2018, "week": 1, "kickoff": "2018-09-06 20:20",
+         "home": "HOM", "away": "AWY", "home_qb": "OLD", "away_qb": "AWY-QB",
+         "home_qb_asof": "2018-09-06 12:00", "away_qb_asof": "2018-09-06 12:00"},
+    ])
+    snaps = pd.DataFrame(_five_starters("HOM", [1], season=2017) + _five_starters("AWY", [1], season=2017))
+    injuries = pd.DataFrame(columns=["season", "week", "team", "player_id", "report_status", "report_time"])
+    feature = ol_matchup_feature(snaps, injuries, games)
+    by_id = feature.set_index("game_id")
+    assert by_id.loc["thu", "ol_exclude_reason"] != "qb_change"
+    assert by_id.loc["sun", "ol_exclude_reason"] == "qb_change"
+
+
+def test_injury_report_times_are_compared_in_eastern():
+    snaps = pd.DataFrame(_five_starters("HOM", [1, 2, 3, 4]) + _five_starters("AWY", [1, 2, 3, 4]))
+    # 20:30 UTC on 11 Oct 2026 is 16:30 EDT, before a 17:00 Eastern kickoff.
+    early_utc = pd.DataFrame([{
+        "season": 2026, "week": 5, "team": "HOM", "player_id": "HOM-C",
+        "report_status": "Out", "report_time": pd.Timestamp("2026-10-11 20:30", tz="UTC"),
+    }])
+    counted = ol_matchup_feature(snaps, early_utc, _games())
+    assert counted[counted["game_id"] == "cur"]["ol_d"].iloc[0] == pytest.approx(0.2 + OL_CENTER_WEIGHT)
+    # 21:30 UTC is 17:30 EDT, after that kickoff.
+    late_utc = early_utc.copy()
+    late_utc["report_time"] = pd.Timestamp("2026-10-11 21:30", tz="UTC")
+    missed = ol_matchup_feature(snaps, late_utc, _games())
+    assert missed[missed["game_id"] == "cur"]["ol_exclude_reason"].iloc[0] == "unverified_report"
+
+
+def test_stage_b_and_c_training_starts_in_2015():
+    games = _confirmatory_frame()
+    old = games.iloc[[0]].copy()
+    old["season"] = 2014
+    old["week"] = 1
+    old["kickoff"] = "2014-09-07 13:00"
+    old["pressure_x"] = 100.0
+    old["margin"] = 5000.0
+    old["game_type"] = "REG"
+    with_old = pd.concat([games, old], ignore_index=True)
+    assert harm_check(games, "pressure_x")["coefficient"] == pytest.approx(
+        harm_check(with_old, "pressure_x")["coefficient"],
+    )
+    base = confirmatory_look(games, ["pressure_x"])["decisions"][0]["coefficient"]
+    extra = confirmatory_look(with_old, ["pressure_x"])["decisions"][0]["coefficient"]
+    assert base == pytest.approx(extra)

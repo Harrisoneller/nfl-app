@@ -13,10 +13,12 @@ This module does not fetch injuries or snap counts.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 
-from .calendar import assert_pregame
+from .calendar import assert_pregame, eastern_kickoff
 from .design import DesignError
 from .specs import (
     OL_CENTER_POSITIONS,
@@ -38,18 +40,9 @@ def _is_missing_status(value: object) -> bool:
     return _norm_status(value) in OL_MISSING_STATUS
 
 
-def _naive_timestamp(value: object) -> pd.Timestamp:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return pd.NaT
-    try:
-        if pd.isna(value):
-            return pd.NaT
-    except (TypeError, ValueError):
-        pass
-    stamp = pd.Timestamp(value)
-    if stamp.tzinfo is not None:
-        raise DesignError("report and kickoff timestamps must be timezone-naive")
-    return stamp
+def _eastern_stamp(value: object) -> datetime | None:
+    """Injury report times and kickoffs are compared in America/New_York."""
+    return eastern_kickoff(value)
 
 
 def _prior_window(snaps: pd.DataFrame, team: str, season: int, week: int) -> pd.DataFrame:
@@ -105,7 +98,7 @@ def _final_status(
     season: int,
     week: int,
     player_id: str,
-    kickoff: pd.Timestamp,
+    kickoff: datetime | None,
 ) -> tuple[object | None, bool]:
     """Return ``(status, verified)``.
 
@@ -121,10 +114,10 @@ def _final_status(
     ]
     if len(rows) == 0:
         return None, True
-    if pd.isna(kickoff):
+    if kickoff is None:
         return None, False
-    times = [_naive_timestamp(value) for value in rows["report_time"]]
-    verified_at = [stamp for stamp in times if pd.notna(stamp) and stamp < kickoff]
+    times = [_eastern_stamp(value) for value in rows["report_time"]]
+    verified_at = [stamp for stamp in times if stamp is not None and stamp < kickoff]
     if not verified_at:
         return None, False
     latest = max(verified_at)
@@ -138,7 +131,7 @@ def _side_index(
     team: str,
     season: int,
     week: int,
-    kickoff: pd.Timestamp,
+    kickoff: datetime | None,
 ) -> tuple[float, str]:
     starters = _starters(_prior_window(snaps, team, season, week))
     if len(starters) == 0:
@@ -160,16 +153,24 @@ def _side_index(
 
 
 def _qb_changes(games: pd.DataFrame) -> pd.DataFrame:
-    home = games[["season", "week", "game_id", "home", "home_qb"]].rename(
+    """A change is against the previous game that had already kicked off.
+
+    Ordering is by Eastern kickoff, not by game id. The target game's own
+    quarterback, and any game that kicks off later, are not the previous id.
+    """
+    home = games[["season", "week", "game_id", "kickoff", "home", "home_qb"]].rename(
         columns={"home": "team", "home_qb": "qb"},
     )
-    away = games[["season", "week", "game_id", "away", "away_qb"]].rename(
+    away = games[["season", "week", "game_id", "kickoff", "away", "away_qb"]].rename(
         columns={"away": "team", "away_qb": "qb"},
     )
     both = pd.concat([home, away], ignore_index=True)
-    both = both.sort_values(["team", "season", "week", "game_id"])
+    both["kick"] = both["kickoff"].map(eastern_kickoff)
+    both = both.sort_values(["team", "kick", "game_id"])
     both["prev_qb"] = both.groupby("team")["qb"].shift(1)
-    changed = both["prev_qb"].notna() & (both["qb"] != both["prev_qb"])
+    both["prev_kick"] = both.groupby("team")["kick"].shift(1)
+    prior = both["prev_kick"].notna() & (both["prev_kick"] < both["kick"])
+    changed = prior & both["prev_qb"].notna() & (both["qb"] != both["prev_qb"])
     both["qb_change"] = changed
     flagged = both.groupby("game_id")["qb_change"].any()
     return flagged
@@ -217,7 +218,7 @@ def ol_matchup_feature(
                 "ol_exclude_reason": "qb_change",
             })
             continue
-        kickoff = _naive_timestamp(game.kickoff)
+        kickoff = _eastern_stamp(game.kickoff)
         home_index, home_reason = _side_index(
             snaps, injuries, game.home, int(game.season), int(game.week), kickoff,
         )

@@ -1,15 +1,14 @@
-"""Walk-forward stage-2, paired CRPS, and the exploratory MDE.
+"""Walk-forward stage-2 and the three locked stages.
 
 Both the base and the candidate are refit on seasons strictly before the
 test season. Shipped stage-2 weights are not an argument and are not read.
 
-``sd(d)`` for the MDE is the sample standard deviation of the base replay's
-per-game CRPS, divisor ``n - 1``. It is computed from that replay before the
-candidate is fit. It is not the standard deviation of the candidate's paired
-CRPS differences.
+``sd(d)`` is descriptive. It is the sample standard deviation of
+``CRPS(mu + 1) - CRPS(mu)`` on the base prediction, measured on Stage A rows
+before any candidate fit. It is not a feature and it is not a noise placebo.
 
-The screen grades kickoffs before 2027-01-01 Eastern. January 2027 is a
-harm check. The confirmatory sample is the 2027 regular season.
+Stage A grades kickoffs before 2027-01-01 Eastern. January 2027 is the harm
+check. The confirmatory sample is the 2027 regular season.
 """
 from __future__ import annotations
 
@@ -375,6 +374,7 @@ def harm_check(games: pd.DataFrame, feature: str) -> dict[str, object]:
     """
     require_schedule_fields(games)
     train = games[games["kickoff"].map(before_screen_cutoff)].copy()
+    train = train[train["season"].astype(int) >= TRAIN_FIRST]
     test = games[
         (games["season"].astype(int) == HARM_SEASON) & games["kickoff"].map(is_january_2027_kickoff)
     ].copy()
@@ -450,6 +450,7 @@ def confirmatory_look(games: pd.DataFrame, features: list[str]) -> dict[str, obj
     first_kick = min(eastern_kickoff(value) for value in test["kickoff"])
     train = games.loc[~test_mask].copy()
     train = train[train["kickoff"].map(lambda value: eastern_kickoff(value) < first_kick)].copy()
+    train = train[train["season"].astype(int) >= TRAIN_FIRST]
     k = len(features)
     alpha = HOLM_ALPHA / k
     decisions = []

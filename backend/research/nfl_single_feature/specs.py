@@ -17,8 +17,8 @@ TOTAL_SIGMA = 10.0
 
 # Season rule from QA. No 2013–2026 season is an untouched confirmatory season.
 # 2012 and earlier are a different regime and do not enter this study.
-# The owner then named one confirmatory window inside the 2026 season:
-# kickoffs in January 2027, America/New_York. Not the 2027 regular season.
+# Stage A is the exploratory screen. January 2027 is the harm check.
+# Stage C, the confirmatory sample, is the 2027 regular season.
 REGIME_LAST = 2012
 FEATURE_HISTORY_FIRST = 2013
 TRAIN_FIRST = 2015
