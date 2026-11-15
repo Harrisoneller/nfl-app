@@ -1,0 +1,295 @@
+{
+  "stage": "A",
+  "role": "exploratory_screen",
+  "code_sha": "d44adf67f0335e42f4b8304981cb1fa2dde1128a",
+  "evaluation_code_sha": "63985bbad78f08bc2be5d794c49d734b1df72376",
+  "evaluation_modules_unchanged_from_evaluation_code_sha": true,
+  "locked_prereg_sha": "d6482dd",
+  "cutoff": "2027-01-01 America/New_York",
+  "seasons_loaded": "2015 through December 2026 kickoffs. 2027-season rows were not loaded.",
+  "inference": {
+    "method": "webb_wild_cluster_bootstrap",
+    "draws": 10000,
+    "seed": 20261115,
+    "clusters": "season-week",
+    "upper_quantile": 0.9,
+    "continuation_rule": "mean_d < 0 and prereg sign matches on every season coefficient and upper_90 < 0"
+  },
+  "n_games": 3165,
+  "n_clusters": 246,
+  "features": [
+    {
+      "feature": "pressure_x",
+      "endpoint": "margin",
+      "n_games": 2097,
+      "n_clusters": 162,
+      "sd_d": 0.5567347236562014,
+      "mean_d": 0.006674477722680085,
+      "upper_90": 0.016051841686159987,
+      "expected_sign": -1,
+      "sign_check": true,
+      "decision": "stop",
+      "coefficient_by_season": [
+        {
+          "season": 2019,
+          "coefficient": -324.66584650674395,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2020,
+          "coefficient": -213.82186738936156,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2021,
+          "coefficient": -23.80284833888897,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2022,
+          "coefficient": -103.17707261036395,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2023,
+          "coefficient": -43.21582401750277,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2024,
+          "coefficient": -48.64958719795403,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2025,
+          "coefficient": -89.51559482661467,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2026,
+          "coefficient": -111.5882196704685,
+          "matches_prereg_sign": true
+        }
+      ],
+      "seasons_graded": [
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+        2026
+      ],
+      "seasons_skipped": [
+        2015,
+        2016,
+        2017,
+        2018
+      ],
+      "mde_80": 0.03933725576267374,
+      "halt": null
+    },
+    {
+      "feature": "ol_d",
+      "endpoint": "margin",
+      "n_games": 2129,
+      "n_clusters": 215,
+      "sd_d": 0.5506998857899646,
+      "mean_d": 0.0023858151323640493,
+      "upper_90": 0.00536905580537081,
+      "expected_sign": -1,
+      "sign_check": false,
+      "decision": "stop",
+      "coefficient_by_season": [
+        {
+          "season": 2016,
+          "coefficient": -1.9123369045391947,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2017,
+          "coefficient": -0.5612877455890051,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2018,
+          "coefficient": -1.2560884025001176,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2019,
+          "coefficient": -0.5891797595599811,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2020,
+          "coefficient": -0.9780597523783537,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2021,
+          "coefficient": -0.18365921386804382,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2022,
+          "coefficient": -0.19083308689559486,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2023,
+          "coefficient": -0.5132047614192065,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2024,
+          "coefficient": 0.45320738109754466,
+          "matches_prereg_sign": false
+        },
+        {
+          "season": 2025,
+          "coefficient": 0.7942243084905197,
+          "matches_prereg_sign": false
+        },
+        {
+          "season": 2026,
+          "coefficient": 0.7904205115620163,
+          "matches_prereg_sign": false
+        }
+      ],
+      "seasons_graded": [
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+        2026
+      ],
+      "seasons_skipped": [
+        2015
+      ],
+      "mde_80": 0.03861731913715036,
+      "halt": null
+    },
+    {
+      "feature": "neutral_pace_sum",
+      "endpoint": "total",
+      "n_games": 2898,
+      "n_clusters": 225,
+      "sd_d": 0.6666787383368722,
+      "mean_d": 0.026763186920439816,
+      "upper_90": 0.03702881675523191,
+      "expected_sign": -1,
+      "sign_check": false,
+      "decision": "stop",
+      "coefficient_by_season": [
+        {
+          "season": 2016,
+          "coefficient": 1.0411149499120966,
+          "matches_prereg_sign": false
+        },
+        {
+          "season": 2017,
+          "coefficient": 0.06632338621305954,
+          "matches_prereg_sign": false
+        },
+        {
+          "season": 2018,
+          "coefficient": -0.18655008842411394,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2019,
+          "coefficient": -0.21651782730539265,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2020,
+          "coefficient": -0.15243939313241062,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2021,
+          "coefficient": 0.01464742140624225,
+          "matches_prereg_sign": false
+        },
+        {
+          "season": 2022,
+          "coefficient": -0.05575147517625846,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2023,
+          "coefficient": -0.07322439389614933,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2024,
+          "coefficient": -0.10970571962346849,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2025,
+          "coefficient": -0.08163681534908464,
+          "matches_prereg_sign": true
+        },
+        {
+          "season": 2026,
+          "coefficient": -0.04644822867468991,
+          "matches_prereg_sign": true
+        }
+      ],
+      "seasons_graded": [
+        2016,
+        2017,
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+        2025,
+        2026
+      ],
+      "seasons_skipped": [
+        2015
+      ],
+      "mde_80": 0.04007028024449058,
+      "halt": null
+    }
+  ],
+  "ol_exclude_reasons": {
+    "ok": 2338,
+    "qb_change": 422,
+    "unverified_report": 324,
+    "no_starters": 81
+  },
+  "data_coverage_notes": [
+    "Schedule rows dropped before any score was used: 31 of 7548 had season 2027 or a kickoff on or after 2027-01-01 America/New_York.",
+    "Schedule rows outside REG/WC/DIV/CON/SB dropped: 0 (types []).",
+    "Unplayed games, both scores not present, dropped before fit and scoring: 104.",
+    "Depth-chart QB1 found for the home team on 2735 of 3165 eligible games.",
+    "Base quarterback ids are the weekly depth-chart QB1 (gsis), not the passer who played. The depth-chart file has no captured_at. home_qb_asof and away_qb_asof are one hour before kickoff so the pre-game guard sees the weekly listing. Team ratings use DEFAULT_PARAMS and games from 2015 through this cutoff only. No shipped stage-2 coefficient is an input.",
+    "Games with finite neutral_pace_sum: 3122 of 3165.",
+    "Snap rows with no gsis crosswalk from the players pfr_id table: 235 of 289734. Those rows are dropped. Injury status is not inferred from who played.",
+    "Injury rows on eligible team-weeks with a blank date_modified: 8909 of 63612. A blank or not-strictly-before-kickoff time leaves that game unverified. No time was filled in.",
+    "OL exclude reasons: no_starters=81, ok=2338, qb_change=422, unverified_report=324",
+    "Games with finite ol_d: 2338 of 3165.",
+    "No weekly NGS passing file for 2025.",
+    "No weekly NGS passing file for 2026.",
+    "NGS passing rows with week missing or week 0 (season aggregate) dropped and not copied onto weeks: 324.",
+    "PFR weekly team-games joined to filtered dropbacks: 4726. Finite pre-game average time to throw on those rows: 4341. Season PFR files were not opened. Sacks and hits were not substituted.",
+    "Games with finite pressure_x: 2347 of 3165."
+  ],
+  "market_inputs": "none",
+  "paid_apis": "none",
+  "harm_check_called": false,
+  "confirmatory_look_called": false
+}
