@@ -8,12 +8,15 @@ per-game CRPS, divisor ``n - 1``. It is computed from that replay before the
 candidate is fit. It is not the standard deviation of the candidate's paired
 CRPS differences.
 
-Any grade whose test seasons fall in 2016–2026 is an exploratory screen.
-The only confirmatory sample is 2027 regular-season weeks 1–4.
+Any grade on 2016–2026 games other than the January 2027 kickoffs is an
+exploratory screen. The confirmatory sample is 2026-season games whose
+kickoff falls in January 2027, America/New_York.
 """
 from __future__ import annotations
 
 import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -31,8 +34,12 @@ from .holm import (
     upper_bound,
 )
 from .specs import (
+    CONFIRMATORY_KICKOFF_MONTH,
+    CONFIRMATORY_KICKOFF_YEAR,
+    CONFIRMATORY_SCHEDULE_CLUSTERS,
+    CONFIRMATORY_SCHEDULE_N,
     CONFIRMATORY_SEASON,
-    CONFIRMATORY_WEEKS,
+    CONFIRMATORY_TZ,
     EXPLORATORY_TEST_FIRST,
     EXPLORATORY_TEST_LAST,
     FEATURES,
@@ -41,6 +48,9 @@ from .specs import (
     REGIME_LAST,
     TRAIN_FIRST,
 )
+
+_EASTERN = ZoneInfo(CONFIRMATORY_TZ)
+_CONFIRMATORY_GAME_TYPES = frozenset({"REG", "WC", "DIV", "CON", "SB"})
 
 
 def sample_sd(values) -> float:
@@ -72,27 +82,64 @@ def minimum_detectable_effect(
     return (z_alpha + z_power) * float(sd) / math.sqrt(n)
 
 
+def eastern_kickoff(value: object) -> datetime | None:
+    """Kickoff as an America/New_York wall time.
+
+    A naive timestamp is the nflverse clock: ``gameday`` plus ``gametime`` in
+    Eastern time, not UTC. An aware timestamp is converted to Eastern.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        return None
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp):
+        return None
+    if stamp.tzinfo is None:
+        return stamp.to_pydatetime().replace(tzinfo=_EASTERN)
+    return stamp.tz_convert(_EASTERN).to_pydatetime()
+
+
+def is_confirmatory_kickoff(value: object) -> bool:
+    """True when the Eastern kickoff date is in January 2027."""
+    kick = eastern_kickoff(value)
+    if kick is None:
+        return False
+    return kick.year == CONFIRMATORY_KICKOFF_YEAR and kick.month == CONFIRMATORY_KICKOFF_MONTH
+
+
 def assert_study_frame(games: pd.DataFrame, *, confirmatory: bool) -> None:
-    """Reject the pre-2013 regime, and keep 2027 weeks 5+ out of a confirmatory frame."""
+    """Reject the pre-2013 regime, and keep the January 2027 window unspent."""
     if "season" not in games.columns or "week" not in games.columns:
         raise DesignError("season and week are required")
     season = games["season"].astype(int)
-    week = games["week"].astype(int)
     if (season <= REGIME_LAST).any():
         raise DesignError("seasons through 2012 are a different regime and are not in this study")
+    if (season > CONFIRMATORY_SEASON).any():
+        raise DesignError("the 2027 regular season is not the confirmatory sample")
     if confirmatory:
-        outside = (season > CONFIRMATORY_SEASON) | (
-            (season == CONFIRMATORY_SEASON) & ~week.isin(CONFIRMATORY_WEEKS)
-        )
-        if outside.any():
-            raise DesignError("confirmatory frame includes games outside 2027 regular-season weeks 1-4")
-        inside = (season == CONFIRMATORY_SEASON) & week.isin(CONFIRMATORY_WEEKS)
-        if not inside.any():
-            raise DesignError("confirmatory frame has no 2027 weeks 1-4")
-        if "game_type" in games.columns and games.loc[inside, "game_type"].astype(str).ne("REG").any():
-            raise DesignError("confirmatory games must be game_type REG")
-    elif (season >= CONFIRMATORY_SEASON).any():
-        raise DesignError("2027 is the confirmatory sample and cannot be graded as an exploratory screen")
+        if "kickoff" not in games.columns:
+            raise DesignError("confirmatory frame needs an Eastern kickoff")
+        in_season = season == CONFIRMATORY_SEASON
+        flags = games["kickoff"].map(is_confirmatory_kickoff)
+        if not in_season.any() or not bool(flags[in_season].all()):
+            raise DesignError(
+                "confirmatory 2026 rows must kick off in January 2027, America/New_York"
+            )
+        if bool((~in_season & flags).any()):
+            raise DesignError("a January 2027 kickoff on a season other than 2026 is out")
+        if "game_type" in games.columns:
+            kinds = games.loc[in_season, "game_type"].astype(str)
+            if (~kinds.isin(_CONFIRMATORY_GAME_TYPES)).any():
+                raise DesignError("confirmatory game_type must be REG or a playoff round")
+    elif (season == CONFIRMATORY_SEASON).any():
+        if "kickoff" not in games.columns:
+            raise DesignError("2026 rows need a kickoff so January 2027 games stay out of the screen")
+        if bool(games["kickoff"].map(is_confirmatory_kickoff).any()):
+            raise DesignError("January 2027 kickoffs are confirmatory and cannot be screened")
 
 
 def _feature_spec(feature: str) -> dict[str, object]:
@@ -108,6 +155,7 @@ def _split(
     test_season: int,
     *,
     weeks: tuple[int, ...] | None,
+    january_2027: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     data = complete_rows(games, columns, target)
     data = data[data["season"].astype(int) >= TRAIN_FIRST]
@@ -115,7 +163,12 @@ def _split(
     test = data[data["season"].astype(int) == test_season]
     if weeks is not None:
         test = test[test["week"].astype(int).isin(weeks)]
-    if "game_type" in test.columns:
+    if january_2027:
+        if "kickoff" not in test.columns:
+            test = test.iloc[0:0]
+        else:
+            test = test[test["kickoff"].map(is_confirmatory_kickoff)]
+    elif "game_type" in test.columns:
         test = test[test["game_type"].astype(str).eq("REG")]
     return train, test
 
@@ -126,6 +179,7 @@ def _origin_split(
     test_season: int,
     *,
     weeks: tuple[int, ...] | None,
+    january_2027: bool = False,
 ) -> dict[str, object] | None:
     """Rows for one origin. The feature must be finite so both fits share a sample."""
     spec = _feature_spec(feature)
@@ -133,7 +187,9 @@ def _origin_split(
     target = str(spec["target"])
     intercept = bool(spec["intercept"])
     candidate_columns = assert_single_addition(base, feature)
-    train, test = _split(games, candidate_columns, target, test_season, weeks=weeks)
+    train, test = _split(
+        games, candidate_columns, target, test_season, weeks=weeks, january_2027=january_2027,
+    )
     width = len(candidate_columns) + (1 if intercept else 0)
     if len(train) < width or len(test) == 0:
         return None
@@ -155,11 +211,12 @@ def base_replay_origin(
     test_season: int,
     *,
     weeks: tuple[int, ...] | None = None,
+    january_2027: bool = False,
 ) -> dict[str, object] | None:
     """Walk-forward base fit only. Does not fit the candidate and does not read its values
     except to drop rows where the feature is missing, so the replay matches the paired sample.
     """
-    origin = _origin_split(games, feature, test_season, weeks=weeks)
+    origin = _origin_split(games, feature, test_season, weeks=weeks, january_2027=january_2027)
     if origin is None:
         return None
     base = tuple(origin["base"])  # type: ignore[arg-type]
@@ -281,11 +338,12 @@ def exploratory_screen(games: pd.DataFrame, feature: str) -> dict[str, object]:
 
 
 def confirmatory_look(games: pd.DataFrame) -> dict[str, object]:
-    """One look at 2027 weeks 1–4 for all three features, then Holm.
+    """One look at January 2027 kickoffs for all three features, then Holm.
 
-    The ship MDE is computed from each feature's base replay on its 2027
-    rows, before any candidate fit. It is reported. The pass rule is Holm,
+    The ship MDE is computed from each feature's base replay on those rows,
+    before any candidate fit. It is reported. The pass rule is Holm,
     the 97.5th-percentile upper bound, and the coefficient sign.
+    The published schedule multiple uses the lock-time n of 31, not this frame.
     """
     assert_study_frame(games, confirmatory=True)
     assert_confirmatory_family(list(FEATURES))
@@ -293,14 +351,14 @@ def confirmatory_look(games: pd.DataFrame) -> dict[str, object]:
     ship_mde: dict[str, dict[str, float | int | str]] = {}
     for feature in FEATURES:
         replay = base_replay_origin(
-            games, feature, CONFIRMATORY_SEASON, weeks=CONFIRMATORY_WEEKS,
+            games, feature, CONFIRMATORY_SEASON, january_2027=True,
         )
         if replay is None:
             raise DesignError(f"confirmatory base replay could not fit {feature}")
         graded = replay["graded"]
         assert isinstance(graded, pd.DataFrame)
         if graded["week"].astype(int).nunique() < 2:
-            raise DesignError("confirmatory bootstrap needs at least two 2027 weeks")
+            raise DesignError("confirmatory bootstrap needs at least two season-weeks")
         replay_sd = sample_sd(graded["crps_base"])
         n = len(graded)
         replays[feature] = replay
@@ -340,7 +398,10 @@ def confirmatory_look(games: pd.DataFrame) -> dict[str, object]:
         "confirmatory": True,
         "ship_gate": True,
         "season": CONFIRMATORY_SEASON,
-        "weeks": CONFIRMATORY_WEEKS,
+        "kickoff_window": f"{CONFIRMATORY_KICKOFF_YEAR}-{CONFIRMATORY_KICKOFF_MONTH:02d} {CONFIRMATORY_TZ}",
+        "schedule_n": CONFIRMATORY_SCHEDULE_N,
+        "schedule_clusters": CONFIRMATORY_SCHEDULE_CLUSTERS,
+        "schedule_mde_multiple": minimum_detectable_effect(1.0, CONFIRMATORY_SCHEDULE_N),
         "holm": holm_rows,
         "decisions": decisions,
         "ship_mde": ship_mde,

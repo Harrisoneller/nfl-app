@@ -62,15 +62,50 @@ No season from 2013 through 2026 is a clean confirmatory sample. QA ruled this. 
 
 The old windows are dropped: history 2018–20, selection 2021–22, final 2023–25, and the 2026-forward fallback.
 
-Exploratory screen: regular-season games in 2016 through 2026. When `game_type` is present, only `REG` rows are graded. Training rows are every complete game the caller supplies with `2015 <= season < S`, playoffs included when the caller included them, which is how `backtest_v5.py` builds the stage-2 sample. Any grade on 2015–2026 is this screen and nothing else. 2015 is the first training season for the 2016 fold. It is not graded, because a 2015 test has no prior season inside the training floor. 2013–2014 may be feature history. They are not stage-2 rows. Seasons through 2012 raise if they appear on a stage-2 frame, and the feature builders drop them.
+Exploratory screen: regular-season games in 2016 through 2026, except the confirmatory kickoffs below. When `game_type` is present, only `REG` rows are graded. Training rows are every complete game the caller supplies with `2015 <= season < S`, playoffs included when the caller included them, which is how `backtest_v5.py` builds the stage-2 sample. A grade on 2015–2026 outside the January 2027 kickoffs is this screen and nothing else. 2015 is the first training season for the 2016 fold. It is not graded, because a 2015 test has no prior season inside the training floor. 2013–2014 may be feature history. They are not stage-2 rows. Seasons through 2012 raise if they appear on a stage-2 frame, and the feature builders drop them. The 2027 regular season is not a sample in this study.
 
-Confirmatory sample, the only one: 2027 regular season, `game_type == REG`, weeks 1 through 4. One look, all four weeks together. Weeks 5 and later of 2027 are not this look and are not a second chance. This commit defines "early 2027" as those four weeks. No 2027 row is read here.
+Confirmatory sample, the only one: 2026-season NFL games whose kickoff falls in January 2027 in `America/New_York`. This is the owner's definition of early 2027: "2026-season bowls and playoff games played in January 2027." It is not the 2027 regular season, and it is not weeks 1–4 of that season. One look, the whole window together. Games inside the window do not train each other. The confirmatory fit uses seasons `2015 <= season < 2026` only.
 
-Training for a test season `S` is every complete row with `2015 <= season < S`. Within 2027, weeks 1–4 do not train each other. The confirmatory fit uses seasons before 2027 only.
+Kickoff rule, same as `scores_service._parse_kickoff`: nflverse `gameday` plus `gametime` is an Eastern wall clock. A missing `gametime` would be 1:00 PM Eastern. An aware timestamp is converted to Eastern before the month is read. A UTC instant that is still December 31 in New York is outside the window. The 2027 regular season is outside it even if someone labels the kickoff January.
+
+## Lock-time schedule census
+
+Counted on 2026-11-15 from nflverse `schedules/games.csv` (`nflverse_stats.SCHEDULES_URL`). Columns read: `game_id`, `season`, `game_type`, `week`, `gameday`, `gametime`. No score, spread, total, or result column was opened.
+
+The 2026 file has 272 rows, all `game_type == REG`. It has no wild-card, divisional, conference, or Super Bowl rows. Those matchups are not on the schedule yet, so they are not in this count. "Bowls" are not a row type in the file. The January games that exist are regular-season weeks 17 and 18.
+
+| Week | Eastern kickoff | Games | Cluster |
+| --- | --- | --- | --- |
+| 17 | 2027-01-03 (14 games) and 2027-01-04 (1 game) | 15 | `(2026, 17)` |
+| 18 | 2027-01-10 | 16 | `(2026, 18)` |
+
+One other week-17 game kicks off 2026-12-31 and is outside the window. Expected `n = 31`. Season-week clusters `C = 2`. Monday's game is in the week-17 cluster, not a third cluster.
+
+That `n` is the scheduled count at lock time. It is the largest n this window can have until a new preregistration adds rows. A missing feature can only make the graded n smaller.
+
+## Power at that n
+
+`sd(d)` is still measured on the base replay before any candidate is fit. It is not known in this commit, and it is not filled in from outcomes.
+
+With `z_(1-beta) = 0`:
+
+`MDE = z_alpha* * sd(d) / sqrt(31)`
+
+`z_alpha* / sqrt(31) = 2.3939798012415405 / sqrt(31) = 0.42997146524798546`
+
+So `MDE = 0.42997146524798546 * sd(d)`.
+
+The formula is the iid one above. It is not a cluster-robust standard error. The confirmatory gate still uses the season-week cluster bootstrap. With two clusters, a resample is a draw of those two weeks with replacement. The bootstrap distribution of the mean has a handful of shapes, and the 97.5th percentile is a coarse function of two week means. Holm's tightest threshold is `0.025 / 3`. A feature has to clear that multiplicity bar, a strict upper bound below 0, and the sign check, on 31 games that are really two weeks.
+
+This window is very likely too small to pass any feature under Holm at `0.025 / 3` with cluster-bootstrap percentiles. The published multiple is already 0.43 of the per-game CRPS standard deviation at the most favorable n. Clustering makes the effective sample the two weeks, not the 31 games. That statement is about the design. It is not a grade, and no feature has been fit.
+
+## Week 18
+
+Sixteen of the 31 games are week 18. Week 18 is the last regular-season week. Teams rest starters and teams out of the seeding race tank. That shifts who plays, how fast the game is, and how often the quarterback is pressured. The OL feature is directly exposed, because the point-in-time starter can be a backup by design. The pressure interaction and the neutral-pace sum move with a non-competitive script. This is a known bias. The window is not trimmed to drop week 18. A pass, if one ever occurred, would still carry that contamination.
 
 ## Walk-forward stage-2
 
-For each test season, and for the 2027 block:
+For each exploratory test season, and once for the January 2027 block:
 
 1. Fit the base by ordinary least squares on the training rows. Margin has no intercept. Total has an intercept.
 2. Store the base per-game CRPS. This is the replay.
@@ -116,15 +151,15 @@ Holm's tightest one-sided alpha is `alpha* = 0.025 / 3`.
 
 `MDE = (z_alpha* + z_(1-beta)) * sd(d) / sqrt(n)`.
 
-The screen bar is `mean(delta) <= -MDE`. Clearing it is an exploratory label. It does not add, drop, or redefine a feature. All three features stay in the 2027 Holm family either way. The screen is not a ship gate.
+The screen bar is `mean(delta) <= -MDE`. Clearing it is an exploratory label. It does not add, drop, or redefine a feature. All three features stay in the January 2027 Holm family either way. The screen is not a ship gate. The January kickoffs are not part of the screen.
 
 `beta = 0.5` is locked here so the formula has a number. It is the power floor from the prior selection bar. `z_(1-beta)` was not given a different power in the QA ruling. A different beta before the first real replay is a correction of this lock. A different beta after a fit is a new preregistration.
 
 ## Confirmatory gate
 
-One call scores all three features on 2027 weeks 1–4. The base replays for all three are fit, and each feature's ship MDE is stored, before any candidate coefficient is fit.
+One call scores all three features on the January 2027 kickoffs. The base replays for all three are fit, and each feature's ship MDE is stored, before any candidate coefficient is fit.
 
-Ship MDE for a feature uses the same formula, with `sd(d)` and `n` from the base replay on that feature's 2027 rows. It is reported. It is not the pass rule.
+Ship MDE for a feature uses the same formula, with `sd(d)` and `n` from the base replay on that feature's January rows. It is reported. It is not the pass rule. The lock-time multiple above uses `n = 31` and does not depend on that replay.
 
 The pass rule, for each feature, is all three of:
 
@@ -138,4 +173,4 @@ A negative upper bound with a failed Holm step is not a pass. MAE is not a pass.
 
 ## What this commit does not do
 
-It does not fit stage-2 on real games. It does not measure `sd(d)` on a real replay. It does not open 2027. It does not write a results file. Tests use synthetic frames only.
+It does not fit stage-2 on real games. It does not measure `sd(d)` on a real replay. The schedule census did not open a score, a line, or a result. It does not write a results file. Tests use synthetic frames only.

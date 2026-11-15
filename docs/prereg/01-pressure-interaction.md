@@ -58,4 +58,4 @@ A season-total PFR row must not be copied onto every week of that season. The bu
 
 ## Screen and confirmatory role
 
-This feature is one of the three in the Holm family. Its exploratory screen, if run, uses the margin sigma 13.5 and the protocol MDE. A screen result does not remove it from the 2027 weeks 1–4 look.
+This feature is one of the three in the Holm family. Its exploratory screen, if run, uses the margin sigma 13.5 and the protocol MDE. A screen result does not remove it from the January 2027 kickoff look. That look is the 2026-season games whose Eastern kickoff is in January 2027, not the 2027 regular season.

@@ -19,6 +19,7 @@ from research.nfl_single_feature.evaluate import (
     confirmatory_look,
     exploratory_screen,
     grade_from_replay,
+    is_confirmatory_kickoff,
     minimum_detectable_effect,
 )
 from research.nfl_single_feature.holm import (
@@ -44,7 +45,8 @@ from research.nfl_single_feature.pressure import (
 )
 from research.nfl_single_feature.specs import (
     BOOTSTRAP_DRAWS,
-    CONFIRMATORY_WEEKS,
+    CONFIRMATORY_SCHEDULE_CLUSTERS,
+    CONFIRMATORY_SCHEDULE_N,
     FEATURES,
     HOLM_ALPHA_STAR,
     MARGIN_BASE,
@@ -95,6 +97,11 @@ def test_mde_uses_holm_alpha_star_and_power_one_half():
     assert norm_ppf(0.5) == 0.0
     sd, n = 2.0, 100
     assert minimum_detectable_effect(sd, n) == pytest.approx(z_alpha * sd / np.sqrt(n))
+    assert CONFIRMATORY_SCHEDULE_N == 31
+    assert CONFIRMATORY_SCHEDULE_CLUSTERS == 2
+    assert minimum_detectable_effect(1.0, CONFIRMATORY_SCHEDULE_N) == pytest.approx(
+        z_alpha / np.sqrt(CONFIRMATORY_SCHEDULE_N),
+    )
 
 
 def test_holm_stops_after_the_first_miss_and_uses_the_family_of_three():
@@ -200,17 +207,55 @@ def test_walk_forward_refits_and_ignores_the_test_season_and_the_market_column()
     assert (graded_weeks["season"] == 2016).any()
 
 
-def test_study_frame_rejects_the_spent_regime_and_protects_2027():
+def test_study_frame_rejects_the_spent_regime_and_protects_january_2027():
     early = pd.DataFrame({"season": [2012, 2016], "week": [1, 1]})
     with pytest.raises(DesignError):
         assert_study_frame(early, confirmatory=False)
-    future = pd.DataFrame({"season": [2016, 2027], "week": [1, 1]})
+    future = pd.DataFrame({
+        "season": [2016, 2027],
+        "week": [1, 1],
+        "kickoff": ["2016-09-11 13:00", "2027-09-12 13:00"],
+    })
     with pytest.raises(DesignError):
         assert_study_frame(future, confirmatory=False)
-    week_five = pd.DataFrame({"season": [2026, 2027], "week": [1, 5], "game_type": ["REG", "REG"]})
+    next_regular = pd.DataFrame({
+        "season": [2015, 2027],
+        "week": [1, 1],
+        "kickoff": ["2015-09-10 13:00", "2027-09-12 13:00"],
+        "game_type": ["REG", "REG"],
+    })
     with pytest.raises(DesignError):
-        assert_study_frame(week_five, confirmatory=True)
-    assert CONFIRMATORY_WEEKS == (1, 2, 3, 4)
+        assert_study_frame(next_regular, confirmatory=True)
+    december = pd.DataFrame({
+        "season": [2026],
+        "week": [17],
+        "kickoff": ["2026-12-31 20:20"],
+        "game_type": ["REG"],
+    })
+    with pytest.raises(DesignError):
+        assert_study_frame(december, confirmatory=True)
+    february = pd.DataFrame({
+        "season": [2026],
+        "week": [22],
+        "kickoff": ["2027-02-14 18:30"],
+        "game_type": ["SB"],
+    })
+    with pytest.raises(DesignError):
+        assert_study_frame(february, confirmatory=True)
+    held_out = pd.DataFrame({
+        "season": [2016, 2026],
+        "week": [1, 18],
+        "kickoff": ["2016-09-11 13:00", "2027-01-10 13:00"],
+    })
+    with pytest.raises(DesignError):
+        assert_study_frame(held_out, confirmatory=False)
+    assert is_confirmatory_kickoff("2027-01-03 13:00")
+    assert is_confirmatory_kickoff("2027-01-10 16:25")
+    assert is_confirmatory_kickoff(pd.Timestamp("2027-01-01 05:30", tz="UTC"))
+    assert not is_confirmatory_kickoff("2026-12-31 20:20")
+    assert not is_confirmatory_kickoff(pd.Timestamp("2027-01-01 03:00", tz="UTC"))
+    assert not is_confirmatory_kickoff("2027-02-14 18:30")
+    assert not is_confirmatory_kickoff("2027-09-12 13:00")
 
 
 def _pressure_plays() -> pd.DataFrame:
@@ -521,48 +566,69 @@ def test_neutral_filter_drops_the_preregistered_states_only():
 def _confirmatory_frame() -> pd.DataFrame:
     rng = np.random.default_rng(1)
     rows = []
-    for season, weeks in ((2015, range(1, 8)), (2026, range(1, 4)), (2027, (1, 2))):
-        for week in weeks:
-            for i in range(2):
-                rows.append({
-                    "season": season,
-                    "week": week,
-                    "game_type": "REG",
-                    "epa_d": float(rng.normal()),
-                    "pts_d": float(rng.normal()),
-                    "st_d": float(rng.normal()),
-                    "qb_d": float(rng.normal()),
-                    "hfa": float(i),
-                    "pts_s": float(rng.normal()),
-                    "epa_s": float(rng.normal()),
-                    "env2": float(rng.normal()),
-                    "plays_s": float(rng.normal()),
-                    "qb_s": float(rng.normal()),
-                    "pressure_x": float(rng.normal()),
-                    "ol_d": float(rng.normal()),
-                    "neutral_pace_sum": float(rng.normal() + 50),
-                    "margin": float(rng.normal()),
-                    "total": float(rng.normal() + 44),
-                })
+    for week in range(1, 8):
+        for i in range(2):
+            rows.append(_study_row(2015, week, i, rng, kickoff=None))
+    for week, kickoff in ((17, "2027-01-03 13:00"), (18, "2027-01-10 13:00")):
+        for i in range(2):
+            rows.append(_study_row(2026, week, i, rng, kickoff=kickoff))
     return pd.DataFrame(rows)
 
 
-def test_confirmatory_look_is_2027_weeks_1_to_4_and_does_not_train_on_them():
+def _study_row(season: int, week: int, i: int, rng: np.random.Generator, kickoff: str | None) -> dict:
+    return {
+        "season": season,
+        "week": week,
+        "game_type": "REG",
+        "kickoff": kickoff,
+        "epa_d": float(rng.normal()),
+        "pts_d": float(rng.normal()),
+        "st_d": float(rng.normal()),
+        "qb_d": float(rng.normal()),
+        "hfa": float(i),
+        "pts_s": float(rng.normal()),
+        "epa_s": float(rng.normal()),
+        "env2": float(rng.normal()),
+        "plays_s": float(rng.normal()),
+        "qb_s": float(rng.normal()),
+        "pressure_x": float(rng.normal()),
+        "ol_d": float(rng.normal()),
+        "neutral_pace_sum": float(rng.normal() + 50),
+        "margin": float(rng.normal()),
+        "total": float(rng.normal() + 44),
+    }
+
+
+def test_confirmatory_look_is_january_2027_kickoffs_and_does_not_train_on_them():
     games = _confirmatory_frame()
     result = confirmatory_look(games)
     assert result["role"] == "confirmatory"
     assert result["confirmatory"] is True
-    assert result["weeks"] == (1, 2, 3, 4)
+    assert result["kickoff_window"] == "2027-01 America/New_York"
+    assert result["schedule_n"] == 31
+    assert result["schedule_clusters"] == 2
+    assert result["schedule_mde_multiple"] == pytest.approx(
+        minimum_detectable_effect(1.0, 31),
+    )
     assert {row["feature"] for row in result["decisions"]} == set(FEATURES)
-    assert set(result["ship_mde"]) == set(FEATURES)
     leaked = games.copy()
-    leaked.loc[leaked["season"] == 2027, "margin"] = 400.0
-    leaked.loc[leaked["season"] == 2027, "total"] = -400.0
-    base = base_replay_origin(games, "pressure_x", 2027, weeks=(1, 2))
-    base_leaked = base_replay_origin(leaked, "pressure_x", 2027, weeks=(1, 2))
+    leaked.loc[leaked["season"] == 2026, "margin"] = 400.0
+    leaked.loc[leaked["season"] == 2026, "total"] = -400.0
+    base = base_replay_origin(games, "pressure_x", 2026, january_2027=True)
+    base_leaked = base_replay_origin(leaked, "pressure_x", 2026, january_2027=True)
     assert base is not None and base_leaked is not None
-    assert base_leaked["graded"]["pred_base"].to_numpy() == pytest.approx(base["graded"]["pred_base"].to_numpy())
+    assert set(base["graded"]["week"]) == {17, 18}
+    assert base_leaked["graded"]["pred_base"].to_numpy() == pytest.approx(
+        base["graded"]["pred_base"].to_numpy(),
+    )
+    december = games.copy()
+    december.loc[december["week"] == 17, "kickoff"] = "2026-12-31 20:20"
     with pytest.raises(DesignError):
-        confirmatory_look(pd.concat([games, games.assign(season=2027, week=5)], ignore_index=True))
+        confirmatory_look(december)
+    next_season = games.copy()
+    next_season.loc[next_season["week"] == 18, "season"] = 2027
+    next_season.loc[next_season["week"] == 18, "kickoff"] = "2027-09-12 13:00"
+    with pytest.raises(DesignError):
+        confirmatory_look(next_season)
     with pytest.raises(DesignError):
         exploratory_screen(games, "pressure_x")

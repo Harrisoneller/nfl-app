@@ -15,15 +15,24 @@ from __future__ import annotations
 MARGIN_SIGMA = 13.5
 TOTAL_SIGMA = 10.0
 
-# Season rule from QA. Nothing in 2013–2026 is a confirmatory sample.
+# Season rule from QA. No 2013–2026 season is an untouched confirmatory season.
 # 2012 and earlier are a different regime and do not enter this study.
+# The owner then named one confirmatory window inside the 2026 season:
+# kickoffs in January 2027, America/New_York. Not the 2027 regular season.
 REGIME_LAST = 2012
 FEATURE_HISTORY_FIRST = 2013
 TRAIN_FIRST = 2015
 EXPLORATORY_TEST_FIRST = 2016
 EXPLORATORY_TEST_LAST = 2026
-CONFIRMATORY_SEASON = 2027
-CONFIRMATORY_WEEKS = (1, 2, 3, 4)
+CONFIRMATORY_SEASON = 2026
+CONFIRMATORY_KICKOFF_YEAR = 2027
+CONFIRMATORY_KICKOFF_MONTH = 1
+CONFIRMATORY_TZ = "America/New_York"
+# Lock-time census, 2026-11-15, nflverse schedules/games.csv.
+# Columns read: game_id, season, game_type, week, gameday, gametime.
+# No score, line, or result column. 15 week-17 games plus 16 week-18 games.
+CONFIRMATORY_SCHEDULE_N = 31
+CONFIRMATORY_SCHEDULE_CLUSTERS = 2
 
 # Holm, one-sided, family of the three preregistered features.
 HOLM_FAMILY = 3
