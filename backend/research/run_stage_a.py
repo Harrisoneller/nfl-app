@@ -79,6 +79,14 @@ def canon(value: object) -> object:
     return ALIASES.get(text, text)
 
 
+def finite_int(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Drop rows whose season or week is missing. Do not fill them."""
+    out = frame.copy()
+    for column in columns:
+        out[column] = pd.to_numeric(out[column], errors="coerce")
+    return out.dropna(subset=columns).astype({column: int for column in columns})
+
+
 def log(message: str) -> None:
     print(message, flush=True)
 
@@ -322,9 +330,7 @@ def quarterback_lookup(games: pd.DataFrame) -> dict[tuple[int, int, str, str], s
     if not frames:
         NOTES.append("No depth charts loaded. Quarterback ids are missing and OL change detection has no starter id.")
         return {}
-    chart = pd.concat(frames, ignore_index=True)
-    chart["season"] = chart["season"].astype(int)
-    chart["week"] = chart["week"].astype(int)
+    chart = finite_int(pd.concat(frames, ignore_index=True), ["season", "week"])
     chart["team"] = chart["club_code"].map(canon)
     chart["game_type"] = chart["game_type"].astype(str).str.upper()
     chart = chart[chart["game_type"].isin(ALLOWED_TYPES)]
@@ -398,10 +404,8 @@ def load_snaps_summed(game_ids: set[str], players: pd.DataFrame) -> pd.DataFrame
         log(f"snaps {year} eligible rows {len(snaps)}")
     if not frames:
         raise SystemExit("no snap counts loaded")
-    snaps = pd.concat(frames, ignore_index=True)
+    snaps = finite_int(pd.concat(frames, ignore_index=True), ["season", "week"])
     snaps["team"] = snaps["team"].map(canon)
-    snaps["season"] = snaps["season"].astype(int)
-    snaps["week"] = snaps["week"].astype(int)
     id_map = dict(zip(players["pfr_id"].astype(str), players["gsis_id"].astype(str)))
     snaps["player_id"] = snaps["pfr_player_id"].astype(str).map(id_map)
     unmatched = int(snaps["player_id"].isna().sum())
@@ -448,9 +452,7 @@ def load_injuries(games: pd.DataFrame) -> pd.DataFrame:
     if not frames:
         NOTES.append("No injury files loaded. OL availability cannot be verified.")
         return pd.DataFrame(columns=["season", "week", "team", "player_id", "report_status", "report_time"])
-    injuries = pd.concat(frames, ignore_index=True)
-    injuries["season"] = injuries["season"].astype(int)
-    injuries["week"] = injuries["week"].astype(int)
+    injuries = finite_int(pd.concat(frames, ignore_index=True), ["season", "week"])
     injuries["team"] = injuries["team"].map(canon)
     keep = [
         (int(season), int(week), team) in eligible_weeks
@@ -488,8 +490,7 @@ def prior_time_to_throw(plays: pd.DataFrame, games: pd.DataFrame) -> pd.DataFram
     if not frames:
         NOTES.append("No NGS passing files. Time to throw is missing. Sacks were not used as a substitute.")
         return pd.DataFrame(columns=["game_id", "team", "qb_att", "qb_att_time"])
-    ngs = pd.concat(frames, ignore_index=True)
-    ngs["season"] = ngs["season"].astype(int)
+    ngs = finite_int(pd.concat(frames, ignore_index=True), ["season"])
     ngs["week"] = pd.to_numeric(ngs["week"], errors="coerce")
     dropped_weeks = int((ngs["week"].isna() | (ngs["week"] <= 0)).sum())
     NOTES.append(
@@ -590,10 +591,8 @@ def load_pressure(plays: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
         log(f"pfr {year} eligible player-games {len(pfr)}")
     if weekly_rows == 0 or not frames:
         raise DesignError("PFR pressure is season-grain; halting")
-    pfr = pd.concat(frames, ignore_index=True)
+    pfr = finite_int(pd.concat(frames, ignore_index=True), ["season", "week"])
     pfr["team"] = pfr["team"].map(canon)
-    pfr["season"] = pfr["season"].astype(int)
-    pfr["week"] = pfr["week"].astype(int)
     pfr["times_pressured"] = pd.to_numeric(pfr["times_pressured"], errors="coerce")
     grouped = pfr.groupby(["season", "week", "game_id", "team"], as_index=False).agg(
         off_pressures=("times_pressured", "sum"),
