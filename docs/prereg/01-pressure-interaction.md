@@ -58,4 +58,4 @@ A season-total PFR row must not be copied onto every week of that season. The bu
 
 ## Screen and confirmatory role
 
-This feature is one of the three in the Holm family. Its exploratory screen, if run, uses the margin sigma 13.5 and the protocol MDE. A screen result does not remove it from the January 2027 kickoff look. That look is the 2026-season games whose Eastern kickoff is in January 2027, not the 2027 regular season.
+Continuation is the three-stage rule in `PROTOCOL.md`. The exploratory screen can drop this feature. January 2027 is a harm check, not a benefit claim. The confirmatory look, if this feature reaches it, is the full 2027 regular season. A season-grain PFR table raises and halts. `qb_att` has to be timestamped before kickoff.

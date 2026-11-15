@@ -51,4 +51,4 @@ Free sources only, when a later commit is allowed to read them: nflverse/nflread
 
 ## Screen and confirmatory role
 
-This feature is one of the three in the Holm family. Its exploratory screen, if run, uses the total sigma 10 and the protocol MDE. A screen result does not remove it from the January 2027 kickoff look. That look is the 2026-season games whose Eastern kickoff is in January 2027, not the 2027 regular season.
+Continuation is the three-stage rule in `PROTOCOL.md`. The clock cap stays `(0, 40]` seconds. Weather stays out. The confirmatory look, if this feature reaches it, is the full 2027 regular season, and its closing-line grade uses `total_line` only after the prediction exists.

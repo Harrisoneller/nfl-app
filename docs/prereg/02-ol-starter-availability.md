@@ -59,4 +59,4 @@ Free sources only, when a later commit is allowed to read them: nflverse snap co
 
 ## Screen and confirmatory role
 
-This feature is one of the three in the Holm family. Its exploratory screen, if run, uses the margin sigma 13.5 and the protocol MDE. QB-change games and unverified reports are already missing before that screen. A screen result does not remove this feature from the January 2027 kickoff look. That look is the 2026-season games whose Eastern kickoff is in January 2027, not the 2027 regular season. Week 18 rest and tanking, flagged in the protocol, lands directly on this feature.
+Continuation is the three-stage rule in `PROTOCOL.md`. The center flag stays inside `ol_d` at weight 1.0. IR and PUP stay missing. Questionable stays available. A QB-change check uses only a quarterback id timestamped before kickoff. Week 18 rest and tanking, inside the January harm window, still bias this feature. The confirmatory look, if this feature reaches it, is the full 2027 regular season.

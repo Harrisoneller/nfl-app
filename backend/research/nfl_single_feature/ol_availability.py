@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .calendar import assert_pregame
 from .design import DesignError
 from .specs import (
     OL_CENTER_POSITIONS,
@@ -187,7 +188,10 @@ def ol_matchup_feature(
     """
     snap_need = {"season", "week", "game_id", "team", "player_id", "position", "offense_snaps", "team_offense_snaps"}
     inj_need = {"season", "week", "team", "player_id", "report_status", "report_time"}
-    game_need = {"game_id", "season", "week", "kickoff", "home", "away", "home_qb", "away_qb"}
+    game_need = {
+        "game_id", "season", "week", "kickoff", "home", "away",
+        "home_qb", "away_qb", "home_qb_asof", "away_qb_asof",
+    }
     for label, frame, need in (
         ("snaps", snaps, snap_need),
         ("injuries", injuries, inj_need),
@@ -198,6 +202,9 @@ def ol_matchup_feature(
             raise DesignError(f"{label} missing columns: {sorted(missing)}")
     snaps = snaps[snaps["season"].astype(int) > REGIME_LAST].copy()
     injuries = injuries[injuries["season"].astype(int) > REGIME_LAST].copy()
+    for game in games.itertuples(index=False):
+        assert_pregame(game.home_qb_asof, game.kickoff, "home_qb")
+        assert_pregame(game.away_qb_asof, game.kickoff, "away_qb")
     qb_change = _qb_changes(games)
     rows: list[dict[str, object]] = []
     for game in games.itertuples(index=False):

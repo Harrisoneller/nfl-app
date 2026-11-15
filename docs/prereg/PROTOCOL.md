@@ -58,54 +58,60 @@ No season from 2013 through 2026 is a clean confirmatory sample. QA ruled this. 
 
 `backtest_v5.py` prints margin and total RMSE, correlation with the close, slope, ATS, and a realization beta. It does not compute CRPS or MAE. Closed-form normal CRPS lives in `prediction_dist.crps_normal`. The board backtest (`backtest_service._distribution_eval`) scores the shipped margin, market prior included when the week model built one, with the registry sigma. That is not this protocol.
 
-## Samples
+## Time zone
 
-The old windows are dropped: history 2018–20, selection 2021–22, final 2023–25, and the 2026-forward fallback.
+Every cutoff is `America/New_York`. A naive timestamp is an Eastern wall clock, the same reading as `scores_service._parse_kickoff`. An aware timestamp is converted to Eastern before the date is read. A UTC instant that is still December 31 in New York is before the cutoff. `game_type` is required on every row. Allowed values are `REG`, `WC`, `DIV`, `CON`, and `SB`.
 
-Exploratory screen: regular-season games in 2016 through 2026, except the confirmatory kickoffs below. When `game_type` is present, only `REG` rows are graded. Training rows are every complete game the caller supplies with `2015 <= season < S`, playoffs included when the caller included them, which is how `backtest_v5.py` builds the stage-2 sample. A grade on 2015–2026 outside the January 2027 kickoffs is this screen and nothing else. 2015 is the first training season for the 2016 fold. It is not graded, because a 2015 test has no prior season inside the training floor. 2013–2014 may be feature history. They are not stage-2 rows. Seasons through 2012 raise if they appear on a stage-2 frame, and the feature builders drop them. The 2027 regular season is not a sample in this study.
+`sd(d)` is descriptive. Before any candidate is fit, add one preregistered structured shift of +1 point to the base prediction and take the sample standard deviation of `CRPS(base + 1) - CRPS(base)`. It is not a pure-noise placebo and it is not estimated from a candidate. Reported power is 80 percent. An earlier draft used `beta = 0.5`, which zeros the power quantile. That footnote is not the reported MDE.
 
-Confirmatory sample, the only one: 2026-season NFL games whose kickoff falls in January 2027 in `America/New_York`. This is the owner's definition of early 2027: "2026-season bowls and playoff games played in January 2027." It is not the 2027 regular season, and it is not weeks 1–4 of that season. One look, the whole window together. Games inside the window do not train each other. The confirmatory fit uses seasons `2015 <= season < 2026` only.
+Inference is a wild cluster bootstrap. Clusters are `(season, week)`. Weights are Webb's six-point distribution, each with probability 1/6: `-sqrt(1.5), -1, -sqrt(0.5), sqrt(0.5), 1, sqrt(1.5)`. Draws: 10,000. Seed: `20261115`. The documented alternative, not the gate, is a cluster-robust t with `df = C - 1`.
 
-Kickoff rule, same as `scores_service._parse_kickoff`: nflverse `gameday` plus `gametime` is an Eastern wall clock. A missing `gametime` would be 1:00 PM Eastern. An aware timestamp is converted to Eastern before the month is read. A UTC instant that is still December 31 in New York is outside the window. The 2027 regular season is outside it even if someone labels the kickoff January.
+## Stage A — exploratory screen
 
-## Lock-time schedule census
+Runs first, only after this file is the QA lock. Label: exploratory. The seasons were touched.
 
-Counted on 2026-11-15 from nflverse `schedules/games.csv` (`nflverse_stats.SCHEDULES_URL`). Columns read: `game_id`, `season`, `game_type`, `week`, `gameday`, `gametime`. No score, spread, total, or result column was opened.
+Eligible kickoffs are those strictly before `2027-01-01` America/New_York, from the 2015 season through December 2026. January 2027 games are excluded. For test season `S`, stage-2 is refit for the base and for the candidate on seasons `2015 <= season < S`. The market column stays out. The 2015 fold has no earlier season inside that floor, so 2015 is training history for 2016 and is graded only when earlier rows exist.
 
-The 2026 file has 272 rows, all `game_type == REG`. It has no wild-card, divisional, conference, or Super Bowl rows. Those matchups are not on the schedule yet, so they are not in this count. "Bowls" are not a row type in the file. The January games that exist are regular-season weeks 17 and 18.
+Paired difference: `d = CRPS(candidate) - CRPS(base)` on the feature's endpoint.
 
-| Week | Eastern kickoff | Games | Cluster |
-| --- | --- | --- | --- |
-| 17 | 2027-01-03 (14 games) and 2027-01-04 (1 game) | 15 | `(2026, 17)` |
-| 18 | 2027-01-10 | 16 | `(2026, 18)` |
+A feature continues only when both of the following hold. There is no retune after a miss.
 
-One other week-17 game kicks off 2026-12-31 and is outside the window. Expected `n = 31`. Season-week clusters `C = 2`. Monday's game is in the week-17 cluster, not a third cluster.
+1. `mean(d) < 0`, and every walk-forward coefficient on the new column matches the preregistered sign.
+2. The one-sided wild-cluster 90% upper bound of `mean(d)` is `< 0`. That bound is the 90th percentile of the unrestricted wild-cluster replicates.
 
-That `n` is the scheduled count at lock time. It is the largest n this window can have until a new preregistration adds rows. A missing feature can only make the graded n smaller.
+Anything else is dropped. A dropped feature does not enter stage B or stage C.
 
-## Power at that n
+On the same pre-candidate base replay, report `sd(d)` from the +1 point shift and the descriptive 80% MDE ` (z_{0.025/3} + z_{0.80}) * sd(d) / sqrt(n) `. It does not decide retention.
 
-`sd(d)` is still measured on the base replay before any candidate is fit. It is not known in this commit, and it is not filled in from outcomes.
+## Stage B — January 2027 harm check
 
-With `z_(1-beta) = 0`:
+Games whose NFL season is 2026 and whose Eastern kickoff falls in January 2027. Membership is that rule, not a frozen list of game ids. The expectation, counting a full week-17/18 January slate plus the wild-card, divisional, and conference rounds, is about 43 games in 5 season-week clusters. The Super Bowl is in February and is not in this check. Week 18 rest and tanking remain a known bias inside the window: teams sit starters and teams out of the seeding race tank, which moves pressure, pace, and who is listed at quarterback and on the line.
 
-`MDE = z_alpha* * sd(d) / sqrt(31)`
+Each survivor is frozen on kickoffs before `2027-01-01`. January outcomes are not in that fit.
 
-`z_alpha* / sqrt(31) = 2.3939798012415405 / sqrt(31) = 0.42997146524798546`
+Harm passes when the wild-cluster 90% upper bound of `mean(d)` is `<= +0.25` CRPS points. A pass means no detectable harm. It is not a benefit claim. A miss stops the feature. The feature does not continue, and it is not retuned.
 
-So `MDE = 0.42997146524798546 * sd(d)`.
+## Stage C — 2027 regular season
 
-The formula is the iid one above. It is not a cluster-robust standard error. The confirmatory gate still uses the season-week cluster bootstrap. With two clusters, a resample is a draw of those two weeks with replacement. The bootstrap distribution of the mean has a handful of shapes, and the 97.5th percentile is a coarse function of two week means. Holm's tightest threshold is `0.025 / 3`. A feature has to clear that multiplicity bar, a strict upper bound below 0, and the sign check, on 31 games that are really two weeks.
+`game_type == REG`, weeks 1 through 18. Expect about 272 games and 18 week clusters. One look, at the end of the season, and only for features that passed A and B.
 
-This window is very likely too small to pass any feature under Holm at `0.025 / 3` with cluster-bootstrap percentiles. The published multiple is already 0.43 of the per-game CRPS standard deviation at the most favorable n. Clustering makes the effective sample the two weeks, not the 31 games. That statement is about the design. It is not a grade, and no feature has been fit.
+The base and the candidate are refit on every kickoff strictly before the first 2027 regular-season kickoff. That fit may include the January 2027 games and Super Bowl LXI. It may not include a 2027 regular-season game. Hyperparameters and the three feature definitions stay the ones in this lock.
 
-## Week 18
+Holm is one-sided across the `k` features that reached this stage. Familywise alpha is 0.025. The tightest threshold is `0.025 / k`. The p-value is the wild-cluster bootstrap under the null that `mean(d) = 0`.
 
-Sixteen of the 31 games are week 18. Week 18 is the last regular-season week. Teams rest starters and teams out of the seeding race tank. That shifts who plays, how fast the game is, and how often the quarterback is pressured. The OL feature is directly exposed, because the point-in-time starter can be a backup by design. The pressure interaction and the neutral-pace sum move with a non-competitive script. This is a known bias. The window is not trimmed to drop week 18. A pass, if one ever occurred, would still carry that contamination.
+The closing line is a grading column only. For a margin feature it is `spread_line` (positive means the home team is favored). The candidate bets the side of its margin relative to that line. For the total feature it is `total_line`, with the same cover rule. Pushes are out. The contrast is cover rate minus 0.5. Its 90% lower bound is the 5th percentile of the unrestricted wild-cluster replicates. The guard requires that lower bound `>= -0.02` (minus 2.0 percentage points).
+
+A feature ships only when Holm rejects it and the ATS guard holds and the coefficient sign still matches. A miss is `INCONCLUSIVE`. It does not ship.
+
+Honest 80% MDE, at the expected 272 games and at the pre-result family `k = 3`:
+
+`MDE = (Φ^{-1}(1 - 0.025/3) + Φ^{-1}(0.80)) * sd(d) / sqrt(272)`
+
+`Φ^{-1}(1 - 0.025/3) = 2.3939798012415405`. `Φ^{-1}(0.80) = 0.8416212335729143`. At `k = 3` and `n = 272` the multiple is `0.19618712978541816`, so `MDE = 0.19618712978541816 * sd(d)`. If fewer than three features reach this stage, recompute with `0.025/k`. The iid multiple is descriptive. The gate is the wild cluster bootstrap, and 18 week clusters are the dependence unit.
 
 ## Walk-forward stage-2
 
-For each exploratory test season, and once for the January 2027 block:
+For each exploratory test season, and once for each later frozen origin:
 
 1. Fit the base by ordinary least squares on the training rows. Margin has no intercept. Total has an intercept.
 2. Store the base per-game CRPS. This is the replay.
@@ -135,42 +141,6 @@ Negative means the candidate is better.
 
 MAE is the mean absolute error of each prediction. It is reported. It is not a gate.
 
-## Exploratory MDE
-
-Before any candidate coefficient is fit, measure `sd(d)` on the frozen market-blind walk-forward replay.
-
-`d_g` is that replay's per-game base CRPS on the games that will be graded for the feature (finite feature, finite base, finite endpoint). `sd(d)` is the sample standard deviation with divisor `n - 1`. It is not re-estimated from the candidate's paired differences. Those differences do not exist until the candidate is fit.
-
-`n` is the number of those games.
-
-Holm's tightest one-sided alpha is `alpha* = 0.025 / 3`.
-
-`beta = 0.5`, so `z_(1-beta) = Φ^{-1}(0.5) = 0`.
-
-`z_alpha* = Φ^{-1}(1 - 0.025/3) = 2.3939798012415405`, from `prediction_dist.norm_ppf`.
-
-`MDE = (z_alpha* + z_(1-beta)) * sd(d) / sqrt(n)`.
-
-The screen bar is `mean(delta) <= -MDE`. Clearing it is an exploratory label. It does not add, drop, or redefine a feature. All three features stay in the January 2027 Holm family either way. The screen is not a ship gate. The January kickoffs are not part of the screen.
-
-`beta = 0.5` is locked here so the formula has a number. It is the power floor from the prior selection bar. `z_(1-beta)` was not given a different power in the QA ruling. A different beta before the first real replay is a correction of this lock. A different beta after a fit is a new preregistration.
-
-## Confirmatory gate
-
-One call scores all three features on the January 2027 kickoffs. The base replays for all three are fit, and each feature's ship MDE is stored, before any candidate coefficient is fit.
-
-Ship MDE for a feature uses the same formula, with `sd(d)` and `n` from the base replay on that feature's January rows. It is reported. It is not the pass rule. The lock-time multiple above uses `n = 31` and does not depend on that replay.
-
-The pass rule, for each feature, is all three of:
-
-1. Holm step-down across the three one-sided p-values, familywise alpha 0.025. Sorted ascending, ties broken by feature name. Rank `i` of `m = 3` uses threshold `0.025 / (m - i + 1)`. The first miss stops the rest.
-2. The 97.5th percentile of the season-week cluster bootstrap mean of `delta` is strictly `< 0`. `numpy.quantile(..., 0.975, method="linear")`. 10,000 draws. Seed `20261115`. Clusters are `(season, week)`. A drawn cluster contributes every game in it, and a cluster drawn twice contributes them twice. At least two distinct season-weeks are required.
-3. The candidate coefficient on the new column is strictly on the preregistered side. Zero fails.
-
-The one-sided bootstrap p for `mean(delta) < 0` is `(1 + #{bootstrap means >= 0}) / (10000 + 1)`.
-
-A negative upper bound with a failed Holm step is not a pass. MAE is not a pass. The exploratory screen is not a pass.
-
 ## What this commit does not do
 
-It does not fit stage-2 on real games. It does not measure `sd(d)` on a real replay. The schedule census did not open a score, a line, or a result. It does not write a results file. Tests use synthetic frames only.
+It does not fit stage-2 on real games. It does not measure `sd(d)` on a real replay. It does not open scores. It does not write a results file. Tests use synthetic frames only. PFR pressure that arrives as a season table, with no game id or no positive week, raises and stops. Average time to throw and the quarterback ids used for a QB-change check have to be timestamped strictly before kickoff.

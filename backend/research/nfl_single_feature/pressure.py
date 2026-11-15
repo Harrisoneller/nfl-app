@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .calendar import assert_pregame
 from .design import DesignError
 from .specs import (
     PRESSURE_FIRST_SEASON,
@@ -209,6 +210,30 @@ def centered_interaction(off_a: float, def_b: float, off_b: float, def_a: float)
     return float(off_a * def_b - off_b * def_a)
 
 
+def assert_pressure_not_season_grain(team_games: pd.DataFrame) -> None:
+    """Halt when the PFR table is a season aggregate rather than team-games.
+
+    A weekly table has a positive week and a game id. A season table does not.
+    """
+    if "week" not in team_games.columns or team_games["week"].isna().any():
+        raise DesignError("PFR pressure is season-grain; halting")
+    if (team_games["week"].astype(float) <= 0).any():
+        raise DesignError("PFR pressure is season-grain; halting")
+    if "game_id" not in team_games.columns or team_games["game_id"].isna().any():
+        raise DesignError("PFR pressure is season-grain; halting")
+    if "grain" in team_games.columns and team_games["grain"].astype(str).str.lower().eq("season").any():
+        raise DesignError("PFR pressure is season-grain; halting")
+
+
+def _assert_pregame_att(team_games: pd.DataFrame) -> None:
+    """Average time to throw has to be timestamped before that team-game's kickoff."""
+    for column in ("qb_att_time", "kickoff"):
+        if column not in team_games.columns:
+            raise DesignError("qb_att needs qb_att_time and kickoff, both pre-game")
+    for row in team_games.itertuples(index=False):
+        assert_pregame(row.qb_att_time, row.kickoff, "qb_att")
+
+
 def pressure_matchup_feature(team_games: pd.DataFrame, games: pd.DataFrame) -> pd.DataFrame:
     """One ``pressure_x`` per game. History is prior weeks only. ``k`` is the locked 8.
 
@@ -219,6 +244,8 @@ def pressure_matchup_feature(team_games: pd.DataFrame, games: pd.DataFrame) -> p
     missing = required - set(games.columns)
     if missing:
         raise DesignError(f"matchup frame missing columns: {sorted(missing)}")
+    assert_pressure_not_season_grain(team_games)
+    _assert_pregame_att(team_games)
     centered = season_centers(team_games)
     out_rows: list[dict[str, object]] = []
     cache: dict[tuple[int, int], tuple[dict[str, float], dict[str, float]] | None] = {}

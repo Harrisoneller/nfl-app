@@ -22,25 +22,35 @@ TOTAL_SIGMA = 10.0
 REGIME_LAST = 2012
 FEATURE_HISTORY_FIRST = 2013
 TRAIN_FIRST = 2015
-EXPLORATORY_TEST_FIRST = 2016
+EXPLORATORY_TEST_FIRST = 2015
 EXPLORATORY_TEST_LAST = 2026
-CONFIRMATORY_SEASON = 2026
-CONFIRMATORY_KICKOFF_YEAR = 2027
-CONFIRMATORY_KICKOFF_MONTH = 1
-CONFIRMATORY_TZ = "America/New_York"
-# Lock-time census, 2026-11-15, nflverse schedules/games.csv.
-# Columns read: game_id, season, game_type, week, gameday, gametime.
-# No score, line, or result column. 15 week-17 games plus 16 week-18 games.
-CONFIRMATORY_SCHEDULE_N = 31
-CONFIRMATORY_SCHEDULE_CLUSTERS = 2
+HARM_SEASON = 2026
+CONFIRM_SEASON = 2027
+CONFIRM_WEEK_FIRST = 1
+CONFIRM_WEEK_LAST = 18
+# Expectations, not a frozen game list. Harm is every 2026-season January
+# kickoff, about a week-17/18 slate plus the January playoff rounds.
+HARM_N_EXPECTED = 43
+HARM_CLUSTERS_EXPECTED = 5
+CONFIRM_N_EXPECTED = 272
+CONFIRM_CLUSTERS_EXPECTED = 18
+# One-sided 90% upper bound for the screen. Harm passes at or below this.
+SCREEN_UB_QUANTILE = 0.90
+HARM_UB_LIMIT = 0.25
+# Two-sided 90% lower bound on ATS edge versus a fair close.
+ATS_LB_QUANTILE = 0.05
+ATS_LB_LIMIT = -0.02
+# Reported power. beta = 0.5 is a footnote and is not this value.
+POWER = 0.80
+STRUCTURED_SHIFT_POINTS = 1.0
 
 # Holm, one-sided, family of the three preregistered features.
 HOLM_FAMILY = 3
 HOLM_ALPHA = 0.025
 HOLM_ALPHA_STAR = HOLM_ALPHA / HOLM_FAMILY
 
-# Power in the MDE formula. z_(1-beta) is 0 at this beta.
-POWER_BETA = 0.5
+# Footnote only. The reported MDE uses POWER = 0.80, so beta = 0.20.
+BETA_FOOTNOTE = 0.5
 
 BOOTSTRAP_DRAWS = 10_000
 BOOTSTRAP_SEED = 20261115
