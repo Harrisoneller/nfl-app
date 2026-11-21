@@ -3,10 +3,13 @@
 2018 overtime. Each period is 10 minutes. A touchdown on the first
 possession wins immediately, and so does a safety or a defensive score.
 A field goal on that first possession does not end the game. Once both
-teams have possessed, the next score wins. If the clock expires with the
-score tied, a regular-season game stays tied. A playoff starts another
-period and keeps going. Possessions are an output of the clock, not an
-input, unless an oracle pace is supplied.
+teams have possessed, the next score that breaks the tie wins. A field
+goal that only ties the game does not end it. If the clock expires with
+the score tied, a regular-season game stays tied. A playoff starts
+another period and keeps going. An end-of-half outcome expires the rest
+of the half, or the game when it is the fourth quarter or overtime.
+Possessions are an output of the clock, not an input, unless an oracle
+pace is supplied.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ FG = cfg.DRIVE_OUTCOMES.index("FG_MADE")
 PUNT = cfg.DRIVE_OUTCOMES.index("PUNT")
 TURNOVER = cfg.DRIVE_OUTCOMES.index("TURNOVER")
 SAFETY = cfg.DRIVE_OUTCOMES.index("SAFETY")
+EOH = cfg.DRIVE_OUTCOMES.index("END_OF_HALF")
 
 
 def situation_array(score_diff: np.ndarray, half_seconds: np.ndarray) -> np.ndarray:
@@ -428,6 +432,9 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         home_drives = home_drives + np.where(offense_home & active, 1.0, 0.0)
         away_drives = away_drives + np.where(~offense_home & active, 1.0, 0.0)
         half_left = np.maximum(0.0, half_left - sec)
+        # Kneeling or spiking the half out expires whatever clock is left.
+        # The next step starts the second half, or ends the game in Q4 or OT.
+        half_left = np.where(active & (outcome == EOH), 0.0, half_left)
         _tally(
             card, active, state, outcome, plays, sec, off_pts + def_pts, yard, half_id, scrimmage_sec,
         )
@@ -435,7 +442,10 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         first_poss = in_ot & (ot_poss == 0)
         later_poss = in_ot & (ot_poss >= 1)
         first_ends = first_poss & ((outcome == TD) | (outcome == SAFETY) | (def_pts >= 6))
-        later_ends = later_poss & ((off_pts + def_pts) > 0)
+        # A score after both teams have possessed ends the game only when it
+        # breaks the tie. An answering field goal that makes it 3-3 does not.
+        broke_tie = ~np.isclose(home_pts, away_pts)
+        later_ends = later_poss & ((off_pts + def_pts) > 0) & broke_tie
         alive = alive & ~first_ends & ~later_ends
         ot_poss = ot_poss + np.where(in_ot, 1, 0)
         yard = _next_yard(card, outcome, n, rng)

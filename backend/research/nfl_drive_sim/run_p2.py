@@ -457,7 +457,8 @@ def _report_md(report: dict) -> str:
         *_before_after_lines(report),
         "Deviations:",
         "- Coefficients are fit once per week on kickoffs before that week's first game.",
-        "- 2018 overtime is 10 minutes. A first-possession touchdown or safety ends it. After both teams have possessed, the next score wins. A regular-season tie stands. A tied playoff starts another period.",
+        "- 2018 overtime is 10 minutes. A first-possession touchdown or safety ends it. After both teams have possessed, the next score that breaks the tie wins. A field goal that only ties the game does not. A regular-season tie stands. A tied playoff starts another period.",
+        "- An end-of-half outcome expires the rest of that half. The second half then starts with a kickoff. In the fourth quarter or overtime it ends the game, or overtime if the score is tied.",
         "- Two-minute endings come from a training table of score, yardline, time left, and timeouts, shrunk toward coarser cells.",
         "- Timeouts are a drive-model feature. The sim does not spend them.",
         "- Pressure is qb_hit from play-by-play. Next Gen Stats are not used.",
@@ -517,7 +518,29 @@ def _before_after_lines(report: dict) -> list[str]:
     ]
     for name, old in previous.items():
         lines.append(f"| {name} | {old:.3f} | {current[name]:.3f} |")
-    lines.append("")
+    lines.extend([
+        "",
+        (
+            f"From yards-on 8ac7801 to this file: drives per game {current['drives per game']:.3f} "
+            f"(was 23.328), overtime rate {current['overtime rate']:.3f} (was 0.040)."
+        ),
+        "",
+        "## Disclosures",
+        "",
+        "- 2018 is dev-touched.",
+        "- Margin-3 and margin-7 key-number mass is low. There is no fourth-quarter endgame model yet. Later work covers clock-killing on one-score leads, playing for a field goal before the two-minute mark, score-dependent late outcomes, and spending timeouts. That work is accepted on a later season against pre-registered checks.",
+        "- Safeties are about 0.87% of drives against 0.17% actual.",
+        "- Two-minute drives are short. The causes are truncation, a slow runoff, and timeouts that are never spent.",
+        "- Seconds per play bias is about +1.07.",
+        "- The overtime gap comes from how often regulation ends tied.",
+        "- Predicted pace versus the game-average oracle is not significant. The oracle is a handicapped benchmark.",
+        "- P3 must not be used as a fair ATS or key-number comparison against v5 until an endgame model is accepted.",
+        "",
+        "## Note for P3",
+        "",
+        "P3 is not started. When it is, pre-register margin-3 share, margin-7 share, the regulation-tie rate, the overtime-entry rate, and seconds-per-play bias as tracked metrics, and commit a margin-at-5:00-left series in the P3 outputs.",
+        "",
+    ])
     return lines
 
 

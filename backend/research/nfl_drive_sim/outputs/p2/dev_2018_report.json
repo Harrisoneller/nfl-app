@@ -6,11 +6,11 @@
   "n_playoff": 11,
   "n_sims": 10000,
   "ypp_layer": true,
-  "runtime_sec_per_game": 0.6004074193670532,
+  "runtime_sec_per_game": 0.6874004381497866,
   "pace": {
     "plays_per_team_model": {
-      "mae": 6.849805244796142,
-      "bias": 0.2538260670745986,
+      "mae": 7.421240435165963,
+      "bias": -3.3522489859851734,
       "n": 534
     },
     "plays_per_team_baseline": {
@@ -19,8 +19,8 @@
       "n": 534
     },
     "plays_per_game_model": {
-      "mae": 6.802148782185618,
-      "bias": 0.5076521341491972,
+      "mae": 8.392015941406628,
+      "bias": -6.704497971970348,
       "n": 267
     },
     "plays_per_game_baseline": {
@@ -29,8 +29,8 @@
       "n": 267
     },
     "drives_per_team_model": {
-      "mae": 1.3320282771535583,
-      "bias": 0.48072078651685396,
+      "mae": 1.2679687265917605,
+      "bias": -0.4443582397003745,
       "n": 534
     },
     "drives_per_team_baseline": {
@@ -39,8 +39,8 @@
       "n": 534
     },
     "seconds_per_play_model": {
-      "mae": 2.0891776370530954,
-      "bias": 1.0655249326775884,
+      "mae": 2.1741784271846156,
+      "bias": 1.2936174068833193,
       "n": 534
     },
     "seconds_per_play_baseline": {
@@ -49,8 +49,8 @@
       "n": 534
     },
     "plays_per_drive_model": {
-      "mae": 0.766056012246448,
-      "bias": -0.2836874899396861,
+      "mae": 0.7407949157359978,
+      "bias": -0.15228337603920186,
       "n": 534
     },
     "plays_per_drive_baseline": {
@@ -58,36 +58,36 @@
       "bias": -0.06717260997142324,
       "n": 534
     },
-    "game_plays_interval_80": 0.8539325842696629,
-    "game_plays_interval_90": 0.9176029962546817
+    "game_plays_interval_80": 0.8951310861423221,
+    "game_plays_interval_90": 0.9288389513108615
   },
   "sim": {
     "actual_total_mean": 46.550561797752806,
-    "sim_total_mean": 45.784882771535585,
+    "sim_total_mean": 43.08724831460673,
     "actual_total_sd": 14.752859722235165,
-    "sim_total_sd_mean": 13.22963751072076,
+    "sim_total_sd_mean": 14.08641182219043,
     "actual_margin_mean": 2.1385767790262173,
-    "sim_margin_mean": 2.1947816479400744,
+    "sim_margin_mean": 2.112043071161049,
     "actual_margin_sd": 14.196509242012858,
-    "sim_margin_sd_mean": 13.46536520284898,
+    "sim_margin_sd_mean": 13.116876513491674,
     "actual_home_win_rate": 0.5917602996254682,
-    "sim_home_win_rate": 0.5608265917602996,
+    "sim_home_win_rate": 0.5593426966292134,
     "actual_ot_rate": 0.06367041198501873,
-    "sim_ot_rate": 0.04058164794007491,
+    "sim_ot_rate": 0.042525093632958796,
     "actual_drives_mean": 22.367041198501873,
-    "sim_drives_mean": 23.32848277153558,
+    "sim_drives_mean": 21.478324719101124,
     "actual_drives_sd": 3.208324441801392,
-    "sim_drives_sd_mean": 3.4122131886693685,
+    "sim_drives_sd_mean": 3.926712731594619,
     "actual_share_margin_3": 0.16853932584269662,
-    "sim_share_margin_3": 0.07897191011235954,
+    "sim_share_margin_3": 0.08420187265917602,
     "actual_share_margin_7": 0.09363295880149813,
-    "sim_share_margin_7": 0.08083970037453185
+    "sim_share_margin_7": 0.08605842696629214
   },
-  "crps_margin": 7.329869760636703,
-  "crps_total": 7.9301175893258415,
-  "brier_home_win": 0.21772580101123595,
-  "crps_total_oracle_pace": 8.19187262082397,
-  "crps_total_pace_gap": -0.26175503149812746,
+  "crps_margin": 7.332900176816479,
+  "crps_total": 8.147093795917602,
+  "brier_home_win": 0.21822486535580526,
+  "crps_total_oracle_pace": 8.02111638434457,
+  "crps_total_pace_gap": 0.12597741157303372,
   "pace_coefficients_first_week": {
     "neutral_sec": [
       27.613177720561108,

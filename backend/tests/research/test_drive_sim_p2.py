@@ -367,6 +367,47 @@ def test_first_possession_touchdown_wins_overtime():
     assert result["home_drives"][0] + result["away_drives"][0] == 61
 
 
+def test_end_of_half_expires_the_remaining_clock():
+    eoh = cfg.DRIVE_OUTCOMES.index("END_OF_HALF")
+    td = cfg.DRIVE_OUTCOMES.index("TD")
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    first_half = _ot_card([eoh, td])
+    first_half["max_drives"] = 2
+    opened = simulate_game(first_half, 1, np.random.default_rng(1))
+    assert opened["half_trace"][1][0] == cfg.REGULATION_HALF_SECONDS
+    assert opened["home_drives"][0] == 1.0
+    assert opened["away_drives"][0] == 1.0
+    assert opened["away_points"][0] == 6.0
+    leading = _ot_card([td] + [punt] * 29 + [eoh])
+    leading["max_drives"] = 40
+    closed = simulate_game(leading, 1, np.random.default_rng(1))
+    assert closed["home_points"][0] == 6.0
+    assert closed["away_points"][0] == 0.0
+    assert closed["ot"][0] == 0.0
+    assert closed["home_drives"][0] + closed["away_drives"][0] == 31
+
+
+def test_a_tying_overtime_field_goal_does_not_end_the_game():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    fg = cfg.DRIVE_OUTCOMES.index("FG_MADE")
+    td = cfg.DRIVE_OUTCOMES.index("TD")
+    answered = simulate_game(
+        _ot_card([punt] * 60 + [fg, fg, td]), 1, np.random.default_rng(1),
+    )
+    assert answered["home_points"][0] == 9.0
+    assert answered["away_points"][0] == 3.0
+    assert answered["home_drives"][0] + answered["away_drives"][0] == 63
+    playoff = simulate_game(
+        _ot_card([punt] * 60 + [fg, fg] + [punt] * 40, playoff=True),
+        1,
+        np.random.default_rng(1),
+    )
+    assert playoff["home_points"][0] == 3.0
+    assert playoff["away_points"][0] == 3.0
+    assert playoff["ot"][0] == 1.0
+    assert playoff["home_drives"][0] + playoff["away_drives"][0] == 80
+
+
 def test_a_score_after_both_teams_have_possessed_ends_overtime():
     punt = cfg.DRIVE_OUTCOMES.index("PUNT")
     fg = cfg.DRIVE_OUTCOMES.index("FG_MADE")
