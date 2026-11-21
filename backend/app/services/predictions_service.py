@@ -800,13 +800,34 @@ def predict_game(
 # ---- Season-level: read schedule once, simulate ----------------------------
 
 
+def _row_has_score(row: dict) -> bool:
+    return row.get("home_score") is not None and row.get("away_score") is not None
+
+
+def _prefer_schedule_row(existing: dict, row: dict) -> dict:
+    """One real game, one row.
+
+    A final score wins over a scoreless duplicate. When both rows are scored
+    or both are still unplayed, keep the nflverse id: its NULL is a real
+    "not played", while an unscored ESPN row is not a result.
+    """
+    existing_scored = _row_has_score(existing)
+    row_scored = _row_has_score(row)
+    if row_scored != existing_scored:
+        return row if row_scored else existing
+    if row.get("_is_nflverse") and not existing.get("_is_nflverse"):
+        return row
+    return existing
+
+
 def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
     """Read the schedule from the games table (fast, no network).
 
     Deduplicates by (week, home_team, away_team) — ESPN scoreboard and nflverse
     can both create records for the same real-world game with different IDs.
-    Prefers the nflverse record (game_id like "2026_01_AWAY_HOME") because it
-    has accurate NULL scores for unplayed games (ESPN reports 0).
+    A row with a final score is kept over a scoreless copy. Otherwise the
+    nflverse id wins, because an unplayed nflverse row stores NULL rather than
+    ESPN's 0-0.
     """
     stmt = select(Game).where(Game.season == season, Game.season_type == 2)
     games = db.execute(stmt).scalars().all()
@@ -839,12 +860,8 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
         existing = seen.get(key)
         if existing is None:
             seen[key] = row
-        elif is_nflverse_id and not existing.get("_is_nflverse"):
-            seen[key] = row
-        elif not is_nflverse_id and existing.get("_is_nflverse"):
-            pass  # keep existing nflverse record
-        elif g.home_score is None and existing.get("home_score") is not None:
-            seen[key] = row
+        else:
+            seen[key] = _prefer_schedule_row(existing, row)
 
     rows = [{k: v for k, v in r.items() if k != "_is_nflverse"} for r in seen.values()]
     return pd.DataFrame(rows) if rows else None

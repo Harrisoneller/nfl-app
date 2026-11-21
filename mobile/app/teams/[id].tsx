@@ -184,7 +184,7 @@ export default function TeamDetail() {
                     <Txt style={{ flex: 1, color: colors.text }}>
                       {isHome ? "vs" : "@"} {opp ?? "TBD"}
                     </Txt>
-                    {g.status === "post" ? (
+                    {g.home_score != null && g.away_score != null ? (
                       <Txt variant="mono">
                         {g.away_score}-{g.home_score}
                       </Txt>

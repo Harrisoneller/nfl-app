@@ -274,10 +274,18 @@ async def refresh_season_schedule(db: Session, season: int) -> int:
     return n
 
 
+# ESPN's completed state is "post", not "final". A scheduled game reports 0-0.
+_SCOREBOARD_SCORE_STATUSES = frozenset(_STORED_FINAL) | frozenset({
+    "in", "live", "in progress", "in_progress", "halftime",
+    "end of period", "end", "status_in_progress",
+})
+
+
 def _scoreboard_values(ev: dict[str, Any], by_espn_id: dict[int, str]) -> dict[str, Any]:
     status = (ev.get("status") or "scheduled").lower()
-    # ESPN returns 0 for scheduled/upcoming games — treat as NULL unless live/final.
-    if status in ("final", "in", "live", "in progress"):
+    # ESPN returns 0 for scheduled/upcoming games — keep the score only once
+    # the game has started or finished. "post" is the completed state.
+    if status in _SCOREBOARD_SCORE_STATUSES:
         home_score = ev.get("home_score")
         away_score = ev.get("away_score")
     else:
@@ -498,13 +506,51 @@ def list_current_games(db: Session, limit: int = 32) -> list[Game]:
     )
 
 
+def _game_has_score(game: Game) -> bool:
+    return game.home_score is not None and game.away_score is not None
+
+
+def _prefer_schedule_game(existing: Game, incoming: Game) -> Game:
+    """One real game, one row. A final score beats a scoreless duplicate."""
+    existing_scored = _game_has_score(existing)
+    incoming_scored = _game_has_score(incoming)
+    if incoming_scored != existing_scored:
+        return incoming if incoming_scored else existing
+    if _is_nflverse_game_id(incoming.id) and not _is_nflverse_game_id(existing.id):
+        return incoming
+    return existing
+
+
+def _schedule_sort_key(game: Game) -> tuple:
+    start = game.start_time
+    if start is None:
+        return (1, datetime.min, game.week or 0, game.id)
+    if start.tzinfo is not None:
+        start = start.astimezone(UTC).replace(tzinfo=None)
+    return (0, start, game.week or 0, game.id)
+
+
+def _dedupe_team_games(rows: list[Game]) -> list[Game]:
+    chosen: dict[tuple, Game] = {}
+    order: list[tuple] = []
+    for game in rows:
+        key = (game.season, game.season_type, game.week, game.home_team_id, game.away_team_id)
+        prev = chosen.get(key)
+        if prev is None:
+            chosen[key] = game
+            order.append(key)
+        else:
+            chosen[key] = _prefer_schedule_game(prev, game)
+    return sorted((chosen[key] for key in order), key=_schedule_sort_key)
+
+
 def list_team_schedule(db: Session, team_id: str, season: int | None = None) -> list[Game]:
     q = db.query(Game).filter(
         (Game.home_team_id == team_id) | (Game.away_team_id == team_id)
     )
     if season is not None:
         q = q.filter(Game.season == season)
-    return q.order_by(Game.start_time.asc().nullslast()).all()
+    return _dedupe_team_games(q.order_by(Game.start_time.asc().nullslast()).all())
 
 
 def _resolve(by_espn_id: dict[int, str], side: dict[str, Any]) -> str | None:
