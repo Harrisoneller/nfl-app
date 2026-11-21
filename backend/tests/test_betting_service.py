@@ -76,6 +76,61 @@ def test_positive_spread_line_is_a_home_favorite():
     assert other["as_underdog"]["games"] == 0
 
 
+def test_tie_counts_as_a_tie_not_a_loss():
+    """2026 week 5 NYG @ WAS ended 27-27. A tie is not a loss on the card."""
+    tied = pd.DataFrame([{
+        "home_team": "WAS", "away_team": "NYG",
+        "home_score": 27, "away_score": 27,
+        "spread_line": 3.5, "total_line": 44.0,
+    }])
+    home = betting_service._record_from_subset("WAS", tied)
+    assert home["su"] == {"wins": 0, "losses": 0, "ties": 1}
+    assert home["home_split"]["losses"] == 0
+    assert home["home_split"]["ties"] == 1
+    assert home["as_favorite"]["losses"] == 0
+    assert home["as_favorite"]["ties"] == 1
+    # Margin 0 against a 3.5 home line is an ATS loss, not a push.
+    assert home["ats"]["losses"] == 1
+    assert home["ats"]["pushes"] == 0
+
+    away = betting_service._record_from_subset("NYG", tied)
+    assert away["su"] == {"wins": 0, "losses": 0, "ties": 1}
+    assert away["away_split"]["losses"] == 0
+    assert away["away_split"]["ties"] == 1
+
+
+@pytest.mark.asyncio
+async def test_history_includes_finals_from_the_season_in_progress(monkeypatch):
+    """Last 20 counts 2026 finals. A posted line with no score stays out."""
+    betting_service.cache.clear()
+
+    async def schedules_df(season):
+        if season != 2026:
+            return None
+        return pd.DataFrame([
+            {
+                "home_team": "PHI", "away_team": "DAL",
+                "home_score": 20, "away_score": 17,
+                "spread_line": 3.0, "total_line": 45.0,
+                "gameday": "2026-09-10",
+            },
+            {
+                "home_team": "PHI", "away_team": "NYG",
+                "home_score": None, "away_score": None,
+                "spread_line": 6.0, "total_line": 44.0,
+                "gameday": "2026-12-20",
+            },
+        ])
+
+    monkeypatch.setattr(betting_service._nfl, "schedules_df", schedules_df)
+    monkeypatch.setattr(betting_service, "current_or_upcoming_season", lambda: 2026)
+
+    phi = await betting_service.team_betting_history("PHI")
+    assert phi["seasons"] == [2022, 2023, 2024, 2025, 2026]
+    assert phi["lifetime"]["games"] == 1
+    assert phi["last20"]["su"] == {"wins": 1, "losses": 0, "ties": 0}
+
+
 def test_american_implied_positive_underdog():
     assert betting_service._american_implied(150) == pytest.approx(0.4, rel=1e-3)
 

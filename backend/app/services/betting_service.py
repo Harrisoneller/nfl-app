@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
-from ..utils.seasons import current_or_upcoming_season, latest_completed_season
+from ..utils.seasons import current_or_upcoming_season
 from ..utils.teams import canonical_team
 from . import elo_service, odds_service, predictions_service
 
@@ -89,12 +89,16 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
     home = sub[sub["home_team"] == team_id].copy()
     away = sub[sub["away_team"] == team_id].copy()
 
-    # Straight up
+    # Straight up. A tie is its own result — it is not a loss.
     home["su_win"] = home["home_score"] > home["away_score"]
     away["su_win"] = away["away_score"] > away["home_score"]
+    home["su_loss"] = home["home_score"] < home["away_score"]
+    away["su_loss"] = away["away_score"] < away["home_score"]
+    home["su_tie"] = home["home_score"] == home["away_score"]
+    away["su_tie"] = away["away_score"] == away["home_score"]
     su_wins = int(home["su_win"].sum() + away["su_win"].sum())
-    su_losses = len(sub) - su_wins
-    pushes = 0
+    su_losses = int(home["su_loss"].sum() + away["su_loss"].sum())
+    su_ties = int(home["su_tie"].sum() + away["su_tie"].sum())
 
     # ATS — spread_line is the home margin (positive = home favored).
     home["covered"] = (home["home_score"] - home["away_score"]) > home["spread_line"]
@@ -126,7 +130,7 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
 
     return {
         "games": len(sub),
-        "su": {"wins": su_wins, "losses": su_losses, "ties": pushes},
+        "su": {"wins": su_wins, "losses": su_losses, "ties": su_ties},
         "ats": {"wins": ats_wins, "losses": ats_losses, "pushes": ats_pushes,
                 "win_pct": _safe_pct(ats_wins, ats_wins + ats_losses)},
         "ou": {"overs": over_wins, "unders": under_wins, "pushes": ou_pushes,
@@ -140,13 +144,21 @@ def _record_from_subset(team_id: str, sub: pd.DataFrame) -> dict[str, Any]:
 
 def _su_record(sub: pd.DataFrame, team_id: str) -> dict[str, Any]:
     if len(sub) == 0:
-        return {"games": 0, "wins": 0, "losses": 0, "win_pct": 0.0}
+        return {"games": 0, "wins": 0, "losses": 0, "ties": 0, "win_pct": 0.0}
     home = sub[sub["home_team"] == team_id]
     away = sub[sub["away_team"] == team_id]
     wins = int((home["home_score"] > home["away_score"]).sum() +
                (away["away_score"] > away["home_score"]).sum())
-    losses = len(sub) - wins
-    return {"games": len(sub), "wins": wins, "losses": losses, "win_pct": _safe_pct(wins, wins + losses)}
+    ties = int((home["home_score"] == home["away_score"]).sum() +
+               (away["away_score"] == away["home_score"]).sum())
+    losses = len(sub) - wins - ties
+    return {
+        "games": len(sub),
+        "wins": wins,
+        "losses": losses,
+        "ties": ties,
+        "win_pct": _safe_pct(wins, wins + losses),
+    }
 
 
 def _empty_record() -> dict[str, Any]:
@@ -155,10 +167,10 @@ def _empty_record() -> dict[str, Any]:
         "su": {"wins": 0, "losses": 0, "ties": 0},
         "ats": {"wins": 0, "losses": 0, "pushes": 0, "win_pct": 0.0},
         "ou": {"overs": 0, "unders": 0, "pushes": 0, "over_pct": 0.0},
-        "as_favorite": {"games": 0, "wins": 0, "losses": 0, "win_pct": 0.0},
-        "as_underdog": {"games": 0, "wins": 0, "losses": 0, "win_pct": 0.0},
-        "home_split": {"games": 0, "wins": 0, "losses": 0, "win_pct": 0.0},
-        "away_split": {"games": 0, "wins": 0, "losses": 0, "win_pct": 0.0},
+        "as_favorite": {"games": 0, "wins": 0, "losses": 0, "ties": 0, "win_pct": 0.0},
+        "as_underdog": {"games": 0, "wins": 0, "losses": 0, "ties": 0, "win_pct": 0.0},
+        "home_split": {"games": 0, "wins": 0, "losses": 0, "ties": 0, "win_pct": 0.0},
+        "away_split": {"games": 0, "wins": 0, "losses": 0, "ties": 0, "win_pct": 0.0},
     }
 
 
@@ -172,8 +184,10 @@ async def team_betting_history(team_id: str, seasons: list[int] | None = None) -
     """Lifetime + recent-window betting records for one team."""
     tid = team_id.upper()
     if seasons is None:
-        latest = latest_completed_season()
-        seasons = list(range(latest - 4, latest + 1))
+        # Five seasons through the one in progress, so this year's finals
+        # are in "last 20" before the Super Bowl closes the book.
+        end = current_or_upcoming_season()
+        seasons = list(range(end - 4, end + 1))
     games = await _completed_games_with_lines(seasons)
     if len(games) == 0:
         return {"team_id": tid, "seasons": seasons, "lifetime": _empty_record(), "last20": _empty_record()}
