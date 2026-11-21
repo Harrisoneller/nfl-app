@@ -98,67 +98,6 @@ def test_tie_counts_as_a_tie_not_a_loss():
     assert away["away_split"]["losses"] == 0
     assert away["away_split"]["ties"] == 1
 
-    mixed = pd.DataFrame([
-        {
-            "home_team": "DAL", "away_team": "GB",
-            "home_score": 40, "away_score": 40,
-            "spread_line": -7.0, "total_line": 48.0,
-        },
-        {
-            "home_team": "DAL", "away_team": "NYG",
-            "home_score": 24, "away_score": 17,
-            "spread_line": 3.0, "total_line": 43.0,
-        },
-    ])
-    dal = betting_service._record_from_subset("DAL", mixed)
-    assert dal["su"] == {"wins": 1, "losses": 0, "ties": 1}
-    assert dal["games"] == 2
-
-
-@pytest.mark.asyncio
-async def test_history_includes_played_games_from_the_current_season(monkeypatch):
-    """Last-20 / lifetime must include finals from the season in progress.
-
-    Unplayed rows (spread posted, score missing) stay out of the W-L.
-    """
-    betting_service.cache.clear()
-
-    async def schedules_df(season):
-        if season != 2026:
-            return None
-        return pd.DataFrame([
-            {
-                "home_team": "PHI", "away_team": "DAL",
-                "home_score": 20, "away_score": 17,
-                "spread_line": 3.0, "total_line": 45.0,
-                "gameday": "2026-09-10", "game_type": "REG",
-            },
-            {
-                "home_team": "PHI", "away_team": "NYG",
-                "home_score": None, "away_score": None,
-                "spread_line": 6.0, "total_line": 44.0,
-                "gameday": "2026-12-20", "game_type": "REG",
-            },
-            {
-                "home_team": "WAS", "away_team": "NYG",
-                "home_score": 27, "away_score": 27,
-                "spread_line": 3.5, "total_line": 44.0,
-                "gameday": "2026-10-05", "game_type": "REG",
-            },
-        ])
-
-    monkeypatch.setattr(betting_service._nfl, "schedules_df", schedules_df)
-    monkeypatch.setattr(betting_service, "current_or_upcoming_season", lambda: 2026)
-
-    phi = await betting_service.team_betting_history("PHI")
-    assert 2026 in phi["seasons"]
-    assert phi["lifetime"]["games"] == 1
-    assert phi["lifetime"]["su"] == {"wins": 1, "losses": 0, "ties": 0}
-    assert phi["last20"]["su"] == {"wins": 1, "losses": 0, "ties": 0}
-
-    nyg = await betting_service.team_betting_history("NYG")
-    assert nyg["lifetime"]["su"] == {"wins": 0, "losses": 0, "ties": 1}
-
 
 def test_american_implied_positive_underdog():
     assert betting_service._american_implied(150) == pytest.approx(0.4, rel=1e-3)

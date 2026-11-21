@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ..adapters.data.nfl_data_py_adapter import NflDataPyAdapter
 from ..cache import cache
 from ..logging_config import get_logger
-from ..utils.seasons import current_or_upcoming_season
+from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 from ..utils.teams import canonical_team
 from . import elo_service, odds_service, predictions_service
 
@@ -184,10 +184,8 @@ async def team_betting_history(team_id: str, seasons: list[int] | None = None) -
     """Lifetime + recent-window betting records for one team."""
     tid = team_id.upper()
     if seasons is None:
-        # Five seasons ending at the one in progress, so a final from this
-        # year is in "last 20" before the Super Bowl closes the book.
-        end = current_or_upcoming_season()
-        seasons = list(range(end - 4, end + 1))
+        latest = latest_completed_season()
+        seasons = list(range(latest - 4, latest + 1))
     games = await _completed_games_with_lines(seasons)
     if len(games) == 0:
         return {"team_id": tid, "seasons": seasons, "lifetime": _empty_record(), "last20": _empty_record()}
