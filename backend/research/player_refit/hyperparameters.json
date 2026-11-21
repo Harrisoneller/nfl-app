@@ -1,0 +1,70 @@
+{
+  "cutoff": "first REG kickoff of the scoring week, America/New_York, strict less-than",
+  "eff_prior": {
+    "comp": 100.0,
+    "cr": 50.0,
+    "ypa": 150.0,
+    "ypc": 80.0,
+    "ypt": 50.0
+  },
+  "eff_window_games": 24,
+  "min_games": 2,
+  "quantile_levels": [
+    0.05,
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    0.95
+  ],
+  "role_gates": {
+    "qb": [
+      "att_sh_e",
+      0.4
+    ],
+    "rec": [
+      "tgt_sh_e",
+      0.04
+    ],
+    "rush": [
+      "car_sh_e",
+      0.08
+    ]
+  },
+  "share_half_life": {
+    "att_sh": 3.0,
+    "car_sh": 2.0,
+    "tgt_sh": 4.0
+  },
+  "team_half_life": 6.0,
+  "team_volume_columns": [
+    "const",
+    "team_ewm",
+    "team_points_no_mkt",
+    "opp_points_no_mkt"
+  ],
+  "v5_default_params_sha256": "f2e0072102c421144df23dceec743c7b6eab51d17858be4279709ad5238eb22a",
+  "v5_margin_columns": [
+    "epa_d",
+    "pts_d",
+    "st_d",
+    "qb_d",
+    "hfa"
+  ],
+  "v5_replay_commit": "0c49a45c9b90b6b4635ed248bc271effbe13abfd",
+  "v5_replay_path": "backend/research/nfl_drive_sim/v5_replay.py",
+  "v5_replay_sha256": "bee8006b5b3096e7c1bc3ff53afc2cb211b417e2e1b7ca66e47ac442ff9892d3",
+  "v5_total_columns": [
+    "pts_s",
+    "epa_s",
+    "env2",
+    "plays_s",
+    "qb_s"
+  ],
+  "walk_forward": "week"
+}

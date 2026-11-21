@@ -3,326 +3,243 @@
 ```text
 status: draft
 locked: false
-eligible_set_sha256: PENDING
-eligible_set_n: PENDING
+eligible_set_sha256: ccfbb2bee685f3f4e6f3bfb416ed9dd71b195716a63f2c2cc2eb66927c688d23
+eligible_set_n: 70094
+hyperparameters_sha256: 79a0df469fae4f26d13b46d0f820284a69783ec6e6e4e1f803370af99d948892
 seed: 20261115
 ```
 
-This document is a draft. It is not locked. The eligible-set hash is
-`PENDING` because this run does not materialize the set, fit a model, or
-score a row. Locking means: the season rule below is unchanged, the hash and
-`n` have been written into the results artifact before any coefficient is
-estimated, and this header's `locked` field is then set true. Until that
-happens, nothing in here is a result.
+This document is still a draft. QA locks it. Nothing in this revision fits a
+coefficient or scores a stat. The only data work is the eligible set below,
+built from public nflverse schedules and depth charts.
 
-The refit is compared with current `player-opp-v1` as that model actually
-runs, market inputs included. That is the incumbent. The refit is not
-compared with a market-blind re-estimate of the incumbent.
+## How to read a result
 
-Market data is used only to replay the incumbent. It is not a feature, a
-prior, a blend weight, or a fit or calibration target of the refit. It is
-not used to choose the season rule, the scales, or the decision thresholds
-in this document.
+The incumbent is `player-opp-v1` as it ships. It is not given a walk-forward
+refit. Its team-volume coefficients were fit on 2016–2025 team-games. Its
+quantile coefficients were fit on 2016–2024. Those windows overlap the scored
+seasons, so the incumbent is partly in-sample. The refit never sees the week
+it is scoring.
 
-## Estimands
+A refit win counts as evidence even with that bias. The incumbent already saw
+many of these outcomes, and the refit still has to beat it.
 
-Both models emit the shipped 11 quantiles
-`(0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95)`
-for attempts, completions, passing yards, carries, rushing yards, targets,
-receptions, and receiving yards.
+A refit loss does not count as evidence that the refit is worse. An
+INCONCLUSIVE result does not count as evidence that the refit is worse.
+Both of those leave the in-sample incumbent in place. They are not a finding
+that the market columns are required.
 
-Primary metric, one number:
+## Estimand
+
+Both arms emit the shipped 11 quantiles for attempts, completions, passing
+yards, carries, rushing yards, targets, receptions, and receiving yards.
 
 ```text
-Δ = mean over eligible rows of ( CRPS(Q_refit, y) − CRPS(Q_inc, y) ) / scale[stat]
+d = mean over scored stat-rows of ( CRPS(Q_refit, y) − CRPS(Q_inc, y) ) / scale[stat]
 ```
 
-Negative means the refit is better. `scale[stat]` is frozen below. The mean
-is over player-stat rows, not over stats, so a stat with more eligible
-players weighs more. Dividing by `scale` is what stops passing yards from
-deciding the pool by being on a larger unit.
+Negative means the refit is closer to the actual. `scale` is frozen:
+
+| Stat | scale | source |
+|---|---:|---|
+| receiving_yards | 23.03 | `docs/MODEL_V5.md` opp-v1 median MAE |
+| receptions | 1.68 | same |
+| rushing_yards | 25.84 | same |
+| passing_yards | 65.41 | same |
+
+Targets, carries, attempts, and completions have no published MAE. Their
+scales are the incumbent arm's own mean absolute error of the 0.50 quantile
+on the scored rows. Those four numbers are written down before the bootstrap
+and are not revised. They are a unit. They are not a second look at `d`.
 
 CRPS is the same functional of both quantile functions. With pinball
-`ρ_τ(u) = u · (τ − 1{u < 0})` and `Q` extended to τ = 0 and τ = 1 by the
-tail slopes in `player_opportunity_model.mean_from_quantiles`:
+`ρ_τ(u) = u · (τ − 1{u < 0})` and `Q` extended to 0 and 1 by the tail slopes
+in `player_opportunity_model.mean_from_quantiles`:
 
 ```text
 CRPS(Q, y) = 2 · ∫_0^1 ρ_τ(y − Q(τ)) dτ
 ```
 
-The integral is the trapezoid on
-`τ ∈ {0, 0.05, 0.10, …, 0.95, 1}`. No normal CRPS on one side and quantile
-CRPS on the other.
+The integral is the trapezoid on `τ ∈ {0, 0.05, …, 0.95, 1}`.
 
-Secondary metric, not decisive:
+Secondary, and unable to change the call: the same rows, MAE of the 0.50
+quantile, divided by the same scale, refit minus incumbent.
 
-```text
-Δ_MAE = mean over eligible rows of ( |q50_refit − y| − |q50_inc − y| ) / scale[stat]
-```
+## Walk-forward, one week at a time
 
-`q50` is the 0.50 quantile after the shipped monotone rearrangement
-(nonnegative, then sorted). A secondary sign that disagrees with Δ is
-reported. It does not flip SUCCESS or FAILURE.
+The refit is walk-forward by week. It is not fit once per season.
 
-### Frozen scales
+The cutoff for scoring week `(season, week)` is the first regular-season
+kickoff in that week, as an America/New_York instant. A missing nflverse
+clock is 13:00 Eastern. A row whose kickoff is equal to the cutoff is out.
+Every fit window below is strictly earlier than that cutoff.
 
-From the opp-v1 median MAE in `docs/MODEL_V5.md` (the published incumbent
-figure, not a number computed for this test):
+Three windows, named:
 
-| Stat | scale |
-|---|---|
-| receiving_yards | 23.03 |
-| receptions | 1.68 |
-| rushing_yards | 25.84 |
-| passing_yards | 65.41 |
+1. **v5 no-market replay.** This is not live v5. Live v5 carries `mkt_d`
+   at 0.669 (`team_ratings_v5.MARGIN_COEFS`, `v5.coef_market_prior`). The
+   replay is `backend/research/nfl_drive_sim/v5_replay.py` on
+   `research/nfl-drive-sim` at commit
+   `0c49a45c9b90b6b4635ed248bc271effbe13abfd`. The file sha256 is
+   `bee8006b5b3096e7c1bc3ff53afc2cb211b417e2e1b7ca66e47ac442ff9892d3`.
+   That branch is not modified. The file is referenced by that commit. It
+   is not copied, because it imports the rest of that package.
+   `ratings_as_of` and the stage-2 refit in that file use only rows whose
+   kickoff is strictly before the cutoff. They do not call
+   `build_week_model`, `market_ratings`, or `scripts.backtest_v5`. They do
+   not read `MARGIN_COEFS`, `MARGIN_COEFS_NO_MKT`, or `TOTAL_COEFS`. The
+   margin design is `epa_d`, `pts_d`, `st_d`, `qb_d`, `hfa`. The total
+   design is `pts_s`, `epa_s`, `env2`, `plays_s`, `qb_s`, plus a column of
+   ones. Team points are `(total ± margin) / 2` from that replay. Pace
+   (`plays_s`) and efficiency (`epa_s`, `epa_d`) enter only through those
+   points.
 
-Targets, carries, attempts, and completions have no published MAE. Their
-scales are the incumbent's own mean absolute error of `q50` on the hashed
-eligible set. Those four numbers are computed once from the incumbent replay
-and the actuals, written into the results artifact next to the hash, and
-then frozen. They are a unit conversion. They are not a second look at Δ.
-The refit is not used to choose them.
+2. **Player team volume.** Three OLS fits, one each for team targets, team
+   carries, and team pass attempts. Training rows are team-games whose
+   kickoff is strictly before the cutoff. The design is
 
-## Seasons, eligibility, hash
+   ```text
+   volume = a + b·team_ewm + c·team_points_no_mkt + d·opp_points_no_mkt
+   ```
 
-Scored seasons are the completed regular seasons 2016, 2017, 2019, 2020,
-2021, 2022, 2023, 2024, and 2025.
+   `team_points_no_mkt` and `opp_points_no_mkt` are the points from window 1
+   for that past game, taken from the replay as of that past game's own
+   week. They are not refit with the scoring week in the sample.
 
-2018 is excluded from the scored set. It is dev-touched: it sits inside the
-shipped team-volume fit (commented OLS, 2016–2025), inside the shipped
-quantile fit (commented 2016–2024), and inside the v5 hyperparameter tune
-window (2016–2020, `docs/MODEL_V5.md`). The repo does not single 2018 out
-beyond that. The exclusion is because those windows touch it, which is the
-condition this prereg was told to apply. 2018 remains usable as ordinary
-pre-week history when a later week is fit. It is not a place to retune
-half-lives, gates, features, or this document.
+3. **Quantile coefficients.** For each of the eight stats and each of the
+   11 levels, `Q(τ) = a_τ + b_τ · hat`, pinball loss, on player-stat rows
+   whose kickoff is strictly before the cutoff. `hat` uses the team-volume
+   coefficients from window 2 and profiles built only from earlier games.
+   The shipped monotone rearrangement is applied after the fit. There is no
+   prop anchor and no market prior.
 
-2026 is excluded. As of this draft (2026-11-21) that season is not over, so
-its week set is not a fixed population.
+2018 may sit in windows 1–3. It is not scored. Half-lives, role gates,
+quantile levels, the column lists, and `DEFAULT_PARAMS` are not estimated
+in any window. They are the file
+`backend/research/player_refit/hyperparameters.json`. Its sha256 is
+`79a0df469fae4f26d13b46d0f820284a69783ec6e6e4e1f803370af99d948892`.
+`DEFAULT_PARAMS` itself hashes to
+`f2e0072102c421144df23dceec743c7b6eab51d17858be4279709ad5238eb22a`
+(sorted keys, compact separators). The `mkt_*` keys are in that dict. The
+replay does not read them.
 
-A row is eligible when all of the following hold. The actual's magnitude is
-not one of them.
+Weather, injury, and admin levers are off on both arms.
 
-1. `season_type` is regular season. Preseason and postseason are out.
-2. `season` is one of the nine scored seasons. Week is an integer from 1 to 18.
-3. Position is QB, RB, WR, or TE.
-4. The stat is one of the eight, and `player_opportunity_model.eligible`
-   is true on the profile built from games strictly before `(season, week)`.
-   That is the shipped rule: at least two prior games, and the EWMA share
-   gate (targets 0.04, carries 0.08, attempts 0.40).
-5. A weekly row exists for that player-week and the stat is present and
-   finite. A played game with a zero stays in. A player with no row (bye,
-   healthy scratch, out) is not eligible. Zeros are not dropped for being
-   zeros.
+## Eligible set
 
-`n` is the number of eligible `(season, week, player_id, stat)` keys. It is
-not chosen to hit a target. The hash is SHA-256 of those keys sorted
-lexicographically as UTF-8 `season|week|player_id|stat`, one key per line,
-with a trailing newline after the last key. The hash and `n` are written
-before any refit coefficient is estimated. This draft does not contain them.
+A player-game is eligible when the pre-kickoff roster rule puts that player
+on that team for that game. The rule is the quarterback rule
+(`pregame_quarterback` plus `resolve_qb` on the drive-sim commit above),
+applied to every QB, RB, WR, and TE the chart lists.
 
-The incumbent was fit on seasons that overlap this set (team volume through
-2025, quantiles through 2024). The refit never sees the week it is scoring.
-The comparison is therefore kinder to the incumbent than a refit-versus-refit
-would be. That is intentional: the incumbent is the shipped model. A SUCCESS
-has to beat a model that already saw many of these outcomes. A FAILURE does
-not, by itself, prove the market columns are required.
+1. A weekly depth chart for `(season, week, team, game_type)` is the roster.
+   It is treated as known at kickoff minus one hour. It has no publication
+   timestamp. Special-teams-only rows (returner listings) are not a second
+   person. One row per player. The lower depth rank wins.
+2. If that week has no chart, the roster is the latest snapshot whose `dt`
+   is strictly before kickoff. 2025 is a snapshot file. 2015–2024 are weekly
+   files.
+3. If neither exists, the roster is the resolved roster of that team's most
+   recent completed game with an earlier kickoff. The prior player is the
+   charted player, not the player who took the snap.
+4. If a chart exists but has no QB1, the prior charted QB1 is added. That is
+   the quarterback fallback. Eighteen rows in this set took it.
 
-## Walk-forward
+The scored seasons are the completed regular seasons 2016, 2017, 2019, 2020,
+2021, 2022, 2023, 2024, and 2025. 2018 is dev-touched (it is inside both
+shipped fit windows and inside the v5 tune window) and is not in the file.
+2026 is not in the file. 2015 and 2018 are walked only so a later week has a
+prior roster. Playoff games are walked for the same reason and are not
+written out.
 
-Weeks are processed in `(season, week)` order. For a scored week, every
-coefficient the refit uses is estimated on rows strictly before that week.
+Team codes are the franchise ids (`LA`→`LAR`, `OAK`→`LV`, `SD`→`LAC`). The
+nflverse `game_id` is unchanged.
 
-Refit team volume, separately for targets, carries, and pass attempts:
+The set has **n = 70094** player-games, 2383 games, 4766 team-games, and 0
+team-games with an empty roster. Sources: 60172 weekly depth-chart rows,
+9904 snapshot rows, 18 prior-start rows. Positions: 11825 QB, 15834 RB,
+26670 WR, 15765 TE.
 
-```text
-volume = a + b·team_ewm + c·team_points_no_mkt + d·opp_points_no_mkt
-```
+The key file is `backend/research/player_refit/eligible/eligible_keys.txt`.
+Each line is `season|week|game_id|team|player_id|position`. Lines are sorted
+lexicographically. The sha256 of the file bytes is
+`ccfbb2bee685f3f4e6f3bfb416ed9dd71b195716a63f2c2cc2eb66927c688d23`.
+The same rows with depth and source are in
+`eligible_player_games.csv`. Input file hashes are in
+`eligible_summary.json`. The builder is
+`materialize_eligible.py`. It does not fit and does not score.
 
-`team_points_no_mkt` and `opp_points_no_mkt` are the v5 no-market score:
-`MARGIN_COEFS_NO_MKT` and `TOTAL_COEFS`, with `market_ratings` not attached
-and `mkt_d` not in the feature vector. Pace (`plays_s`) and efficiency
-(`epa_s`, `epa_d`, and the points and QB terms already in those coefficient
-vectors) enter only through that score. No extra pace or efficiency column
-is added beside it. Those columns are collinear with the score, and adding
-them would be a specification search.
+A player-game the frozen role gate rejects is not scored and is not a drop.
+The gate is the shipped `eligible()`: at least two prior games, and the
+share floor in `hyperparameters.json`, evaluated only on games before the
+cutoff. The actual from the scoring week is not an input to the gate.
 
-Player share, efficiency shrinkage, half-lives, and role gates stay at the
-shipped constants. They are not re-estimated. The structural hat is share
-times team volume, times the shipped efficiency rate, matching
-`structural()`.
+## Incumbent arm
 
-Quantile coefficients are `Q(τ) = a_τ + b_τ · hat`, fit by pinball loss on
-pre-week rows that pass `eligible` for that stat. The same monotone
-rearrangement as `quantiles()` is applied after the fit. There is no prop
-anchor and no market prior.
+The incumbent uses the shipped `TEAM_VOLUME` and `QUANTILE_COEFS`. Those
+numbers are not re-estimated.
 
-The incumbent replay uses the shipped `TEAM_VOLUME` and `QUANTILE_COEFS`
-unchanged. Its `imp_pts` and `spread_team` are the production inputs: v5
-margin and total with the shipped market prior (`MARGIN_COEFS`, including
-`mkt_d` from closes of games strictly before the week), converted to team
-points the way `predict_game` converts them. This week's close is not an
-input. The prop-anchor shift is applied only when a pre-kick consensus
-snapshot for that player and stat is already in the repository. There is no
-such archive today. The replay must not call the Odds API, and must not fill
-the gap with this week's line. A week with no snapshot is an unshifted
-incumbent, which is what production does in that case.
+For each scoring week its `imp_pts` and `spread_team` are the production
+inputs, built strictly before the cutoff: v5 margin and total with the
+shipped market prior (`mkt_d` weight 0.669) from closing spreads of earlier
+games only. This week's close is not an input. This is the live path's team
+volume. It is not the no-market replay. The no-market replay is the refit
+only.
 
-Profiles for both models are built from games strictly before the week.
-Weather, injury, and admin levers are off in both. They are not in the
-historical feature set this test can build the same way for every week, and
-leaving them off on both sides keeps them from becoming a second treatment.
+The prop-anchor quantile shift is **off** on this arm.
 
-## Decision rule
+Checked for a historical pre-kickoff prop archive and did not find one. The
+table `player_prop_snapshots` has `captured_at` and `commence_time`
+(`backend/app/models/player_prop_snapshot.py`, lines 33–34), so a stored row
+could be kept only when `captured_at` is strictly before kickoff. Nothing in
+the repository is such a row. There is no csv, parquet, or json dump of
+snapshots. Tests build snapshots in memory. No Odds API call was made, and
+the production database was not read. Eighteen prior-start roster rows are
+not prop rows.
 
-Cluster is the season-week. One Webb weight per cluster.
+The live site can still shift a quantile when a two-book snapshot is in the
+database. That shift is not in this comparison. A result here does not
+describe a week on which that live shift fired.
 
-Webb six-point weights, each with probability 1/6:
+## Decision
 
-```text
-−√1.5, −1, −√0.5, +√0.5, +1, +√1.5
-```
+Cluster is `(season, week)`. The interval is `webb_mean_interval` in the
+v5 replay file named above: Webb weights −√1.5, −1, −√0.5, √0.5, 1, √1.5,
+each with probability 1/6 and the last weight absorbing the remainder so the
+six sum to 1, 999 replicates, generator `numpy.random.default_rng(20261115)`.
+The 90% bounds are the 5th and 95th percentiles of that bootstrap. One draw
+per analysis. The generator is not reused for anything else.
 
-Generator: `numpy.random.Generator(numpy.random.PCG64(20261115))`.
-Replicates: 9999. Draw order: clusters in sorted `season|week` order, and
-inside a replicate the six-point draw is the next call on that generator.
-No other random draw shares the generator.
+- **SUCCESS.** The mean `d` is negative and the 90% upper bound is negative.
+  This is evidence for the refit, including against the in-sample incumbent.
+- **FAILURE.** The 90% lower bound is positive. This is not evidence that
+  the refit is worse.
+- **INCONCLUSIVE.** Every other interval, including a negative mean whose
+  upper bound is not negative. This is not evidence that the refit is worse.
 
-Let `u_c` be the sum of per-row `(CRPS_refit − CRPS_inc) / scale` in cluster
-`c`, and `n_c` the row count. `N = Σ n_c`. `Δ = Σ u_c / N`.
-
-Replicate `b` reweights clusters:
-
-```text
-Δ*_b = Σ_c (w_{c,b} · u_c) / Σ_c (w_{c,b} · n_c)
-```
-
-The 90% interval is the basic bootstrap interval:
-
-```text
-[ 2Δ − q_0.95(Δ*),  2Δ − q_0.05(Δ*) ]
-```
-
-`q_0.05` and `q_0.95` are the 5th and 95th percentiles of the 9999
-replicates, linear interpolation (NumPy default).
-
-- **SUCCESS.** The entire interval is below 0.
-- **FAILURE.** The entire interval is above 0.
-- **INCONCLUSIVE.** The interval contains 0. Also inconclusive, regardless of
-  the interval, if the void rate exceeds 2% of `n`, or if the hashed set has
-  fewer than 5,000 rows or fewer than 40 clusters. Those floors are a broken
-  extract, not a result.
-
-No minimum effect size is added on top of the interval. The MDE below is the
-honesty check on what this design can see. It is not a second threshold.
-
-## MDE
-
-This MDE was not estimated by running the bootstrap. It is a planning number
-from the design, and it is the number this draft stands behind.
-
-Assumptions, stated so they can be thrown out when the run replaces them:
-
-- About 150 week clusters after empty weeks drop out (4 seasons × 17 week
-  numbers in the 16-game era, 5 seasons × 18 in the 17-game era, minus weeks
-  with no eligible row).
-- About 90,000 eligible rows. That is an order of magnitude: nine seasons,
-  a few hundred player-stat rows per week after the role gates. It is not `n`.
-- Intra-week correlation of the row-level standardized CRPS difference
-  `ρ = 0.20`. Rows in a week share game scripts. Treating 90,000 rows as
-  independent would invent a much smaller MDE than the week clustering can
-  support. `ρ = 0.20` is the conservative end of a 0.05–0.20 band, not a
-  measured ICC.
-- Row-level SD of the standardized difference `σ = 0.20`. This is the soft
-  assumption. It is a guess that the gap between two similar forecasts moves
-  around by about a fifth of the incumbent MAE. It was not computed.
-
-```text
-m     = 90000 / 150 = 600
-deff  = 1 + (600 − 1) · 0.20 = 120.8
-n_eff = 90000 / 120.8 ≈ 745
-SE    = 0.20 / sqrt(745) ≈ 0.0073
-```
-
-The 90% interval excludes 0 about half the time when the true |Δ| is
-`1.645 · SE ≈ 0.012`. The effect at which a two-sided 10% test has about
-80% power is
-
-```text
-MDE_80 = (1.645 + 0.842) · SE ≈ 2.49 · 0.0073 ≈ 0.018
-```
-
-**Honest planning MDE: 0.018 standardized CRPS units, about 1.8% of the
-incumbent's MAE scale.** In the published units that is roughly 0.41
-receiving yards, 0.030 receptions, 0.47 rushing yards, and 1.2 passing
-yards. The optimistic end of the same formula (`ρ = 0.05`, same `σ`) is
-about 0.009. This draft does not use the optimistic end.
-
-The run replaces this number with `2.49 · SE_boot`, where `SE_boot` is the
-SD of the 9999 `Δ*` replicates. If that realized MDE is larger than 0.03,
-the design is weaker than planned. The decision is still the interval rule.
-A wide interval that covers 0 is INCONCLUSIVE, not evidence that the two
-models are the same.
+The in-run minimum detectable effect is `2.49 × SE`, where `SE` is the
+standard deviation of the 999 bootstrap draws of the mean. It is reported
+next to the interval. It does not enter the decision. The planning figure
+from the previous draft does not enter the decision either.
 
 ## Drops and voids
 
-A drop is a player-week that never enters the hashed set. Drops are not in
-the denominator. Bye weeks, preseason, postseason, 2018, 2026, failed role
-gates, fewer than two prior games, and missing weekly rows are drops.
+Same rule as P3. A missing input or a failed model drops the player-game
+from both arms. The arms are then scored on the intersection.
 
-A void is a key that was hashed and then cannot be scored. Either projection
-non-finite, a duplicate key, or an actual that is no longer finite. Voids
-are counted. They are not imputed and not silently deleted. Void rate above
-2% of `n` forces INCONCLUSIVE.
+The denominator is the eligible player-games the role gate keeps. A drop is
+one of those player-games where either arm is missing an input it needs or
+returns a non-finite quantile for a stat the gate kept. The drop rate is
+drops divided by that denominator. A rate above 2% voids the run. A voided
+run issues no SUCCESS, no FAILURE, and no INCONCLUSIVE call.
 
-Large residuals are not dropped. A player who records 0 or who records 300
-yards stays in if the pre-week profile was eligible.
+Failing the role gate is not a drop. A large residual is not a drop. An
+actual of zero stays.
 
-## Banned in the refit
+## Market data
 
-The refit, including every coefficient it estimates and every feature it
-builds, does not call or read:
-
-- `TEAM_VOLUME`'s `spread_team` and `imp_pts` columns, and any replacement
-  that puts a spread, total, moneyline, closing line, or implied team total
-  on the right-hand side or on the left-hand side.
-- `market_ratings`, `mkt_d`, `MARGIN_COEFS["mkt_d"]`, `v5.coef_market_prior`.
-- `_market_anchors`, `_bulk_market_anchors`, `_anchor_target`,
-  `market_implied_mean`, `poisson_rate_from_over_prob`.
-- The quantile shift in `_project_stat_opportunity` and the mean shift in
-  the posterior branch of `_project_stat_for_game`.
-- `props.anchor_weight_per_book`, `props.anchor_weight_cap`,
-  `props.anchor_weight_cap_scoring`, `props.price_shift_cap_sd`.
-- `over_prob` as a target, a weight, or a calibration series. After both
-  projections exist it may price a line for a side column. That column is
-  not Δ.
-- `fantasy_market_service.apply_adp_anchor` and ADP weights.
-- `model_lab.player_model.apply_market_anchor`.
-- The Odds API, or any other paid odds or prediction-market feed.
-
-`backend/scripts/backtest_v5.py` may be read to see how the no-market week
-model is built. It is not run as the player test, and its market-prior fit
-is not copied into the refit.
-
-## Market data, incumbent only
-
-Market data is used only to replay the incumbent.
-
-- Past games' `spread_line` values, from the nflverse schedules the game
-  model already reads, build `mkt_d` for the incumbent's v5 score. Games at
-  or after the scored week are not in that fit.
-- A stored pre-kick prop consensus, if one exists in the repo, is the
-  incumbent's anchor for that player-stat. None exists for this historical
-  window. No fetch is made to create one.
-- This week's close may be joined after both projections are stored, to
-  report an edge beside Δ. It is not a feature, not a target, and not a
-  reason to drop a row.
-
-The refit never sees those fields.
-
-## Out of scope for the run this document describes
-
-No production change, no deploy, no new parameter, no edit to the shipped
-coefficients. A later implementation PR can add code under
-`backend/research/player_refit/`. It does not add fitted artifacts, and it
-does not run until this draft is locked.
+Market data is used only to replay the incumbent, and only as the past-close
+`mkt_d` described above. The refit does not read it. This week's close may
+be joined after both projections exist, as an edge column. That column is
+not `d`. The Odds API is not called. Prop prices are not a feature, a
+target, or a weight on either arm in this test.

@@ -47,13 +47,28 @@ that included the market columns.
 
 ## Incumbent
 
-The comparison is against `player-opp-v1` as the production path actually
-runs, including its market inputs. The incumbent is not refit. Replaying it
-is the only place market data is allowed, and only as specified in the
-prereg. Historical prop snapshots are not in the repo. The replay does not
-call the Odds API to invent them. Weeks with no stored pre-kick consensus
-get no quantile shift, which is also what production does when the snapshot
-table is empty.
+The comparison is against `player-opp-v1` as shipped. It is not refit. Its
+team-volume fit window is 2016–2025 and its quantile fit window is 2016–2024,
+so it is partly in-sample on the scored seasons. A refit win still counts.
+A refit loss or an inconclusive interval does not count as evidence that the
+refit is worse.
+
+The refit is walk-forward by week. Its team points come from the no-market
+`v5_replay.py` on `research/nfl-drive-sim` at
+`0c49a45c9b90b6b4635ed248bc271effbe13abfd`. Live v5, which carries `mkt_d`
+0.669, is the incumbent's input, not the refit's. The prop-anchor shift is
+off on the incumbent arm: the repo has the snapshot table and its timestamps,
+and no historical pre-kickoff rows. The live site can still shift a week
+that has snapshots. That difference is disclosed in the prereg. No Odds API
+call.
+
+The eligible set is materialized. It is the pre-kickoff skill roster, the
+same depth-chart rule as the quarterback rule, with the prior charted player
+when the chart is missing. n = 70094. sha256 of
+`backend/research/player_refit/eligible/eligible_keys.txt` is
+`ccfbb2bee685f3f4e6f3bfb416ed9dd71b195716a63f2c2cc2eb66927c688d23`.
+The decision rule, the drop rule, and the frozen hyperparameter hash are in
+the prereg. The prereg is still a draft.
 
 ## What this branch does not do
 
