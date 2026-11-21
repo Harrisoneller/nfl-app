@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { GamePrediction } from "@/lib/api";
 import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
+import { SimPanel } from "@/components/predictions/SimPanel";
 import { formatScheduleKickoff } from "@/lib/kickoff";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
@@ -143,6 +144,7 @@ export function MatchupPreviewRow({
               value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`}
             />
           </div>
+          <SimPanel sim={game.sim} />
 
           {showH2hHint && (
             <p className="text-[10px] text-muted group-hover:text-team-primary transition-colors">
@@ -201,6 +203,7 @@ export function MatchupPreviewRow({
               />
             </div>
           </div>
+          <SimPanel sim={game.sim} />
 
           {showH2hHint && (
             <p className="text-[10px] text-muted mt-3 sm:mt-2 group-hover:text-team-primary transition-colors">

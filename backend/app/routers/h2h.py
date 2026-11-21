@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import get_db
 from ..services import h2h_service, request_budget_service
+from ..services.sim_panel_store import attach_h2h
 
 router = APIRouter()
 
@@ -55,4 +56,6 @@ async def get_h2h(
     response.headers["X-Budget-Reason"] = str(budget.get("reason") or "")
     response.headers["X-Cache-Status"] = request_cache_status
     response.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+    if isinstance(payload, dict):
+        payload = attach_h2h(payload)
     return payload
