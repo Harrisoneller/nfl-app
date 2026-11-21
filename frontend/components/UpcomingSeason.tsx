@@ -36,12 +36,15 @@ export function UpcomingSeason({ teamId }: { teamId: string }) {
   }
 
   const sos = data.strength_of_schedule;
+  const record = seasonRecord(teamId, data.schedule);
   return (
     <Card
-      title={`Upcoming season — ${data.season}`}
+      title={data.is_upcoming ? `Upcoming season — ${data.season}` : `${data.season} schedule`}
       action={
         <span className="text-xs text-muted">
-          Opponent ratings from {data.previous_season}
+          {data.is_upcoming
+            ? `Opponent ratings from ${data.previous_season}`
+            : `Record ${record}`}
         </span>
       }
     >
@@ -70,6 +73,7 @@ export function UpcomingSeason({ teamId }: { teamId: string }) {
             <tr>
               <th className="py-1 pr-3">Wk</th>
               <th className="pr-3">Matchup</th>
+              <th className="pr-3">Result</th>
               <th className="pr-3">Opponent</th>
               <th className="pr-3">Opp off EPA</th>
               <th className="pr-3">Opp def EPA</th>
@@ -83,13 +87,18 @@ export function UpcomingSeason({ teamId }: { teamId: string }) {
               <tr key={g.id || `${g.week}-${g.opponent}`} className="border-t divider">
                 <td className="py-1 pr-3 text-muted">{g.week ?? "—"}</td>
                 <td className="pr-3">{g.away_team_id} @ {g.home_team_id}</td>
+                <td className="pr-3 tabular-nums font-medium">
+                  {finalScore(g)}
+                </td>
                 <td className="pr-3 font-medium">{g.opponent ?? "—"}</td>
-                <td className="pr-3 tabular-nums">{fmt(g.opponent_prev_off_epa)}</td>
-                <td className="pr-3 tabular-nums">{fmt(g.opponent_prev_def_epa)}</td>
+                <td className="pr-3 tabular-nums">{g.played ? "—" : fmt(g.opponent_prev_off_epa)}</td>
+                <td className="pr-3 tabular-nums">{g.played ? "—" : fmt(g.opponent_prev_def_epa)}</td>
                 <td className="pr-3 tabular-nums">
-                  {g.opponent_prev_points_per_game != null
-                    ? g.opponent_prev_points_per_game.toFixed(1)
-                    : "—"}
+                  {g.played
+                    ? "—"
+                    : g.opponent_prev_points_per_game != null
+                      ? g.opponent_prev_points_per_game.toFixed(1)
+                      : "—"}
                 </td>
                 <td className="pr-3 text-muted">{g.gameday || "TBD"}</td>
                 <td className="pr-3 text-muted">{g.network || ""}</td>
@@ -115,4 +124,24 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 function fmt(v: number | null): string {
   if (v == null) return "—";
   return v.toFixed(3);
+}
+
+function finalScore(g: Upcoming["schedule"][number]): string {
+  if (!g.played || g.home_score == null || g.away_score == null) return "—";
+  return `${g.away_score}–${g.home_score}`;
+}
+
+function seasonRecord(teamId: string, games: Upcoming["schedule"]): string {
+  let wins = 0;
+  let losses = 0;
+  let ties = 0;
+  for (const g of games) {
+    if (!g.played || g.home_score == null || g.away_score == null) continue;
+    const mine = g.home_team_id === teamId ? g.home_score : g.away_score;
+    const opp = g.home_team_id === teamId ? g.away_score : g.home_score;
+    if (mine > opp) wins += 1;
+    else if (mine < opp) losses += 1;
+    else ties += 1;
+  }
+  return ties > 0 ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
 }

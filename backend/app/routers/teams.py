@@ -131,10 +131,12 @@ async def get_upcoming_season(team_id: str):
     sos_off = _safe_mean([o["opponent_prev_off_epa"] for o in opponents])
     sos_def = _safe_mean([o["opponent_prev_def_epa"] for o in opponents])
 
+    played = [g for g in opponents if g.get("played")]
     return {
         "team_id": tid,
         "season": upcoming,
-        "is_upcoming": True,
+        # Preview only until a game has a final. After that, results are real.
+        "is_upcoming": len(played) == 0,
         "previous_season": previous,
         "schedule": opponents,
         "strength_of_schedule": {
@@ -162,12 +164,17 @@ async def _team_upcoming_schedule(team_id: str, season: int) -> list[dict]:
 
     out = []
     for _, row in df.iterrows():
+        home_score = _safe_int(row.get("home_score"))
+        away_score = _safe_int(row.get("away_score"))
         out.append({
             "id": str(row.get("game_id") or ""),
             "season": int(season),
             "week": _safe_int(row.get("week")),
             "home_team_id": row.get("home_team"),
             "away_team_id": row.get("away_team"),
+            "home_score": home_score,
+            "away_score": away_score,
+            "played": home_score is not None and away_score is not None,
             "gameday": str(row.get("gameday") or ""),
             "venue": str(row.get("stadium") or ""),
             "network": str(row.get("network") or ""),
