@@ -16,7 +16,9 @@ from research.nfl_drive_sim.run_p3 import (
     PRIMARY_N,
     GameSetError,
     RealRunLocked,
+    assign_quarterbacks,
     load_game_set,
+    rows_before_cutoff,
     run_real,
     score_slate,
     write_results,
@@ -42,6 +44,42 @@ def test_frozen_primary_set_is_2534_and_a_short_file_aborts(tmp_path):
     primary.iloc[:-1].to_csv(path, index=False)
     with pytest.raises(GameSetError):
         load_game_set(path)
+
+
+def test_same_size_swap_including_a_2018_game_aborts(tmp_path):
+    frame = pd.read_csv(GAME_SET)
+    primary = frame.index[frame["role"].eq("primary")]
+    frame.loc[primary[0], "game_id"] = "2018_01_ATL_PHI"
+    assert int(frame["role"].eq("primary").sum()) == PRIMARY_N
+    path = tmp_path / "swapped.csv"
+    frame.to_csv(path, index=False)
+    with pytest.raises(GameSetError):
+        load_game_set(path)
+
+
+def test_preweek_cutoff_excludes_an_equal_kickoff():
+    kick = pd.Timestamp("2016-09-11 17:00", tz="UTC")
+    frame = pd.DataFrame({
+        "kickoff_et": [kick - pd.Timedelta(hours=1), kick, kick + pd.Timedelta(hours=1)],
+        "game_id": ["earlier", "equal", "later"],
+    })
+    kept = rows_before_cutoff(frame, kick)
+    assert list(kept["game_id"]) == ["earlier"]
+
+
+def test_prior_start_is_used_when_the_chart_is_missing():
+    charts = pd.DataFrame([
+        {"season": 2015, "week": 1, "team": "H", "game_type": "REG", "position": "QB", "depth_team": "1", "gsis_id": "QB-OLD"},
+        {"season": 2015, "week": 1, "team": "A", "game_type": "REG", "position": "QB", "depth_team": "1", "gsis_id": "QB-A"},
+    ])
+    games = pd.DataFrame([
+        {"game_id": "g1", "season": 2015, "week": 1, "game_type": "REG", "kickoff_et": "2015-09-13T17:00:00Z", "home_team": "H", "away_team": "A"},
+        {"game_id": "g2", "season": 2015, "week": 2, "game_type": "REG", "kickoff_et": "2015-09-20T17:00:00Z", "home_team": "H", "away_team": "A"},
+    ])
+    out = assign_quarterbacks(games, charts)
+    second = out.loc[out["game_id"].eq("g2")].iloc[0]
+    assert second["home_qb"] == "QB-OLD"
+    assert second["home_qb_source"] == "prior_start"
 
 
 def test_real_run_is_locked_and_the_runner_does_not_reach_market_code():
@@ -159,7 +197,11 @@ def test_score_slate_on_a_synthetic_week_writes_d_without_the_cache(tmp_path):
     assert scored["d_brier"].notna().all()
     assert set(scored["flag_margin"]).issubset({0.0, 1.0})
     assert scored["margin_at_5min"].notna().all()
+    (tmp_path / "manifest.sha256").write_text("abc  game_set.csv\n")
     write_results(tmp_path, result)
+    manifest = (tmp_path / "manifest.sha256").read_text()
+    assert "abc  game_set.csv" in manifest
+    assert "per_game_d.csv" in manifest
     assert (tmp_path / "p3_report.md").read_text().startswith("# P3 report\n\nP3 is not a fair ATS")
     assert (tmp_path / "per_game_d.csv").exists()
     assert (tmp_path / "manifest.sha256").exists()

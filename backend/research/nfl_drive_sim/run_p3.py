@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from . import sim_config as cfg
+from .pregame import pregame_quarterback_table
 from .v5_replay import (
     DROP_RATE_LIMIT,
     MARGIN_COLUMNS,
@@ -35,6 +36,7 @@ from .v5_replay import (
 )
 
 PRIMARY_N = 2534
+LOCKED_GAME_SET_SHA256 = "123539602360fea7e03b5d42cb0317da2902f5e501bb47d452c7530e114194c6"
 REPORT_NAME = "p3_report.md"
 PER_GAME_NAME = "per_game_d.csv"
 ATS_SENTENCE = (
@@ -55,14 +57,72 @@ class RealRunLocked(RuntimeError):
 
 
 def load_game_set(path: Path | str) -> pd.DataFrame:
-    """Read the frozen slate and abort unless the primary count is 2,534."""
+    """Read the frozen slate. Abort unless the file hash and the count match."""
+    raw = Path(path).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != LOCKED_GAME_SET_SHA256:
+        raise GameSetError(f"game set hash {digest} != locked {LOCKED_GAME_SET_SHA256}")
     frame = pd.read_csv(path)
     primary = frame.loc[frame["role"].eq("primary"), "game_id"].astype(str)
     if int(primary.shape[0]) != PRIMARY_N:
         raise GameSetError(f"primary set is {int(primary.shape[0])}, expected {PRIMARY_N}")
     if primary.duplicated().any():
         raise GameSetError("duplicate primary game_id")
+    if primary.str.startswith("2018_").any():
+        raise GameSetError("2018 game in the primary set")
     return frame
+
+
+def rows_before_cutoff(frame: pd.DataFrame, cutoff) -> pd.DataFrame:
+    """Rows whose kickoff is strictly before ``cutoff``. An equal kickoff is out."""
+    kicks = pd.to_datetime(frame["kickoff_et"], utc=True)
+    limit = pd.Timestamp(cutoff)
+    if limit.tzinfo is None:
+        limit = limit.tz_localize("UTC")
+    else:
+        limit = limit.tz_convert("UTC")
+    return frame.loc[kicks < limit].copy()
+
+
+def assign_quarterbacks(games: pd.DataFrame, depth_charts: pd.DataFrame) -> pd.DataFrame:
+    """P1 depth-chart QB1, then the prior charted start strictly before kickoff.
+
+    The prior start is that team's depth-chart quarterback on an earlier
+    completed game. It is not the in-game passer.
+    """
+    out = games.copy()
+    table = pregame_quarterback_table(depth_charts, out)
+    home = table[table["side"].eq("home")][["game_id", "qb_id"]].rename(columns={"qb_id": "chart_home_qb"})
+    away = table[table["side"].eq("away")][["game_id", "qb_id"]].rename(columns={"qb_id": "chart_away_qb"})
+    out = out.merge(home, on="game_id", how="left").merge(away, on="game_id", how="left")
+    kicks = pd.to_datetime(out["kickoff_et"], utc=True)
+    order = kicks.argsort(kind="mergesort")
+    last: dict[str, list[tuple[object, str]]] = {}
+    home_qb = [None] * len(out)
+    away_qb = [None] * len(out)
+    home_how = [None] * len(out)
+    away_how = [None] * len(out)
+    positions = list(order)
+    for pos in positions:
+        row = out.iloc[int(pos)]
+        kick = kicks.iloc[int(pos)]
+        for team_col, chart_col, dest, how in (
+            ("home_team", "chart_home_qb", home_qb, home_how),
+            ("away_team", "chart_away_qb", away_qb, away_how),
+        ):
+            team = str(row[team_col])
+            prior = [(stamp, qb) for stamp, qb in last.get(team, []) if stamp < kick]
+            chosen, source = resolve_qb(row[chart_col], prior)
+            dest[int(pos)] = chosen
+            how[int(pos)] = source
+        for team, chosen in ((str(row["home_team"]), home_qb[int(pos)]), (str(row["away_team"]), away_qb[int(pos)])):
+            if isinstance(chosen, str) and chosen:
+                last.setdefault(team, []).append((kick, chosen))
+    out["home_qb"] = home_qb
+    out["away_qb"] = away_qb
+    out["home_qb_source"] = home_how
+    out["away_qb_source"] = away_how
+    return out
 
 
 def run_real() -> None:
@@ -94,7 +154,7 @@ def walk_forward_predictions(features: pd.DataFrame) -> dict[str, tuple[float, f
     predicted: dict[str, tuple[float, float, float, float]] = {}
     for (_, _), group in rows.groupby(["season", "week"], sort=False):
         cutoff = group["kickoff_et"].min()
-        earlier = rows[rows["kickoff_et"] < cutoff]
+        earlier = rows_before_cutoff(rows, cutoff)
         train = earlier[earlier["game_type"].astype(str).eq("REG")]
         sigma_m = sample_sd(np.asarray(residuals_m, dtype=float))
         sigma_t = sample_sd(np.asarray(residuals_t, dtype=float))
@@ -334,19 +394,37 @@ def render_report(result: dict) -> str:
     return "\n".join(lines)
 
 
+def merge_manifest(path: Path, updates: list[tuple[str, str]]) -> None:
+    """Add or replace named hashes. Every other line stays."""
+    order: list[str] = []
+    current: dict[str, str] = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if "  " not in line:
+                continue
+            digest, name = line.split("  ", 1)
+            if name not in current:
+                order.append(name)
+            current[name] = digest
+    for digest, name in updates:
+        if name not in current:
+            order.append(name)
+        current[name] = digest
+    path.write_text("".join(f"{current[name]}  {name}\n" for name in order))
+
+
 def write_results(directory: Path | str, result: dict) -> None:
-    """Write the per-game file, the named report, and a results manifest."""
+    """Write the per-game file and the named report, and merge their hashes."""
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     game_path = out / PER_GAME_NAME
     report_path = out / REPORT_NAME
     result["games"].to_csv(game_path, index=False)
     report_path.write_text(render_report(result))
-    lines = []
+    updates = []
     for path in (game_path, report_path):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        lines.append(f"{digest}  {path.name}")
-    (out / "manifest.sha256").write_text("\n".join(lines) + "\n")
+        updates.append((hashlib.sha256(path.read_bytes()).hexdigest(), path.name))
+    merge_manifest(out / "manifest.sha256", updates)
 
 
 def main() -> None:
