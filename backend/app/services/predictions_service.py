@@ -803,10 +803,9 @@ def predict_game(
 def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
     """Read the schedule from the games table (fast, no network).
 
-    Deduplicates by (week, home_team, away_team) — ESPN scoreboard and nflverse
-    can both create records for the same real-world game with different IDs.
-    Prefers the nflverse record (game_id like "2026_01_AWAY_HOME") because it
-    has accurate NULL scores for unplayed games (ESPN reports 0).
+    Deduplicates by (week, home_team, away_team). A final score is kept over a
+    scoreless copy. Otherwise the nflverse id wins: its NULL means unplayed,
+    while ESPN reports 0 before kickoff.
     """
     stmt = select(Game).where(Game.season == season, Game.season_type == 2)
     games = db.execute(stmt).scalars().all()
@@ -839,11 +838,17 @@ def _schedule_from_db(db: Session, season: int) -> pd.DataFrame | None:
         existing = seen.get(key)
         if existing is None:
             seen[key] = row
-        elif is_nflverse_id and not existing.get("_is_nflverse"):
-            seen[key] = row
-        elif not is_nflverse_id and existing.get("_is_nflverse"):
-            pass  # keep existing nflverse record
-        elif g.home_score is None and existing.get("home_score") is not None:
+            continue
+        # A final score beats a scoreless duplicate. Never blank a score.
+        row_scored = row["home_score"] is not None and row["away_score"] is not None
+        existing_scored = (
+            existing.get("home_score") is not None and existing.get("away_score") is not None
+        )
+        if row_scored != existing_scored:
+            if row_scored:
+                seen[key] = row
+            continue
+        if is_nflverse_id and not existing.get("_is_nflverse"):
             seen[key] = row
 
     rows = [{k: v for k, v in r.items() if k != "_is_nflverse"} for r in seen.values()]
