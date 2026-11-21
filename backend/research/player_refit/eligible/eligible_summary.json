@@ -1,0 +1,92 @@
+{
+  "by_position": {
+    "QB": 11825,
+    "RB": 15834,
+    "TE": 15765,
+    "WR": 26670
+  },
+  "by_source": {
+    "depth_chart": 60172,
+    "prior_start": 18,
+    "snapshot": 9904
+  },
+  "empty_team_games": 0,
+  "key_format": "season|week|game_id|team|player_id|position",
+  "n": 70094,
+  "scored_team_games": 4766,
+  "seasons": [
+    2016,
+    2017,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "sha256": "ccfbb2bee685f3f4e6f3bfb416ed9dd71b195716a63f2c2cc2eb66927c688d23",
+  "sources": {
+    "depth_charts": [
+      {
+        "season": 2015,
+        "sha256": "0b53e90e707f00d85be1e9afdfe508f9beb51fbe9290629fc501e163be3a585f",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2015.parquet"
+      },
+      {
+        "season": 2016,
+        "sha256": "1f217ac21d2abe7a5c354c4dbd0172a938e281771f10f28ba486e3546008c98f",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2016.parquet"
+      },
+      {
+        "season": 2017,
+        "sha256": "98eec3feb6d25a70fb0aecdfac04d99b27c91cbdc2b51e835f4fe7ce7a1eb315",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2017.parquet"
+      },
+      {
+        "season": 2018,
+        "sha256": "90654261a7c0c1724b7e7a5219229c47cfadd1c15f2d28814daf5fc8a8c534ee",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2018.parquet"
+      },
+      {
+        "season": 2019,
+        "sha256": "797c57613c428d175777a55887f4099a73fc23bb3f46bb01d2d5d46c93bc8d99",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2019.parquet"
+      },
+      {
+        "season": 2020,
+        "sha256": "06c2f2ea95d742aef297188873e3e75043ff4bf67780660251ff09a93980b2c9",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2020.parquet"
+      },
+      {
+        "season": 2021,
+        "sha256": "5afd087b8f3f765d5c88128edcb83d38f7d5137edde58ac5a1ec28c78b79e0df",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2021.parquet"
+      },
+      {
+        "season": 2022,
+        "sha256": "772683d8e2b42ae152008e7bc81acc4cd26a8ed57d1225ebfee4db54cce7b27e",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2022.parquet"
+      },
+      {
+        "season": 2023,
+        "sha256": "44dbf02554d4a8a783f52d53b3c66ede8cc9886097518c56c7e1069f5e2d18ff",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2023.parquet"
+      },
+      {
+        "season": 2024,
+        "sha256": "2b5e72fa37f6a498238da30d619cd5d2fe883ffbfdbaaf637301893ad6c22097",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2024.parquet"
+      },
+      {
+        "season": 2025,
+        "sha256": "14f74185b3c2c48df234ced284ba3596bda3333d0b2a8df40841f68cd34539fa",
+        "url": "https://github.com/nflverse/nflverse-data/releases/download/depth_charts/depth_charts_2025.parquet"
+      }
+    ],
+    "schedule": {
+      "sha256": "58cd6ed0edefcde22babb56c78c8cc9410d0ca058b70e511a7b512851eb1af04",
+      "url": "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
+    }
+  }
+}
