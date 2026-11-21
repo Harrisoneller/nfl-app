@@ -511,20 +511,30 @@ def write_freeze(
     """Hash the projection and the input list. Does not score or overwrite."""
     if directory.exists():
         raise FreezeError(f"freeze directory already exists: {directory.name}")
+    ids = [str(row["game_id"]) for row in rows]
+    if len(ids) != len(set(ids)):
+        raise FreezeError("the same game would be written twice in this freeze")
     root = search_root if search_root is not None else directory.parent
     existing = _existing_freeze_ids(root)
-    clash = []
+    kept = []
+    skipped = []
     for row in rows:
         gid = str(row["game_id"])
-        if gid not in existing:
+        if gid in existing:
+            skipped.append({"game_id": gid, "reason": "already_frozen"})
             continue
-        frozen_at, kick = existing[gid]
-        prior = None if frozen_at is None or kick is None else first_valid_freeze([(frozen_at, kick)])
-        clash.append(gid if prior is None else f"{gid} (first valid freeze)")
-    if clash:
-        raise FreezeError(f"freeze record already exists for {clash[:5]}")
+        kept.append(row)
+    if not kept:
+        raise FreezeError("no games left to freeze")
+    if "game_id" in features.columns:
+        keep_ids = {str(row["game_id"]) for row in kept}
+        features = features[features["game_id"].astype(str).isin(keep_ids)].copy()
+    logged = list(exclusions or []) + skipped
+    recorded = dict(inputs)
+    recorded["exclusions"] = logged
+    recorded["game_ids"] = [str(row["game_id"]) for row in kept]
     directory.mkdir(parents=True, exist_ok=False)
-    frame = ordered_projection(rows)
+    frame = ordered_projection(kept)
     feature_frame = projection_frame(features.to_dict(orient="records"))
     proj = directory / "projections.csv"
     feat = directory / "feature_rows.csv"
@@ -533,8 +543,8 @@ def write_freeze(
     manifest = directory / "manifest.sha256"
     frame.to_csv(proj, index=False)
     feature_frame.to_csv(feat, index=False)
-    pd.DataFrame(exclusions or [], columns=["game_id", "reason"]).to_csv(excluded, index=False)
-    info.write_text(json.dumps(inputs, indent=2, sort_keys=True) + "\n")
+    pd.DataFrame(logged, columns=["game_id", "reason"]).to_csv(excluded, index=False)
+    info.write_text(json.dumps(recorded, indent=2, sort_keys=True) + "\n")
     lines = [
         f"{_sha256(proj)}  projections.csv\n",
         f"{_sha256(feat)}  feature_rows.csv\n",

@@ -201,9 +201,11 @@ def test_write_freeze_never_overwrites(tmp_path):
         write_freeze(dest, [row], features, {"freeze_timestamp_utc": "2026-11-02T00:00:00Z"}, search_root=root)
     assert (dest / "projections.csv").read_bytes() == original
     other = root / "2026_w11_second"
-    with pytest.raises(FreezeError, match="already exists"):
-        write_freeze(other, [row], features, {"freeze_timestamp_utc": "2026-11-02T00:00:00Z"}, search_root=root)
+    duplicate = dict(row)
+    with pytest.raises(FreezeError, match="twice"):
+        write_freeze(other, [row, duplicate], features, {"freeze_timestamp_utc": "2026-11-02T00:00:00Z"}, search_root=root)
     assert not other.exists()
+    assert (dest / "projections.csv").read_bytes() == original
 
 
 def test_a_moved_game_is_frozen_in_the_week_it_is_played(tmp_path):
@@ -247,6 +249,46 @@ def test_a_moved_game_is_frozen_in_the_week_it_is_played(tmp_path):
             out_root=tmp_path / "out", projector=_project, now=now,
         )
     assert (week_13 / "projections.csv").read_bytes() == before
+
+
+def test_a_postponed_game_keeps_its_first_freeze(tmp_path):
+    window = pd.DataFrame({
+        "game_id": ["X", "Z"],
+        "kickoff_et": ["2026-11-22T13:00:00-05:00", "2026-11-29T13:00:00-05:00"],
+        "week": [11, 13],
+    })
+    week_11_schedule = pd.DataFrame({
+        "game_id": ["X", "Z"],
+        "season": [2026, 2026],
+        "week": [11, 13],
+        "game_type": ["REG", "REG"],
+        "kickoff_et": ["2026-11-22T13:00:00-05:00", "2026-11-29T13:00:00-05:00"],
+        "home_team": ["BUF", "DET"],
+        "away_team": ["KC", "CHI"],
+        "cancelled": [False, False],
+    })
+    now = pd.Timestamp("2026-11-01T00:00:00Z")
+    prereg = _locked(tmp_path)
+    out = tmp_path / "out"
+    freeze_week(
+        2026, 11, prereg_path=prereg, window=window, schedule=week_11_schedule,
+        out_root=out, projector=_project, now=now,
+    )
+    week_11 = next(out.glob("2026_w11_*"))
+    original = (week_11 / "projections.csv").read_bytes()
+    moved = week_11_schedule.copy()
+    moved.loc[moved["game_id"].eq("X"), "week"] = 13
+    moved.loc[moved["game_id"].eq("X"), "kickoff_et"] = "2026-11-29T16:00:00-05:00"
+    freeze_week(
+        2026, 13, prereg_path=prereg, window=window, schedule=moved,
+        out_root=out, projector=_project, now=now,
+    )
+    week_13 = next(out.glob("2026_w13_*"))
+    assert (week_11 / "projections.csv").read_bytes() == original
+    assert list(pd.read_csv(week_11 / "projections.csv")["game_id"]) == ["X"]
+    assert list(pd.read_csv(week_13 / "projections.csv")["game_id"]) == ["Z"]
+    logged = pd.read_csv(week_13 / "exclusions.csv")
+    assert set(zip(logged["game_id"], logged["reason"], strict=True)) == {("X", "already_frozen")}
 
 
 def test_a_cancelled_game_is_excluded_and_the_rest_freeze(tmp_path):
