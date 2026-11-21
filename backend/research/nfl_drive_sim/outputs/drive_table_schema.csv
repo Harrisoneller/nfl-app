@@ -1,0 +1,26 @@
+column,dtype,description
+game_id,str,nflverse game id
+season,int64,Season year of the game
+week,int64,Week number
+game_type,str,"Schedule game type (REG, WC, DIV, CON, SB)"
+kickoff_et,"datetime64[us, America/New_York]",Kickoff as a tz-aware America/New_York timestamp
+posteam,str,Offensive team on the drive
+defteam,str,Defensive team on the drive
+posteam_is_home,bool,True when the offense is the home team
+drive,int64,"fixed_drive number, else the raw drive number"
+start_yardline_100,int64,Yards from the opponent end zone at the first scrimmage play
+start_qtr,int64,Quarter at the first scrimmage play
+start_game_seconds_remaining,int64,Game clock at the start of the first scrimmage play
+start_half_seconds_remaining,int64,Half clock at the start of the first scrimmage play
+start_score_diff,int64,Offense score minus defense score at the start of the first scrimmage play
+start_posteam_timeouts,int64,Offense timeouts remaining at the start of the first scrimmage play
+start_defteam_timeouts,int64,Defense timeouts remaining at the start of the first scrimmage play
+outcome,str,"Exactly one of TD, FG_MADE, FG_MISSED, PUNT, TURNOVER, DOWNS, SAFETY, END_OF_HALF, OTHER"
+posteam_points,int64,"Points scored by the offense on this drive, including the extra point"
+defteam_points,int64,"Points scored by the defense on this drive, including a return score and its extra point"
+plays,int64,"Non-timeout plays on the drive, including penalties, punts, field goals, and extra points"
+seconds_elapsed,int64,"Drive time of possession in seconds when nflverse publishes it, else the game-clock delta"
+yards,int64,"Yards gained on pass, rush, kneel, and penalty plays. Punt and kick return yards are excluded"
+pass_plays,int64,"Pass plays, including spikes and sacks"
+rush_plays,int64,"Rush plays, including kneels"
+starter_qb_id,str,"On-field quarterback on the drive: first passer, else the kneel or rush rusher. Not the pre-game chart id"

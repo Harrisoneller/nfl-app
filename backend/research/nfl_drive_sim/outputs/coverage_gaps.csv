@@ -1,0 +1,54 @@
+kind,season,game_id,count,detail
+market_columns_removed,,,8,"schedules: away_moneyline,away_spread_odds,home_moneyline,home_spread_odds,over_odds,spread_line,total_line,under_odds"
+market_columns_removed,2015,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2016,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2017,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2018,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2019,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2020,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2021,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2022,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2023,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2024,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2025,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+market_columns_removed,2026,,6,"pbp: spread_line,total_line,vegas_home_wp,vegas_home_wpa,vegas_wp,vegas_wpa"
+source_missing,2015,,1,participation missing 404
+source_missing,2026,,1,participation missing 404
+on_or_after_cutoff,2026,2026_17_NO_ATL,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_SEA_CAR,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_IND_CLE,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_NYG_DAL,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_WAS_JAX,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_KC_LAC,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_BUF_MIA,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_DEN_NE,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_MIN_NYJ,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_LA_TB,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_PIT_TEN,1,2027-01-03T13:00:00-05:00
+on_or_after_cutoff,2026,2026_17_LV_ARI,1,2027-01-03T16:05:00-05:00
+on_or_after_cutoff,2026,2026_17_DET_CHI,1,2027-01-03T16:25:00-05:00
+on_or_after_cutoff,2026,2026_17_PHI_SF,1,2027-01-03T20:20:00-05:00
+on_or_after_cutoff,2026,2026_17_HOU_GB,1,2027-01-04T20:15:00-05:00
+on_or_after_cutoff,2026,2026_18_SF_ARI,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_PIT_BAL,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_NYJ_BUF,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_ATL_CAR,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_CLE_CIN,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_LAC_DEN,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_DET_GB,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_TEN_HOU,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_JAX_IND,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_LV_KC,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_SEA_LA,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_CHI_MIN,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_MIA_NE,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_TB_NO,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_PHI_NYG,1,2027-01-10T13:00:00-05:00
+on_or_after_cutoff,2026,2026_18_DAL_WAS,1,2027-01-10T13:00:00-05:00
+edge_count,,,83,kickoff_return_touchdowns
+edge_count,,,73,own_kickoff_recoveries
+edge_count,,,175,safeties
+edge_count,,,53192,no_play_rows
+pregame_qb,,,6334,"6334 of 6358 team-games have a depth-chart QB1. Weekly charts through 2024 have no publication timestamp, so qb_asof is kickoff minus one hour in America/New_York. The 2025-2026 file has a dt snapshot; qb_asof is the latest snapshot strictly before kickoff. The id is not the passer who played."
+assumption,,,,nflverse gameday and gametime are an America/New_York wall clock. A missing gametime would be filled with 13:00 Eastern. Aware timestamps are converted to Eastern before the 2027-01-01 cutoff. End-of-game clock expiration is labeled END_OF_HALF. nflverse has no onside_kick column; own_kickoff_recovery marks a kick the kicking team recovered.
+drives,,,70275,"Offensive drive rows. The full table is cached, not committed."

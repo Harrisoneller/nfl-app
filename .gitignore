@@ -29,6 +29,9 @@ out/
 .cache/
 data_cache/
 
+# Research drive-sim nflverse downloads. Summaries are committed; the parquet cache is not.
+backend/research/nfl_drive_sim/.cache/
+
 # Deploy artifacts (kept in env, not committed)
 .vercel/
 .railway/
