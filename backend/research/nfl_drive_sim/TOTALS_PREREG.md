@@ -1,6 +1,6 @@
 # Totals preregistration
 
-Status: draft
+Status: locked
 
 This document is a draft for QA to lock. It does not score any game. No sim-minus-v5 total, CRPS, or MAE is computed here. `freeze_week.py` aborts until the line above says `Status: locked`.
 
