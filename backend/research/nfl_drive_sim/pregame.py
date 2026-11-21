@@ -22,6 +22,15 @@ from .teams import canon
 
 QB_ASOF_LEAD = timedelta(hours=1)
 
+# Columns a pre-game helper may return. The in-game first passer is not one of them.
+PREGAME_COLUMNS = (
+    "game_id",
+    "side",
+    "team",
+    "qb_id",
+    "qb_asof",
+)
+
 
 def _aware_eastern(value: object, label: str) -> datetime:
     """Convert an aware timestamp to Eastern. A naive value raises."""
@@ -90,34 +99,20 @@ def pregame_quarterback(
         raise PregameError("qb needs a pre-kickoff timestamp and a kickoff")
     if depth_charts is None or len(depth_charts) == 0:
         return None, None
-    weekly = "week" in depth_charts.columns and depth_charts["week"].notna().any()
-    if not weekly and "dt" in depth_charts.columns:
-        return _lookup_snapshot(_index_snapshots(depth_charts), team, kick)
-    charts = _with_team(depth_charts)
-    needed = {"season", "week", "team", "position", "gsis_id"}
-    missing = needed - set(charts.columns)
-    if missing:
-        raise PregameError(f"depth chart missing columns: {sorted(missing)}")
-    charts = charts[charts["gsis_id"].notna()]
-    charts = charts[pd.to_numeric(charts["season"], errors="coerce").eq(int(season))]
-    charts = charts[pd.to_numeric(charts["week"], errors="coerce").eq(int(week))]
-    charts = charts[charts["team"].map(canon).eq(canon(team))]
-    charts = charts[charts["position"].astype(str).str.upper().eq("QB")]
-    if "depth_team" in charts.columns:
-        charts = charts[charts["depth_team"].map(_depth_team_is_starter)]
-    else:
-        charts = charts.iloc[0:0]
-    if "game_type" in charts.columns and len(charts):
-        exact = charts[charts["game_type"].astype(str).str.upper().eq(str(game_type).upper())]
-        if len(exact):
-            charts = exact
-    if len(charts) == 0:
-        return None, None
-    charts = charts.sort_values("gsis_id")
-    qb_id = str(charts.iloc[0]["gsis_id"])
-    asof = kick - QB_ASOF_LEAD
-    assert_pregame(asof, kick, "qb")
-    return qb_id, asof
+    # Week rows and dt-only snapshot rows are separate paths, including when
+    # one concatenated frame contains both. A week match wins, matching the table.
+    qb_id = _lookup_indexed(
+        _index_quarterbacks(depth_charts),
+        season=int(season),
+        week=int(week),
+        team=str(team),
+        game_type=str(game_type),
+    )
+    if qb_id is not None:
+        asof = kick - QB_ASOF_LEAD
+        assert_pregame(asof, kick, "qb")
+        return qb_id, asof
+    return _lookup_snapshot(_index_snapshots(depth_charts), str(team), kick)
 
 
 def pregame_quarterback_table(
@@ -126,13 +121,14 @@ def pregame_quarterback_table(
 ) -> pd.DataFrame:
     """Pre-game QB ids for every team in ``games``.
 
-    Same rule as ``pregame_quarterback``: weekly depth-chart QB1, as-of one
-    hour before kickoff. A team-game with no chart row has a null id. The
-    passer who played is not read.
+    Same rule as ``pregame_quarterback``. A week row uses kickoff minus one
+    hour. A dt-only snapshot row uses the latest ``dt`` strictly before
+    kickoff. A team-game with neither has a null id. The in-game passer is
+    not read. Returned columns are ``PREGAME_COLUMNS``.
     """
     rows = []
     if games is None or len(games) == 0:
-        return pd.DataFrame(columns=["game_id", "team", "qb_id", "qb_asof"])
+        return pd.DataFrame(columns=list(PREGAME_COLUMNS))
     indexed = _index_quarterbacks(depth_charts)
     snapshots = _index_snapshots(depth_charts)
     for game in games.itertuples(index=False):
@@ -155,7 +151,11 @@ def pregame_quarterback_table(
                 "game_id": game.game_id, "side": side, "team": team,
                 "qb_id": qb_id, "qb_asof": asof,
             })
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows, columns=list(PREGAME_COLUMNS))
+    extra = [column for column in frame.columns if column not in PREGAME_COLUMNS]
+    if extra:
+        raise PregameError(f"pre-game frame has columns outside the allowlist: {extra}")
+    return frame
 
 
 def _with_team(charts: pd.DataFrame) -> pd.DataFrame:

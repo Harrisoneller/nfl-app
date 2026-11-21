@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -17,7 +18,12 @@ from research.nfl_drive_sim.calendar import (
 )
 from research.nfl_drive_sim.drives import DRIVE_COLUMNS, OUTCOMES, build_drive_table, classify_drive
 from research.nfl_drive_sim.market import MarketColumnError, assert_no_market_columns
-from research.nfl_drive_sim.pregame import pregame_quarterback, rows_strictly_before
+from research.nfl_drive_sim.pregame import (
+    PREGAME_COLUMNS,
+    pregame_quarterback,
+    pregame_quarterback_table,
+    rows_strictly_before,
+)
 from research.nfl_drive_sim.reconcile import reconcile
 
 UTC = ZoneInfo("UTC")
@@ -29,14 +35,21 @@ def test_package_does_not_import_the_served_model():
 
     The rest of this suite imports the app, so the check is the source of
     the research package, not whether that module happens to be loaded.
+    A string scan catches ``import_module`` and ``__import__`` as well as
+    ordinary import statements.
     """
     import ast
     from pathlib import Path
 
+    banned = ("team_ratings_v5", "app.services")
     root = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
     offenders = []
     for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        text = path.read_text()
+        for name in banned:
+            if name in text:
+                offenders.append(f"{path.name} mentions {name}")
+        tree = ast.parse(text)
         for node in ast.walk(tree):
             names: list[str] = []
             if isinstance(node, ast.Import):
@@ -44,8 +57,23 @@ def test_package_does_not_import_the_served_model():
             elif isinstance(node, ast.ImportFrom):
                 names = [node.module or ""]
                 names += [alias.name for alias in node.names]
-            if any("team_ratings_v5" in name for name in names):
-                offenders.append(f"{path.name}:{node.lineno}")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name):
+                    called = func.id
+                elif isinstance(func, ast.Attribute):
+                    called = func.attr
+                else:
+                    called = ""
+                if called in {"import_module", "__import__"}:
+                    names = [
+                        arg.value for arg in node.args
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    ]
+            else:
+                continue
+            if any(any(piece in name for piece in banned) for name in names):
+                offenders.append(f"{path.name}:{getattr(node, 'lineno', 0)}")
     assert offenders == []
 
 
@@ -330,7 +358,7 @@ def test_synthetic_game_reconciles_return_td_and_pick_six():
     built = build_drive_table(plays, schedule)
     assert list(built.drives["outcome"]) == ["TD", "PUNT", "TURNOVER", "END_OF_HALF"]
     assert list(built.drives["posteam"]) == ["BUF", "BUF", "KC", "BUF"]
-    starters = [None if pd.isna(value) else value for value in built.drives["starter_qb_id"]]
+    starters = [None if pd.isna(value) else value for value in built.drives["drive_first_passer_id"]]
     assert starters == ["QB_BUF", None, "QB_KC", "QB_KNEEL"]
     assert int(built.drives.loc[built.drives["outcome"].eq("TD"), "posteam_points"].iloc[0]) == 7
     assert int(built.drives.loc[built.drives["outcome"].eq("TURNOVER"), "defteam_points"].iloc[0]) == 7
@@ -406,6 +434,75 @@ def test_relocated_franchise_codes_still_get_a_home_flag():
     built = build_drive_table(plays, schedule)
     assert bool(built.drives.iloc[0]["posteam_is_home"]) is True
     assert built.drives.iloc[0]["posteam"] == "LA"
+
+
+def test_pregame_allowlist_does_not_read_the_in_game_passer():
+    assert "drive_first_passer_id" not in PREGAME_COLUMNS
+    source = (
+        Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim" / "pregame.py"
+    ).read_text()
+    assert "drive_first_passer_id" not in source
+    kick = datetime(2024, 9, 8, 13, 0, tzinfo=EASTERN)
+    charts = pd.DataFrame([
+        {
+            "season": 2024, "week": 1, "team": "BUF", "game_type": "REG",
+            "position": "QB", "depth_team": "1", "gsis_id": "QB_CHART",
+        },
+    ])
+    games = pd.DataFrame([{
+        "game_id": "G", "season": 2024, "week": 1, "game_type": "REG",
+        "kickoff_et": kick, "home_team": "BUF", "away_team": "KC",
+        "drive_first_passer_id": "IN_GAME_PASSER",
+    }])
+    table = pregame_quarterback_table(charts, games)
+    assert list(table.columns) == list(PREGAME_COLUMNS)
+    assert "drive_first_passer_id" not in table.columns
+    assert set(table["qb_id"].dropna()) == {"QB_CHART"}
+
+
+def test_mixed_depth_chart_uses_week_rows_and_snapshot_rows():
+    kick = datetime(2025, 9, 7, 13, 0, tzinfo=EASTERN)
+    charts = pd.DataFrame([
+        {
+            "season": 2025, "week": 1, "team": "BUF", "game_type": "REG",
+            "position": "QB", "depth_team": "1", "gsis_id": "QB_WEEK",
+            "dt": pd.NA, "pos_abb": pd.NA, "pos_rank": pd.NA,
+        },
+        {
+            "season": pd.NA, "week": pd.NA, "team": "KC", "game_type": pd.NA,
+            "position": pd.NA, "depth_team": pd.NA, "gsis_id": "QB_EARLY",
+            "dt": "2025-09-01T16:00:00Z", "pos_abb": "QB", "pos_rank": 1,
+        },
+        {
+            "season": pd.NA, "week": pd.NA, "team": "KC", "game_type": pd.NA,
+            "position": pd.NA, "depth_team": pd.NA, "gsis_id": "QB_BACKUP",
+            "dt": "2025-09-01T16:00:00Z", "pos_abb": "QB", "pos_rank": 2,
+        },
+        {
+            "season": pd.NA, "week": pd.NA, "team": "KC", "game_type": pd.NA,
+            "position": pd.NA, "depth_team": pd.NA, "gsis_id": "QB_AFTER",
+            "dt": "2025-09-08T16:00:00Z", "pos_abb": "QB", "pos_rank": 1,
+        },
+    ])
+    week_id, week_asof = pregame_quarterback(
+        charts, season=2025, week=1, team="BUF", game_type="REG", kickoff=kick,
+    )
+    snap_id, snap_asof = pregame_quarterback(
+        charts, season=2025, week=1, team="KC", game_type="REG", kickoff=kick,
+    )
+    assert week_id == "QB_WEEK"
+    assert week_asof == kick - timedelta(hours=1)
+    assert snap_id == "QB_EARLY"
+    assert snap_asof is not None and snap_asof < kick
+    assert_pregame(snap_asof, kick, "qb")
+    games = pd.DataFrame([{
+        "game_id": "G", "season": 2025, "week": 1, "game_type": "REG",
+        "kickoff_et": kick, "home_team": "BUF", "away_team": "KC",
+    }])
+    table = pregame_quarterback_table(charts, games)
+    by_team = dict(zip(table["team"], table["qb_id"]))
+    assert by_team["BUF"] == week_id
+    assert by_team["KC"] == snap_id
 
 
 def test_snapshot_depth_chart_after_kickoff_is_not_the_pregame_qb():

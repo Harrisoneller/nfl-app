@@ -23,4 +23,4 @@ seconds_elapsed,int64,"Drive time of possession in seconds when nflverse publish
 yards,int64,"Yards gained on pass, rush, kneel, and penalty plays. Punt and kick return yards are excluded"
 pass_plays,int64,"Pass plays, including spikes and sacks"
 rush_plays,int64,"Rush plays, including kneels"
-starter_qb_id,str,"On-field quarterback on the drive: first passer, else the kneel or rush rusher. Not the pre-game chart id"
+drive_first_passer_id,str,"In-game first passer on the drive, else the kneel or rush rusher. Not a pre-game chart id"

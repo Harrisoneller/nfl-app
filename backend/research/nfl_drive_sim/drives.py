@@ -52,7 +52,7 @@ DRIVE_COLUMNS = (
     "yards",
     "pass_plays",
     "rush_plays",
-    "starter_qb_id",
+    "drive_first_passer_id",
 )
 
 SCHEMA_NOTES = {
@@ -80,7 +80,7 @@ SCHEMA_NOTES = {
     "yards": "Yards gained on pass, rush, kneel, and penalty plays. Punt and kick return yards are excluded",
     "pass_plays": "Pass plays, including spikes and sacks",
     "rush_plays": "Rush plays, including kneels",
-    "starter_qb_id": "On-field quarterback on the drive: first passer, else the kneel or rush rusher. Not the pre-game chart id",
+    "drive_first_passer_id": "In-game first passer on the drive, else the kneel or rush rusher. Not a pre-game chart id",
 }
 
 SCRIMMAGE_TYPES = {"pass", "run", "punt", "field_goal", "qb_kneel", "qb_spike"}
@@ -535,7 +535,7 @@ def build_drive_table(pbp: pd.DataFrame, schedule: pd.DataFrame) -> DriveTables:
             "yards": round(float(yards)),
             "pass_plays": int(pass_flag.sum()),
             "rush_plays": int(rush_flag.sum()),
-            "starter_qb_id": passer,
+            "drive_first_passer_id": passer,
         })
 
     drives = pd.DataFrame(rows, columns=list(DRIVE_COLUMNS))

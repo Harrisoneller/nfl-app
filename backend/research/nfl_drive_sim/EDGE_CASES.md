@@ -34,8 +34,9 @@ Schedule rows for the St. Louis Rams, San Diego Chargers, and Oakland Raiders
 still say STL, SD, and OAK. Play-by-play uses LA, LAC, and LV. The home flag
 crosswalks those codes. The drive keeps the abbreviation that was on the play.
 
-`starter_qb_id` on a drive is different: it is the first passer on that drive,
-or the rusher when the drive is a kneel or a rush with no pass.
+`drive_first_passer_id` on a drive is the in-game first passer, or the rusher
+when the drive is a kneel or a rush with no pass. It is not a pre-game input.
+Pre-game helpers return only `PREGAME_COLUMNS`.
 
 ## What an offensive drive is
 
