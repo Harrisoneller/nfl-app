@@ -44,6 +44,10 @@ PREREG = ROOT / "TOTALS_PREREG.md"
 SIM_CONFIG_PATH = ROOT / "sim_config.py"
 P3_PREREG = ROOT / "P3_PREREG.md"
 OUT = ROOT / "outputs" / "totals" / "freezes"
+WINDOW1_PATH = ROOT / "outputs" / "totals" / "window1_game_ids.csv"
+WINDOW1_N = 121
+WINDOW1_SHA256 = "1a935f89a6ae60612c530493095adc1bcb93b99e5059176766dfee7502aa82ee"
+LAST_REG_WEEK = 18
 SIM_CONFIG_SHA256 = "f60cd566e06e87f66d000f8ec8f3afc4bd4e3b8ed91711374c005fe0e3be7ecb"
 P3_PREREG_SHA256 = "bb114c35ab5158a8b19223daf61af2213f783cee40fe6da4f160b697a2bab506"
 BANNED_OUTPUT = ("crps", "actual", "spread", "odds", "moneyline", "price", "kalshi")
@@ -116,6 +120,93 @@ def _with_kickoff(games: pd.DataFrame) -> pd.DataFrame:
     out = games.copy()
     out["kickoff_et"] = kicks
     return out.dropna(subset=["kickoff_et"])
+
+
+def _utc(value) -> pd.Timestamp:
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        return stamp.tz_localize("UTC")
+    return stamp.tz_convert("UTC")
+
+
+def load_window1(path: Path | None = None) -> pd.DataFrame:
+    """The pinned 121-game window. A hash or count mismatch aborts."""
+    source = Path(path) if path is not None else WINDOW1_PATH
+    digest = _sha256(source)
+    if digest != WINDOW1_SHA256:
+        raise FreezeError(f"window1 hash {digest} != {WINDOW1_SHA256}")
+    frame = pd.read_csv(source)
+    needed = ["game_id", "kickoff_et", "week"]
+    missing = [column for column in needed if column not in frame.columns]
+    if missing:
+        raise FreezeError(f"window1 missing columns {missing}")
+    if len(frame) != WINDOW1_N:
+        raise FreezeError(f"window1 has {len(frame)} games, expected {WINDOW1_N}")
+    if frame["game_id"].astype(str).duplicated().any():
+        raise FreezeError("window1 has a duplicate game_id")
+    ids = set(frame["game_id"].astype(str))
+    if "2026_11_ARI_KC" not in ids or "2026_11_IND_HOU" in ids:
+        raise FreezeError("window1 does not match the pinned kickoff rule")
+    return frame
+
+
+def slate_from_window(schedule: pd.DataFrame, window: pd.DataFrame, week: int) -> tuple[pd.DataFrame, pd.Timestamp]:
+    """Games for one week, taken from the pinned file and not from a schedule query."""
+    ids = window.loc[window["week"].astype(int).eq(int(week)), "game_id"].astype(str)
+    if len(ids) == 0:
+        raise FreezeError(f"week {week} is not in the pinned window")
+    wanted = set(ids)
+    frame = _with_kickoff(schedule)
+    frame = frame[frame["game_id"].astype(str).isin(wanted)].copy()
+    found = set(frame["game_id"].astype(str))
+    if found != wanted:
+        missing = sorted(wanted - found)[:5]
+        raise FreezeError(f"pinned games missing from the schedule: {missing}")
+    frame = frame.sort_values(["kickoff_et", "game_id"]).reset_index(drop=True)
+    cutoff = pd.to_datetime(frame["kickoff_et"], utc=True).min()
+    return frame, pd.Timestamp(cutoff)
+
+
+def refuse_started_game(kickoff, now) -> None:
+    """A game already past kickoff is not frozen later."""
+    if _utc(now) >= _utc(kickoff):
+        raise FreezeError("a game is already past kickoff")
+
+
+def assert_freeze_in_time(kickoffs, now) -> None:
+    """A missed slate is excluded. It is not backfilled and it is not rerun."""
+    stamps = [_utc(kick) for kick in kickoffs]
+    if not stamps:
+        raise FreezeError("empty slate")
+    if _utc(now) >= min(stamps):
+        raise FreezeError("missed freeze is excluded and is never backfilled or rerun")
+    for stamp in stamps:
+        refuse_started_game(stamp, now)
+
+
+def schedule_change(original_week: int, played_week: int | None, cancelled: bool) -> str:
+    """Where a postponed or cancelled game belongs. ``excluded`` is not a drop."""
+    if cancelled or played_week is None:
+        return "excluded"
+    played = int(played_week)
+    if played > LAST_REG_WEEK or played < 1:
+        return "excluded"
+    if played == int(original_week):
+        return "same_week"
+    return "other_week"
+
+
+def counts_toward_drop(change: str) -> bool:
+    """A cancellation or a post-week-18 move is outside the drop rate."""
+    return change != "excluded"
+
+
+def first_valid_freeze(attempts: list[tuple[object, object]]):
+    """The earliest freeze strictly before the actual kickoff. A late one does not count."""
+    valid = [_utc(frozen_at) for frozen_at, kickoff in attempts if _utc(frozen_at) < _utc(kickoff)]
+    if not valid:
+        return None
+    return min(valid)
 
 
 def select_week_games(
@@ -382,15 +473,27 @@ def _load_history(season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     return schedule, plays
 
 
-def freeze_week(season: int, week: int, on_or_after: object | None = None, update: Path | None = None) -> Path:
-    """Write one week's frozen totals. Raises while the prereg is a draft."""
+def freeze_week(
+    season: int,
+    week: int,
+    on_or_after: object | None = None,
+    update: Path | None = None,
+    now: object | None = None,
+) -> Path:
+    """Write one week's frozen totals. Raises while the prereg is a draft.
+
+    The game ids come from the pinned window file. ``on_or_after`` is ignored
+    so a caller cannot drop games out of that file.
+    """
     if not prereg_is_locked():
         raise FreezeLocked("TOTALS_PREREG.md is not locked. Refusing to freeze a week.")
     pins = assert_frozen_inputs()
+    window = load_window1()
     schedule, plays = _load_history(season)
     schedule, plays = apply_update(schedule, plays, update)
     schedule = _with_kickoff(schedule)
-    slate, cutoff = select_week_games(schedule, season, week, on_or_after)
+    slate, cutoff = slate_from_window(schedule, window, week)
+    assert_freeze_in_time(list(slate["kickoff_et"]), datetime.now(UTC) if now is None else now)
     assert_history_covers(schedule, plays, cutoff)
     drives = build_drive_table(plays, schedule).drives
     identified = assign_quarterbacks(schedule, _depth_charts())
@@ -518,7 +621,7 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
         "season": int(season),
         "week": int(week),
         "cutoff_et": pd.Timestamp(cutoff).tz_convert("America/New_York").isoformat(),
-        "on_or_after": None if on_or_after is None else str(on_or_after),
+        "on_or_after": None,
         "game_ids": [str(game_id) for game_id in slate["game_id"]],
         "ypp_on": False,
         "n_sims": int(cfg.N_SIMS),

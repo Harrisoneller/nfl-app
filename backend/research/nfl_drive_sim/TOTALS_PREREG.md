@@ -28,7 +28,9 @@ A game is pinned by its identity and its kickoff, not by its score.
 
 ### Window 1, 2026 early read
 
-Every 2026 regular-season game whose kickoff is on or after 2026-11-22 00:00 America/New_York, through week 18. That is 121 games, 8 season-weeks (week 11 is partial). The list is `outputs/totals/window1_game_ids.csv`, sha256 `d40a10c6a51d0390d8933218b7b111f5bb9428975921deb26e110619ef02dd8a`. `2026_11_IND_HOU` kicked off 2026-11-19 20:15 America/New_York and is not on the list.
+Every 2026 regular-season game whose kickoff is on or after 2026-11-22 00:00 America/New_York, through week 18. That is 121 games, 8 season-weeks (week 11 is partial). The list is `outputs/totals/window1_game_ids.csv`, with a header `game_id,kickoff_et,week`, sha256 `1a935f89a6ae60612c530493095adc1bcb93b99e5059176766dfee7502aa82ee`. `2026_11_ARI_KC` is on the list. `2026_11_IND_HOU` kicked off 2026-11-19 20:15 America/New_York and is not on the list.
+
+`load_window1` pins that count at 121 and that sha256. A mismatch aborts. `freeze_week.py` reads the week's game ids from this file. It does not choose the week by querying the schedule. The schedule supplies kickoff, teams, and scores for ids the file already names.
 
 The schedule's week 12 starts 2026-11-25 20:00 America/New_York (`2026_12_GB_LA`). The games on 2026-11-22 are schedule week 11. The freeze that has to land before the first kickoff on 2026-11-22 is the week-11 remainder: the twelve week-11 games on that list. Thursday's game is already excluded. The week-12 freeze is a later commit, before 2026-11-25 20:00 America/New_York.
 
@@ -65,6 +67,8 @@ Apply that design effect and sd(d) to each window. The normal 90% critical value
 
 The MDE is not a second decision rule. The calls above do not depend on it.
 
+At about 1.13 total-CRPS points on 121 games and 0.75 on 272, the likely result is INCONCLUSIVE unless the effect is large. The confirmatory window is not extended. The full 2027 regular season stays the decisive window, as Harrison set it. Any extension would be his call.
+
 ## Freeze protocol
 
 Each week, `freeze_week.py` writes the sim total distribution and the v5 total mean and sigma for that week's pinned games. The inputs are games whose kickoff is strictly before the cutoff. The cutoff is the first kickoff among the games being frozen, except for the week-11 remainder: that cutoff is the first kickoff on 2026-11-22 (13:00 America/New_York). Thursday's completed game may sit in that history. It is not a projected game.
@@ -72,6 +76,15 @@ Each week, `freeze_week.py` writes the sim total distribution and the v5 total m
 Commit the projection file, the input-hash file, and the manifest. `inputs.json` records `freeze_timestamp_utc` at the moment the files are written. `manifest.sha256` records the sha256 of `projections.csv`. The commit timestamp and `freeze_timestamp_utc` both have to be strictly before the first kickoff of the games in that file. A game whose projection was not committed before its own kickoff is `late_freeze` and is dropped from both models. Anything published from that week, including a website copy, has to come after that commit.
 
 Do not run `freeze_week.py` for any week until this document says `Status: locked`.
+
+There is no backfill. The script aborts unless the current time is strictly before that slate's first kickoff, America/New_York. It also refuses any individual game whose kickoff is already past. A missed freeze is excluded. It is never backfilled, and a missed week is never rerun.
+
+## Postponements and cancellations
+
+- A cancelled game is excluded. It does not count toward the drop rate or the void rate.
+- A game rescheduled within the same week stays in that week's slate and keeps that week's freeze, as long as the freeze is strictly before its actual kickoff.
+- A game moved to another week is frozen once, in the slate of the week it is actually played, using that week's pre-week cutoff. If it is played after week 18, it is excluded.
+- Only one freeze per game counts: the first valid freeze whose timestamp is strictly before the game's actual kickoff. A later file does not replace it. A file written after kickoff does not count.
 
 The week-11 remainder is fully identified from the locked schedule and the locked derived plays. Every game before 2026-11-22 13:00 America/New_York has a score and plays. A later freeze aborts if any scheduled game before its cutoff lacks a score or lacks plays. The missing week is supplied with `--update`, a directory of `games.parquet` and `pbp.parquet`. That directory is hashed in the freeze inputs. It is not written into `.cache` or `outputs/p3`. Feature rows for those games are the rows the earlier freeze committed, not a refit after they were played. The 2027-01-01 screen used by the cache study is off for this protocol. The only cutoff is the week's own.
 
@@ -125,6 +138,7 @@ Both models are scored on the intersection.
 - `model_failure`: either model raises, or returns a non-finite margin, total, or sigma, or a probability vector that does not sum to 1.
 - `late_freeze`: the projection commit is not strictly before that game's kickoff.
 - `not_completed`: at the single scoring time, the pinned game still has no finite pair of scores.
+- A cancellation, and a move to after week 18, is an exclusion. It is removed from the drop numerator and the drop denominator.
 
 The drop rate is dropped games divided by pinned games in that window. A rate above 5% voids the window. A void window gets no SUCCESS, FAILURE, INCONCLUSIVE, or harm flag. Drop counts are reported by reason.
 

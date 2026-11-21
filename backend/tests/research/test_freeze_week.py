@@ -12,18 +12,25 @@ import pytest
 from research.nfl_drive_sim.freeze_week import (
     FORMAT_VERSION,
     FREEZE_COLUMNS,
+    WINDOW1_N,
     FreezeError,
     FreezeLocked,
+    assert_freeze_in_time,
     assert_history_covers,
+    counts_toward_drop,
+    first_valid_freeze,
     freeze_week,
+    load_window1,
     prereg_is_locked,
     projection_frame,
+    refuse_started_game,
+    schedule_change,
     select_week_games,
 )
 
 ROOT = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
 WINDOW = ROOT / "outputs" / "totals" / "window1_game_ids.csv"
-WINDOW_SHA = "d40a10c6a51d0390d8933218b7b111f5bb9428975921deb26e110619ef02dd8a"
+WINDOW_SHA = "1a935f89a6ae60612c530493095adc1bcb93b99e5059176766dfee7502aa82ee"
 
 
 def test_prereg_is_still_a_draft_and_the_freeze_refuses():
@@ -47,14 +54,43 @@ def test_week_11_remainder_drops_thursday():
     assert "2026_11_IND_HOU" not in set(slate["game_id"])
 
 
-def test_window_pin_is_121_games_and_excludes_thursday():
+def test_window_pin_is_121_games_and_includes_ari_kc(tmp_path):
     text = WINDOW.read_text()
     assert hashlib.sha256(text.encode()).hexdigest() == WINDOW_SHA
-    ids = [line.split(",", 1)[0] for line in text.splitlines() if line]
-    assert len(ids) == 121
-    assert "2026_11_IND_HOU" not in ids
-    assert ids[0].startswith("2026_11_")
-    assert ids[-1].startswith("2026_18_")
+    frame = load_window1(WINDOW)
+    assert len(frame) == WINDOW1_N == 121
+    assert "2026_11_ARI_KC" in set(frame["game_id"].astype(str))
+    assert "2026_11_IND_HOU" not in set(frame["game_id"].astype(str))
+    assert list(frame.columns[:3]) == ["game_id", "kickoff_et", "week"]
+    broken = tmp_path / "window1_game_ids.csv"
+    broken.write_text(text.replace("2026_11_ARI_KC", "2026_11_ARI_XX"))
+    with pytest.raises(FreezeError, match="window1 hash"):
+        load_window1(broken)
+
+
+def test_a_missed_freeze_is_not_backfilled():
+    first = pd.Timestamp("2026-11-22 18:00", tz="UTC")
+    later = pd.Timestamp("2026-11-23 01:15", tz="UTC")
+    with pytest.raises(FreezeError, match="never backfilled"):
+        assert_freeze_in_time([first, later], first)
+    with pytest.raises(FreezeError, match="already past kickoff"):
+        refuse_started_game(later, pd.Timestamp("2026-11-23 02:00", tz="UTC"))
+    assert_freeze_in_time([first, later], pd.Timestamp("2026-11-22 17:59", tz="UTC"))
+    refuse_started_game(first, pd.Timestamp("2026-11-22 17:59", tz="UTC"))
+
+
+def test_postponement_rules():
+    assert schedule_change(11, 11, cancelled=True) == "excluded"
+    assert counts_toward_drop("excluded") is False
+    assert schedule_change(11, 11, cancelled=False) == "same_week"
+    assert schedule_change(11, 13, cancelled=False) == "other_week"
+    assert schedule_change(11, 19, cancelled=False) == "excluded"
+    kick = pd.Timestamp("2026-11-22 18:00", tz="UTC")
+    early = pd.Timestamp("2026-11-22 16:00", tz="UTC")
+    late = pd.Timestamp("2026-11-22 19:00", tz="UTC")
+    chosen = first_valid_freeze([(late, kick), (early, kick)])
+    assert chosen == early
+    assert first_valid_freeze([(late, kick)]) is None
 
 
 def test_a_score_or_a_market_column_cannot_be_a_projection():
