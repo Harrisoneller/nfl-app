@@ -26,6 +26,7 @@ from research.nfl_drive_sim.freeze_week import (
     refuse_started_game,
     schedule_change,
     select_week_games,
+    write_freeze,
 )
 
 ROOT = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
@@ -127,6 +128,151 @@ def test_format_is_versioned_and_the_prereg_names_the_scoring_source():
     assert "all or none" in text
     assert "freeze_timestamp_utc" in text
     assert "closing line value" in text
+
+
+def _locked(tmp_path) -> Path:
+    path = tmp_path / "TOTALS_PREREG.md"
+    path.write_text("Status: locked\n")
+    return path
+
+
+def _projection(game) -> dict:
+    return {
+        "format_version": FORMAT_VERSION,
+        "game_id": str(game.game_id),
+        "season": 2026,
+        "week": int(game.week),
+        "kickoff_et": pd.Timestamp(game.kickoff_et).isoformat(),
+        "home_team": game.home_team,
+        "away_team": game.away_team,
+        "home_qb": "h",
+        "away_qb": "a",
+        "drop_reason": "",
+        "sim_margin_mean": 1.0,
+        "sim_total_mean": 44.0,
+        "sim_margin_pmf": "1",
+        "sim_total_pmf": "1",
+        "v5_margin": 1.0,
+        "v5_total": 44.0,
+        "v5_sigma_margin": 10.0,
+        "v5_sigma_total": 10.0,
+        "n_sims": 10000,
+        "seed": 1,
+        "ypp_on": False,
+    }
+
+
+def _project(slate, _cutoff):
+    rows = [_projection(game) for game in slate.itertuples(index=False)]
+    features = pd.DataFrame({"game_id": [row["game_id"] for row in rows], "note": "synthetic"})
+    return rows, features
+
+
+def test_write_freeze_never_overwrites(tmp_path):
+    row = {
+        "format_version": FORMAT_VERSION,
+        "game_id": "G",
+        "season": 2026,
+        "week": 11,
+        "kickoff_et": "2026-11-22T18:00:00+00:00",
+        "home_team": "BUF",
+        "away_team": "MIA",
+        "home_qb": "h",
+        "away_qb": "a",
+        "drop_reason": "",
+        "sim_margin_mean": 1.0,
+        "sim_total_mean": 44.0,
+        "sim_margin_pmf": "1",
+        "sim_total_pmf": "1",
+        "v5_margin": 1.0,
+        "v5_total": 44.0,
+        "v5_sigma_margin": 10.0,
+        "v5_sigma_total": 10.0,
+        "n_sims": 10000,
+        "seed": 1,
+        "ypp_on": False,
+    }
+    features = pd.DataFrame({"game_id": ["G"], "note": ["synthetic"]})
+    root = tmp_path / "freezes"
+    dest = root / "2026_w11_first"
+    write_freeze(dest, [row], features, {"freeze_timestamp_utc": "2026-11-01T00:00:00Z"}, search_root=root)
+    original = (dest / "projections.csv").read_bytes()
+    with pytest.raises(FreezeError, match="already exists"):
+        write_freeze(dest, [row], features, {"freeze_timestamp_utc": "2026-11-02T00:00:00Z"}, search_root=root)
+    assert (dest / "projections.csv").read_bytes() == original
+    other = root / "2026_w11_second"
+    with pytest.raises(FreezeError, match="already exists"):
+        write_freeze(other, [row], features, {"freeze_timestamp_utc": "2026-11-02T00:00:00Z"}, search_root=root)
+    assert not other.exists()
+
+
+def test_a_moved_game_is_frozen_in_the_week_it_is_played(tmp_path):
+    window = pd.DataFrame({
+        "game_id": ["M", "B"],
+        "kickoff_et": ["2026-11-22T13:00:00-05:00", "2026-11-22T13:00:00-05:00"],
+        "week": [11, 11],
+    })
+    schedule = pd.DataFrame({
+        "game_id": ["M", "B"],
+        "season": [2026, 2026],
+        "week": [13, 11],
+        "game_type": ["REG", "REG"],
+        "kickoff_et": ["2026-11-29T13:00:00-05:00", "2026-11-22T13:00:00-05:00"],
+        "home_team": ["BUF", "DET"],
+        "away_team": ["KC", "CHI"],
+        "cancelled": [False, False],
+    })
+    now = pd.Timestamp("2026-11-01T00:00:00Z")
+    prereg = _locked(tmp_path)
+    freeze_week(
+        2026, 13, prereg_path=prereg, window=window, schedule=schedule,
+        out_root=tmp_path / "out", projector=_project, now=now,
+    )
+    freeze_week(
+        2026, 11, prereg_path=prereg, window=window, schedule=schedule,
+        out_root=tmp_path / "out", projector=_project, now=now,
+    )
+    week_13 = next((tmp_path / "out").glob("2026_w13_*"))
+    week_11 = next((tmp_path / "out").glob("2026_w11_*"))
+    moved = pd.read_csv(week_13 / "projections.csv")
+    stayed = pd.read_csv(week_11 / "projections.csv")
+    assert list(moved["game_id"]) == ["M"]
+    assert int(moved["week"].iloc[0]) == 13
+    assert list(stayed["game_id"]) == ["B"]
+    assert list(pd.read_csv(week_11 / "exclusions.csv")["reason"]) == ["moved"]
+    before = (week_13 / "projections.csv").read_bytes()
+    with pytest.raises(FreezeError, match="already exists"):
+        freeze_week(
+            2026, 13, prereg_path=prereg, window=window, schedule=schedule,
+            out_root=tmp_path / "out", projector=_project, now=now,
+        )
+    assert (week_13 / "projections.csv").read_bytes() == before
+
+
+def test_a_cancelled_game_is_excluded_and_the_rest_freeze(tmp_path):
+    window = pd.DataFrame({
+        "game_id": ["C", "D", "X"],
+        "kickoff_et": ["2026-11-29T13:00:00-05:00"] * 3,
+        "week": [13, 13, 13],
+    })
+    schedule = pd.DataFrame({
+        "game_id": ["C", "D"],
+        "season": [2026, 2026],
+        "week": [13, 13],
+        "game_type": ["REG", "REG"],
+        "kickoff_et": ["2026-11-29T13:00:00-05:00", "2026-11-29T16:00:00-05:00"],
+        "home_team": ["BUF", "DET"],
+        "away_team": ["KC", "CHI"],
+        "cancelled": [True, False],
+    })
+    freeze_week(
+        2026, 13, prereg_path=_locked(tmp_path), window=window, schedule=schedule,
+        out_root=tmp_path / "out", projector=_project, now=pd.Timestamp("2026-11-01T00:00:00Z"),
+    )
+    folder = next((tmp_path / "out").glob("2026_w13_*"))
+    assert list(pd.read_csv(folder / "projections.csv")["game_id"]) == ["D"]
+    logged = pd.read_csv(folder / "exclusions.csv")
+    assert set(zip(logged["game_id"], logged["reason"], strict=True)) == {("C", "cancelled"), ("X", "missing")}
 
 
 def test_freeze_source_does_not_import_the_served_model_or_a_market_path():

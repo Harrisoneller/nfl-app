@@ -150,21 +150,63 @@ def load_window1(path: Path | None = None) -> pd.DataFrame:
     return frame
 
 
-def slate_from_window(schedule: pd.DataFrame, window: pd.DataFrame, week: int) -> tuple[pd.DataFrame, pd.Timestamp]:
-    """Games for one week, taken from the pinned file and not from a schedule query."""
-    ids = window.loc[window["week"].astype(int).eq(int(week)), "game_id"].astype(str)
-    if len(ids) == 0:
-        raise FreezeError(f"week {week} is not in the pinned window")
-    wanted = set(ids)
-    frame = _with_kickoff(schedule)
-    frame = frame[frame["game_id"].astype(str).isin(wanted)].copy()
-    found = set(frame["game_id"].astype(str))
-    if found != wanted:
-        missing = sorted(wanted - found)[:5]
-        raise FreezeError(f"pinned games missing from the schedule: {missing}")
-    frame = frame.sort_values(["kickoff_et", "game_id"]).reset_index(drop=True)
-    cutoff = pd.to_datetime(frame["kickoff_et"], utc=True).min()
-    return frame, pd.Timestamp(cutoff)
+def _cancelled(value) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "cancelled", "canceled"}
+    return bool(value)
+
+
+def assemble_slate(
+    window: pd.DataFrame,
+    schedule: pd.DataFrame,
+    week: int,
+) -> tuple[pd.DataFrame, pd.Timestamp | None, list[dict[str, str]]]:
+    """Pinned games whose current kickoff falls in ``week``.
+
+    A move follows the schedule week. A cancellation, a missing row, or a
+    move past week 18 is logged and left out. The other games still freeze.
+    """
+    pinned = window.loc[:, ["game_id", "week"]].copy()
+    pinned["game_id"] = pinned["game_id"].astype(str)
+    pinned = pinned.rename(columns={"week": "original_week"})
+    sched = _with_kickoff(schedule).copy() if schedule is not None and len(schedule) else pd.DataFrame()
+    if len(sched):
+        sched["game_id"] = sched["game_id"].astype(str)
+        if "cancelled" not in sched.columns:
+            sched["cancelled"] = False
+    merged = pinned.merge(sched, on="game_id", how="left", indicator=True)
+    keep: list[int] = []
+    exclusions: list[dict[str, str]] = []
+    for idx, rec in merged.iterrows():
+        original = int(rec["original_week"])
+        missing = rec["_merge"] != "both" or pd.isna(rec.get("week"))
+        played = None if missing else int(rec["week"])
+        cancelled = False if missing else _cancelled(rec.get("cancelled"))
+        change = schedule_change(original, played, cancelled or missing)
+        gid = str(rec["game_id"])
+        if missing or cancelled or change == "excluded":
+            if original == int(week) or played == int(week):
+                if missing:
+                    reason = "missing"
+                elif cancelled:
+                    reason = "cancelled"
+                else:
+                    reason = "after_week_18"
+                exclusions.append({"game_id": gid, "reason": reason})
+            continue
+        if played != int(week):
+            if original == int(week):
+                exclusions.append({"game_id": gid, "reason": "moved"})
+            continue
+        keep.append(idx)
+    if not keep:
+        return merged.iloc[0:0].copy(), None, exclusions
+    slate = merged.loc[keep].drop(columns=["original_week", "_merge"]).reset_index(drop=True)
+    slate = slate.sort_values(["kickoff_et", "game_id"]).reset_index(drop=True)
+    cutoff = pd.to_datetime(slate["kickoff_et"], utc=True).min()
+    return slate, pd.Timestamp(cutoff), exclusions
 
 
 def refuse_started_game(kickoff, now) -> None:
@@ -438,21 +480,65 @@ def projection_frame(rows: list[dict]) -> pd.DataFrame:
     return cleaned
 
 
-def write_freeze(directory: Path, rows: list[dict], features: pd.DataFrame, inputs: dict) -> Path:
-    """Hash the projection and the input list. Does not score."""
-    directory.mkdir(parents=True, exist_ok=True)
+def _existing_freeze_ids(root: Path) -> dict[str, tuple[object, object]]:
+    """game_id to (freeze timestamp, kickoff) from freeze directories already on disk."""
+    found: dict[str, tuple[object, object]] = {}
+    if not root.exists():
+        return found
+    for proj in sorted(root.glob("*/projections.csv")):
+        frame = pd.read_csv(proj)
+        if "game_id" not in frame.columns:
+            continue
+        info = proj.parent / "inputs.json"
+        frozen_at = None
+        if info.exists():
+            frozen_at = json.loads(info.read_text()).get("freeze_timestamp_utc")
+        for rec in frame.itertuples(index=False):
+            gid = str(rec.game_id)
+            kick = getattr(rec, "kickoff_et", None)
+            found.setdefault(gid, (frozen_at, kick))
+    return found
+
+
+def write_freeze(
+    directory: Path,
+    rows: list[dict],
+    features: pd.DataFrame,
+    inputs: dict,
+    exclusions: list[dict[str, str]] | None = None,
+    search_root: Path | None = None,
+) -> Path:
+    """Hash the projection and the input list. Does not score or overwrite."""
+    if directory.exists():
+        raise FreezeError(f"freeze directory already exists: {directory.name}")
+    root = search_root if search_root is not None else directory.parent
+    existing = _existing_freeze_ids(root)
+    clash = []
+    for row in rows:
+        gid = str(row["game_id"])
+        if gid not in existing:
+            continue
+        frozen_at, kick = existing[gid]
+        prior = None if frozen_at is None or kick is None else first_valid_freeze([(frozen_at, kick)])
+        clash.append(gid if prior is None else f"{gid} (first valid freeze)")
+    if clash:
+        raise FreezeError(f"freeze record already exists for {clash[:5]}")
+    directory.mkdir(parents=True, exist_ok=False)
     frame = ordered_projection(rows)
     feature_frame = projection_frame(features.to_dict(orient="records"))
     proj = directory / "projections.csv"
     feat = directory / "feature_rows.csv"
     info = directory / "inputs.json"
+    excluded = directory / "exclusions.csv"
     manifest = directory / "manifest.sha256"
     frame.to_csv(proj, index=False)
     feature_frame.to_csv(feat, index=False)
+    pd.DataFrame(exclusions or [], columns=["game_id", "reason"]).to_csv(excluded, index=False)
     info.write_text(json.dumps(inputs, indent=2, sort_keys=True) + "\n")
     lines = [
         f"{_sha256(proj)}  projections.csv\n",
         f"{_sha256(feat)}  feature_rows.csv\n",
+        f"{_sha256(excluded)}  exclusions.csv\n",
         f"{_sha256(info)}  inputs.json\n",
     ]
     manifest.write_text("".join(lines))
@@ -473,28 +559,78 @@ def _load_history(season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     return schedule, plays
 
 
+def _stamp(cutoff) -> str:
+    return pd.Timestamp(cutoff).tz_convert("America/New_York").strftime("%Y%m%dT%H%M")
+
+
+def _freeze_inputs(season: int, week: int, cutoff, slate: pd.DataFrame, exclusions: list[dict[str, str]]) -> dict:
+    return {
+        "format_version": FORMAT_VERSION,
+        "freeze_timestamp_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "margin_sign": "home_minus_away",
+        "publish": "all_or_none",
+        "score_from": "committed_freeze_files_on_this_branch",
+        "season": int(season),
+        "week": int(week),
+        "cutoff_et": pd.Timestamp(cutoff).tz_convert("America/New_York").isoformat(),
+        "on_or_after": None,
+        "game_ids": [str(game_id) for game_id in slate["game_id"]],
+        "exclusions": exclusions,
+        "ypp_on": False,
+        "n_sims": int(cfg.N_SIMS),
+        "scored": False,
+    }
+
+
 def freeze_week(
     season: int,
     week: int,
     on_or_after: object | None = None,
     update: Path | None = None,
     now: object | None = None,
+    prereg_path: Path | None = None,
+    window: pd.DataFrame | None = None,
+    schedule: pd.DataFrame | None = None,
+    out_root: Path | None = None,
+    projector=None,
 ) -> Path:
     """Write one week's frozen totals. Raises while the prereg is a draft.
 
-    The game ids come from the pinned window file. ``on_or_after`` is ignored
-    so a caller cannot drop games out of that file.
+    The game ids start in the pinned window file. The slate uses each game's
+    current schedule week and kickoff. ``on_or_after`` cannot add or drop games.
+    ``projector`` is the synthetic path used by tests. It does not touch the cache.
     """
-    if not prereg_is_locked():
+    del on_or_after
+    if not prereg_is_locked(prereg_path):
         raise FreezeLocked("TOTALS_PREREG.md is not locked. Refusing to freeze a week.")
+    current = datetime.now(UTC) if now is None else now
+    if projector is not None:
+        if window is None or schedule is None or out_root is None:
+            raise FreezeError("synthetic freeze needs a window, schedule, and output directory")
+        slate, cutoff, exclusions = assemble_slate(window, schedule, week)
+        if cutoff is None or len(slate) == 0:
+            raise FreezeError("no games left to freeze")
+        assert_freeze_in_time(list(slate["kickoff_et"]), current)
+        rows, features = projector(slate, cutoff)
+        directory = Path(out_root) / f"{int(season)}_w{int(week)}_{_stamp(cutoff)}"
+        for item in exclusions:
+            print(f"excluded {item['game_id']} {item['reason']}", flush=True)
+        return write_freeze(
+            directory, rows, features, _freeze_inputs(season, week, cutoff, slate, exclusions),
+            exclusions, search_root=Path(out_root),
+        )
     pins = assert_frozen_inputs()
-    window = load_window1()
+    window = load_window1() if window is None else window
     schedule, plays = _load_history(season)
     schedule, plays = apply_update(schedule, plays, update)
     schedule = _with_kickoff(schedule)
-    slate, cutoff = slate_from_window(schedule, window, week)
-    assert_freeze_in_time(list(slate["kickoff_et"]), datetime.now(UTC) if now is None else now)
-    assert_history_covers(schedule, plays, cutoff)
+    slate, cutoff, exclusions = assemble_slate(window, schedule, week)
+    if cutoff is None or len(slate) == 0:
+        raise FreezeError("no games left to freeze")
+    assert_freeze_in_time(list(slate["kickoff_et"]), current)
+    excluded_ids = {item["game_id"] for item in exclusions}
+    history_schedule = schedule[~schedule["game_id"].astype(str).isin(excluded_ids)]
+    assert_history_covers(history_schedule, plays, cutoff)
     drives = build_drive_table(plays, schedule).drives
     identified = assign_quarterbacks(schedule, _depth_charts())
     kicks = pd.to_datetime(slate["kickoff_et"], utc=True)
@@ -610,28 +746,15 @@ def freeze_week(
             "seed": int(sim_seed(gid)),
             "ypp_on": False,
         })
-    stamp = pd.Timestamp(cutoff).tz_convert("America/New_York").strftime("%Y%m%dT%H%M")
-    directory = OUT / f"{int(season)}_w{int(week)}_{stamp}"
-    inputs = {
-        "format_version": FORMAT_VERSION,
-        "freeze_timestamp_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "margin_sign": "home_minus_away",
-        "publish": "all_or_none",
-        "score_from": "committed_freeze_files_on_this_branch",
-        "season": int(season),
-        "week": int(week),
-        "cutoff_et": pd.Timestamp(cutoff).tz_convert("America/New_York").isoformat(),
-        "on_or_after": None,
-        "game_ids": [str(game_id) for game_id in slate["game_id"]],
-        "ypp_on": False,
-        "n_sims": int(cfg.N_SIMS),
-        "pins": pins,
-        "schedule_sha256": _sha256(LOCKED_GAMES),
-        "features_sha256": _sha256(DERIVED / "features_v5.parquet"),
-        "update": None if update is None else str(update),
-        "scored": False,
-    }
-    manifest = write_freeze(directory, rows, test, inputs)
+    directory = OUT / f"{int(season)}_w{int(week)}_{_stamp(cutoff)}"
+    inputs = _freeze_inputs(season, week, cutoff, slate, exclusions)
+    inputs["pins"] = pins
+    inputs["schedule_sha256"] = _sha256(LOCKED_GAMES)
+    inputs["features_sha256"] = _sha256(DERIVED / "features_v5.parquet")
+    inputs["update"] = None if update is None else str(update)
+    for item in exclusions:
+        print(f"excluded {item['game_id']} {item['reason']}", flush=True)
+    manifest = write_freeze(directory, rows, test, inputs, exclusions, search_root=OUT)
     print(f"froze {len(rows)} games at {directory}", flush=True)
     print(manifest.read_text(), flush=True)
     return manifest
