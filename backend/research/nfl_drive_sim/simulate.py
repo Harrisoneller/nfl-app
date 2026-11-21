@@ -352,6 +352,8 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
     home_drives = np.zeros(n)
     away_drives = np.zeros(n)
     ot_flag = np.zeros(n, dtype=bool)
+    margin_at_5 = np.full(n, np.nan)
+    seen_5 = np.zeros(n, dtype=bool)
     half_left = np.full(n, cfg.REGULATION_HALF_SECONDS)
     half_id = np.ones(n, dtype=int)
     if "receive_home" in card:
@@ -409,6 +411,10 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         active = alive & (half_left > 0)
         if not np.any(active):
             break
+        # First time the second half is observed with five minutes or less.
+        mark_5 = active & (half_id == 2) & (half_left <= 300.0) & ~seen_5
+        margin_at_5 = np.where(mark_5, home_pts - away_pts, margin_at_5)
+        seen_5 = seen_5 | mark_5
         trace.append(half_left.copy())
         diff = np.where(offense_home, home_pts - away_pts, away_pts - home_pts)
         state = situation_array(diff, half_left)
@@ -464,6 +470,7 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         "home_drives": home_drives,
         "away_drives": away_drives,
         "ot": ot_flag.astype(float),
+        "margin_at_5min": margin_at_5,
         "half_trace": trace,
     }
 

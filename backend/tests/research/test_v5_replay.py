@@ -67,6 +67,22 @@ def test_banned_functions_and_market_columns_are_not_reachable():
     assert PARAMS_SHA256 == PINNED_PARAMS_SHA
 
 
+def test_strip_frame_drops_market_columns_and_keeps_the_rest():
+    """A gutted strip_frame that returns the frame unchanged fails this check."""
+    from research.nfl_drive_sim.v5_replay import strip_frame
+    frame = pd.DataFrame({
+        "epa_d": [1.5],
+        "spread_line": [-3.0],
+        "total_line": [47.5],
+        "moneyline": [-150],
+    })
+    cleaned = strip_frame(frame)
+    assert list(cleaned.columns) == ["epa_d"]
+    assert cleaned["epa_d"].iloc[0] == 1.5
+    assert "spread_line" not in cleaned.columns
+    assert frame["spread_line"].iloc[0] == -3.0
+
+
 def test_replay_week_rejects_a_short_window_and_strips_a_market_column():
     rows = []
     for index in range(32):
