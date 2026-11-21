@@ -243,3 +243,26 @@ Market data is used only to replay the incumbent, and only as the past-close
 be joined after both projections exist, as an edge column. That column is
 not `d`. The Odds API is not called. Prop prices are not a feature, a
 target, or a weight on either arm in this test.
+
+## Bans
+
+`backend/tests/test_player_refit_arms.py` monkeypatches the banned calls so
+they raise, then runs each arm on synthetic rows.
+
+The refit must not call `over_prob`, the prop-anchor shift, any odds feed,
+or a spread / `imp_pts` market input, and it must not call live v5
+(`team_ratings_v5` while `mkt_d` is in its margin coefficients). Its team
+points come only from the pinned `v5_replay`. The incumbent must not call
+the prop-anchor shift or odds. The incumbent arm runs with the prop anchor
+off.
+
+The fit window is still the one above: strictly earlier than the first
+regular-season kickoff of the scored week, in Eastern time. A row at that
+exact kickoff is excluded.
+
+## Cost
+
+The run stops at 4 CPU-hours. Spend is $0. The Odds API is not called.
+Hitting the stop means switching solvers. It does not mean dropping a
+season, a week, a stat, a row, or a bootstrap replicate. The replicate count
+stays 999.
