@@ -163,8 +163,22 @@ export type PlayerProfile = {
 };
 export type TrendPoint = { season: number; value: number | null; percentile?: number | null };
 
+export type FrozenSim = {
+  game_id: string;
+  season: number;
+  week: number;
+  sim_total: number;
+  sim_margin_home: number;
+  sim_home_wp: number;
+  frozen_at: string;
+  source_commit: string;
+  sha256: string;
+};
+
 export type GamePrediction = {
   id: string;
+  /** Frozen pre-kickoff drive sim. Null hides the panel. */
+  sim?: FrozenSim | null;
   season: number;
   week: number;
   gameday: string;
@@ -277,6 +291,8 @@ export type WeekSlateGame = {
   distribution?: { margin_interval_80?: [number, number] } | null;
   market?: { spread_home?: number | null; total?: number | null } | null;
   model_only?: { predicted_spread?: number } | null;
+  /** Frozen pre-kickoff drive sim. Null hides the panel. */
+  sim?: FrozenSim | null;
 };
 
 export type WeekSlateResponse = {
@@ -435,6 +451,9 @@ export type H2HMatchup = {
     played?: boolean;
     home_score?: number | null;
     away_score?: number | null;
+    game_id?: string | null;
+    /** Frozen pre-kickoff drive sim. Null hides the panel. */
+    sim?: FrozenSim | null;
     prediction: GamePrediction["prediction"];
   } | null;
   market_context?: {

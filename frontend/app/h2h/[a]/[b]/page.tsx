@@ -15,6 +15,7 @@ import { usePersona } from "@/context/PersonaProvider";
 import { TEAM_METRIC_LABELS, teamMetricFmt, teamMetricLabel } from "@/lib/metrics";
 import { WhyPredictionPanel } from "@/components/predictions/WhyPredictionPanel";
 import { formatHomeSpread, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
+import { SimPanel } from "@/components/predictions/SimPanel";
 
 const MultiRadar = dynamic(
   () => import("@/components/charts/MultiRadar").then((m) => m.MultiRadar),
@@ -262,6 +263,7 @@ function PredictionHero({ data }: { data: H2HMatchup }) {
         <Mini label="Model score" value={`${headline.awayScore.toFixed(0)}-${headline.homeScore.toFixed(0)}`} />
         <Mini label="Game script" value={(p as any).game_script || "—"} />
       </div>
+      <SimPanel sim={pred.sim} />
       <div className="mt-3">
         <WhyPredictionPanel
           game={{

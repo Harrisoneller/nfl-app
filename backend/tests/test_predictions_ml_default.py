@@ -24,7 +24,7 @@ async def test_games_skips_ml_unless_requested(monkeypatch):
     monkeypatch.setattr(pred_router.ml_predictions_service, "predict_week_ml", predict_week_ml)
 
     body = await pred_router.games(Response(), season=2025, week=1, db=None)
-    assert body["games"] == [{"id": "g1"}]
+    assert body["games"] == [{"id": "g1", "sim": None}]
     assert body["_budget"]["ml"] is None
 
 

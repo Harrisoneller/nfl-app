@@ -15,6 +15,7 @@ import { FreshnessBadges } from "@/components/FreshnessBadges";
 import { ExperimentedInsightCards } from "@/components/home/ExperimentedInsightCards";
 import { PersonaGate } from "@/components/persona/PersonaGate";
 import { formatHomeSpread, formatMarketLine, headlineNumbers, headlineSourceLabel } from "@/lib/headline";
+import { SimPanel } from "@/components/predictions/SimPanel";
 
 export const revalidate = 60;
 export const maxDuration = 30;
@@ -531,6 +532,7 @@ function FeaturedGame({ game, weekLabel }: { game: GamePrediction; weekLabel: st
           value={formatMarketLine(p.market, game.home_team_id, game.away_team_id)}
         />
       </div>
+      <SimPanel sim={game.sim} />
     </section>
   );
 }

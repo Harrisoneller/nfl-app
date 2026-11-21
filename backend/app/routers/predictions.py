@@ -17,6 +17,7 @@ from ..services import (
     predictions_service,
     request_budget_service,
 )
+from ..services.sim_panel_store import attach_games, public_record
 from ..utils.seasons import current_or_upcoming_season, latest_completed_season
 
 router = APIRouter()
@@ -93,7 +94,7 @@ async def games(
     # Never let CDNs / Next ISR cache an empty timeout fallback as "no slate".
     if base_budget.get("tier") != "primary" or not base.get("games"):
         response.headers["Cache-Control"] = "no-store"
-    return base
+    return attach_games(base)
 
 
 @router.get("/week-slate")
@@ -123,7 +124,13 @@ async def week_slate(
     )
     if budget.get("tier") != "primary" or not payload.get("games"):
         response.headers["Cache-Control"] = "no-store"
-    return payload
+    return attach_games(payload)
+
+
+@router.get("/sim/{game_id}")
+async def frozen_sim(game_id: str):
+    """Frozen pre-kickoff drive sim for one game, or null when none was published."""
+    return {"sim": public_record(game_id)}
 
 
 @router.get("/teams/{team_id}/season")

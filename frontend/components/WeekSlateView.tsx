@@ -11,6 +11,7 @@ import { formatScheduleKickoff } from "@/lib/kickoff";
 import { Card } from "@/components/Card";
 import { TeamLogo } from "@/components/TeamLogo";
 import { WinProbBar } from "@/components/predictions/WinProbBar";
+import { SimPanel } from "@/components/predictions/SimPanel";
 
 /**
  * Weekly slate — model projections vs market for every REG game this week.
@@ -351,6 +352,7 @@ function GameRow({ g }: { g: WeekSlateGame }) {
           {formatScheduleKickoff(g)}
         </div>
       )}
+      <SimPanel sim={g.sim} />
     </Card>
   );
 }
