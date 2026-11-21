@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -26,9 +25,28 @@ CHICAGO = ZoneInfo("America/Chicago")
 
 
 def test_package_does_not_import_the_served_model():
-    import research.nfl_drive_sim  # noqa: F401
+    """The research package must not import the served rating model.
 
-    assert "app.services.team_ratings_v5" not in sys.modules
+    The rest of this suite imports the app, so the check is the source of
+    the research package, not whether that module happens to be loaded.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+                names += [alias.name for alias in node.names]
+            if any("team_ratings_v5" in name for name in names):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
 
 
 def test_pregame_rows_exclude_the_target_game_and_later_games():
