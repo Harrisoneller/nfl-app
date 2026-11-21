@@ -699,9 +699,7 @@ function ScheduleSection({ schedule, season }: { schedule: any[]; season: number
               <span className="flex-1">{g.away_team_id} @ {g.home_team_id}</span>
               <span className="text-muted">{g.status_detail || g.status}</span>
               <span className="tabular-nums w-16 text-right">
-                {g.home_score != null && g.away_score != null
-                  ? `${g.away_score}–${g.home_score}`
-                  : "—"}
+                {g.away_score ?? ""}–{g.home_score ?? ""}
               </span>
             </li>
           ))}

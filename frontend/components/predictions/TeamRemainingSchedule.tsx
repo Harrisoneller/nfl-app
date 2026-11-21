@@ -117,16 +117,13 @@ export function TeamRemainingScheduleCard({ teamId }: { teamId: string }) {
                   )}
                 </td>
                 <td className="pr-3 tabular-nums">
-                  {g.played ? "—" : `${(g.win_prob * 100).toFixed(0)}%`}
+                  {(g.win_prob * 100).toFixed(0)}%
                 </td>
                 <td className="pr-3 tabular-nums">
-                  {g.played
-                    ? "—"
-                    : `${g.predicted_spread_for_team > 0 ? "+" : ""}${g.predicted_spread_for_team.toFixed(1)}`}
+                  {g.predicted_spread_for_team > 0 ? "+" : ""}
+                  {g.predicted_spread_for_team.toFixed(1)}
                 </td>
-                <td className="pr-3 tabular-nums">
-                  {g.played ? "—" : g.predicted_total.toFixed(1)}
-                </td>
+                <td className="pr-3 tabular-nums">{g.predicted_total.toFixed(1)}</td>
               </tr>
             ))}
           </tbody>
