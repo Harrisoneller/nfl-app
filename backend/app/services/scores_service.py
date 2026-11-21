@@ -276,8 +276,8 @@ async def refresh_season_schedule(db: Session, season: int) -> int:
 
 def _scoreboard_values(ev: dict[str, Any], by_espn_id: dict[int, str]) -> dict[str, Any]:
     status = (ev.get("status") or "scheduled").lower()
-    # ESPN returns 0 for scheduled/upcoming games — treat as NULL unless live/final.
-    if status in ("final", "in", "live", "in progress"):
+    # ESPN returns 0 for scheduled games. "post" is the completed state.
+    if status in ("final", "in", "live", "in progress", "post"):
         home_score = ev.get("home_score")
         away_score = ev.get("away_score")
     else:
@@ -498,13 +498,33 @@ def list_current_games(db: Session, limit: int = 32) -> list[Game]:
     )
 
 
+def _game_has_score(game: Game) -> bool:
+    return game.home_score is not None and game.away_score is not None
+
+
+def _prefer_schedule_game(existing: Game, incoming: Game) -> Game:
+    """Keep the row that has a final. Never replace a score with a blank."""
+    existing_scored = _game_has_score(existing)
+    incoming_scored = _game_has_score(incoming)
+    if incoming_scored != existing_scored:
+        return incoming if incoming_scored else existing
+    if _is_nflverse_game_id(incoming.id) and not _is_nflverse_game_id(existing.id):
+        return incoming
+    return existing
+
+
 def list_team_schedule(db: Session, team_id: str, season: int | None = None) -> list[Game]:
     q = db.query(Game).filter(
         (Game.home_team_id == team_id) | (Game.away_team_id == team_id)
     )
     if season is not None:
         q = q.filter(Game.season == season)
-    return q.order_by(Game.start_time.asc().nullslast()).all()
+    chosen: dict[tuple, Game] = {}
+    for game in q.order_by(Game.start_time.asc().nullslast()).all():
+        key = (game.season, game.season_type, game.week, game.home_team_id, game.away_team_id)
+        prev = chosen.get(key)
+        chosen[key] = game if prev is None else _prefer_schedule_game(prev, game)
+    return list(chosen.values())
 
 
 def _resolve(by_espn_id: dict[int, str], side: dict[str, Any]) -> str | None:
