@@ -368,10 +368,10 @@ export type BettingRecord = {
   su: { wins: number; losses: number; ties: number };
   ats: { wins: number; losses: number; pushes: number; win_pct: number };
   ou: { overs: number; unders: number; pushes: number; over_pct: number };
-  as_favorite: { games: number; wins: number; losses: number; win_pct: number };
-  as_underdog: { games: number; wins: number; losses: number; win_pct: number };
-  home_split: { games: number; wins: number; losses: number; win_pct: number };
-  away_split: { games: number; wins: number; losses: number; win_pct: number };
+  as_favorite: { games: number; wins: number; losses: number; ties?: number; win_pct: number };
+  as_underdog: { games: number; wins: number; losses: number; ties?: number; win_pct: number };
+  home_split: { games: number; wins: number; losses: number; ties?: number; win_pct: number };
+  away_split: { games: number; wins: number; losses: number; ties?: number; win_pct: number };
 };
 
 export type TeamBettingHistory = {
