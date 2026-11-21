@@ -1,13 +1,12 @@
 """Vectorized game sim.
 
-2018 overtime, simplified. A new coin flip gives one team the ball for a
-10-minute period. A touchdown on that first possession wins immediately.
-Anything else gives the opponent a possession. After both teams have
-possessed, the next score wins. If the period expires with the score tied,
-the game is a tie. A playoff game that is still tied gets one more
-10-minute sudden-death period and then stops, so a sim cannot run forever.
-The 2018 regular season did allow ties. Possessions are an output of the
-clock, not an input, unless an oracle pace is supplied.
+2018 overtime. Each period is 10 minutes. A touchdown on the first
+possession wins immediately, and so does a safety or a defensive score.
+A field goal on that first possession does not end the game. Once both
+teams have possessed, the next score wins. If the clock expires with the
+score tied, a regular-season game stays tied. A playoff starts another
+period and keeps going. Possessions are an output of the clock, not an
+input, unless an oracle pace is supplied.
 """
 
 from __future__ import annotations
@@ -254,11 +253,17 @@ def _expected_scrimmage_seconds(pass_rate, inc_rate, sack_rate, mix, means) -> n
 
 
 def _outcomes(card, n, rng, offense_home, yard, diff, half_left, home_to, away_to, active):
+    script = card.get("scripted_outcomes")
+    if script:
+        index = int(card.get("_script_i", 0))
+        card["_script_i"] = index + 1
+        return np.full(n, int(script[min(index, len(script) - 1)]))
     if card.get("forced_outcome") is not None:
         return np.full(n, int(card["forced_outcome"]))
     late = card.get("late_table")
     if late is not None and np.any(half_left <= cfg.TWO_MINUTE_SECONDS):
-        late_draw = _sample_late(yard, rng, late)
+        timeouts = np.where(offense_home, home_to, away_to)
+        late_draw = _sample_late(yard, diff, half_left, timeouts, rng, late)
     else:
         late_draw = None
     model = card["drive_model"]
@@ -304,13 +309,19 @@ def _outcomes(card, n, rng, offense_home, yard, diff, half_left, home_to, away_t
     return chosen
 
 
-def _sample_late(yard: np.ndarray, rng, table: dict) -> np.ndarray:
-    edges = np.asarray(table["edges"], dtype=float)
+def _sample_late(yard, diff, half_left, timeouts, rng, table: dict) -> np.ndarray:
+    """Draw a two-minute ending from the score x field x time x timeout table."""
+    score_edges = np.asarray(table["score_edges"], dtype=float)
+    yard_edges = np.asarray(table["yard_edges"], dtype=float)
     probs = np.asarray(table["probs"], dtype=float)
-    bins = np.clip(np.searchsorted(edges, yard, side="right") - 1, 0, probs.shape[0] - 1)
-    cdf = np.cumsum(probs, axis=1)
+    sbin = np.clip(np.searchsorted(score_edges, diff, side="right") - 1, 0, probs.shape[0] - 1)
+    ybin = np.clip(np.searchsorted(yard_edges, yard, side="right") - 1, 0, probs.shape[1] - 1)
+    tbin = (half_left > cfg.LATE_TIME_SPLIT).astype(int)
+    obin = (timeouts >= 1).astype(int)
+    chosen = probs[sbin, ybin, tbin, obin]
+    cdf = np.cumsum(chosen, axis=1)
     draw = rng.random(yard.shape[0])
-    return (draw[:, None] > cdf[bins]).sum(axis=1).astype(int)
+    return (draw[:, None] > cdf).sum(axis=1).astype(int)
 
 
 def _points(card, outcome, n, rng):
@@ -374,12 +385,23 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
             alive = (alive & ~reg_done) | tied
             half_id = np.where(tied, 3, half_id)
             half_left = np.where(tied, cfg.OT_SECONDS, half_left)
-            coin = rng.random(n) < 0.5
+            if card.get("ot_receive_home") is None:
+                coin = rng.random(n) < 0.5
+            else:
+                coin = np.full(n, bool(card["ot_receive_home"]))
             offense_home = np.where(tied, coin, offense_home)
             ot_poss = np.where(tied, 0, ot_poss)
             starts_with_kick = np.where(tied, True, starts_with_kick)
-        ot_done = alive & (half_left <= 0) & (half_id >= 3)
-        alive = alive & ~ot_done
+        ot_clock_out = alive & (half_left <= 0) & (half_id >= 3)
+        if np.any(ot_clock_out):
+            if card.get("playoff"):
+                still_tied = ot_clock_out & np.isclose(home_pts, away_pts)
+                half_id = np.where(still_tied, half_id + 1, half_id)
+                half_left = np.where(still_tied, cfg.OT_SECONDS, half_left)
+                starts_with_kick = np.where(still_tied, True, starts_with_kick)
+                alive = (alive & ~ot_clock_out) | still_tied
+            else:
+                alive = alive & ~ot_clock_out
         active = alive & (half_left > 0)
         if not np.any(active):
             break
@@ -409,9 +431,13 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         _tally(
             card, active, state, outcome, plays, sec, off_pts + def_pts, yard, half_id, scrimmage_sec,
         )
-        first_td = (half_id >= 3) & active & (ot_poss == 0) & (outcome == TD)
-        ot_poss = ot_poss + np.where((half_id >= 3) & active, 1, 0)
-        alive = alive & ~first_td
+        in_ot = (half_id >= 3) & active
+        first_poss = in_ot & (ot_poss == 0)
+        later_poss = in_ot & (ot_poss >= 1)
+        first_ends = first_poss & ((outcome == TD) | (outcome == SAFETY) | (def_pts >= 6))
+        later_ends = later_poss & ((off_pts + def_pts) > 0)
+        alive = alive & ~first_ends & ~later_ends
+        ot_poss = ot_poss + np.where(in_ot, 1, 0)
         yard = _next_yard(card, outcome, n, rng)
         scored_kick = np.isin(outcome, KICKOFF_OUTCOMES)
         starts_with_kick = np.where(active, scored_kick, starts_with_kick)

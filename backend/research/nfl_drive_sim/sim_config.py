@@ -41,9 +41,13 @@ YPP_RIDGE_ALPHA = 5.0
 DRIVE_LOGIT_L2 = 0.05
 DRIVE_LOGIT_ITERS = 80
 
-# Two-minute decisions use the training frequency in these yardline bins.
-# The edges are the definition of the table, not a fit to 2018 scores.
+# Two-minute decisions. Edges and the prior strength are the definition of
+# the table. They were not chosen to match 2018 scores.
+# Score bins are offense minus defense: <=-9, -8..-4, -3..-1, 0, 1..7, >=8.
 LATE_YARD_EDGES = (0.0, 20.0, 35.0, 50.0, 65.0, 80.0, 101.0)
+LATE_SCORE_EDGES = (-100.0, -8.0, -3.0, 0.0, 1.0, 8.0, 100.0)
+LATE_TIME_SPLIT = 30.0
+LATE_SHRINK_K = 25.0
 
 # Ablation flag. Off uses team drive efficiency only. The 2018 dev report
 # is fit with the layer on. P3 turns it off for the comparison.
@@ -53,7 +57,9 @@ MAX_DRIVES = 40
 MAX_PLAYS_PER_DRIVE = 14
 MIN_STATE_PLAYS = 4
 
-# 2018 overtime is one 10-minute period. See simulate.ot_rules.
+# 2018 overtime. Regular season is 10 minutes and can end tied.
+# Playoffs use the same modified sudden death and, if still tied, another
+# period rather than a tie. See simulate.ot_rules.
 OT_SECONDS = 600.0
 REGULATION_HALF_SECONDS = 1800.0
 

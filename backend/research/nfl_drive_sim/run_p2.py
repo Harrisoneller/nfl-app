@@ -78,7 +78,8 @@ def _rate(row, name: str, fallback: float) -> float:
 
 
 def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates, ypp_on: bool,
-          clock: dict | None = None, lengths: dict | None = None, late: dict | None = None) -> dict:
+          clock: dict | None = None, lengths: dict | None = None, late: dict | None = None,
+          playoff: bool = False) -> dict:
     def pace_for(row):
         return predict_pace(row, pace_models)
 
@@ -117,6 +118,7 @@ def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates,
         "clock": clock,
         "lengths": lengths,
         "late_table": late,
+        "playoff": playoff,
         "home_pass": _rate(home_row, "off_pass_rate", 0.55),
         "away_pass": _rate(away_row, "off_pass_rate", 0.55),
         "home_inc": _rate(home_row, "off_incomplete", 0.35),
@@ -270,6 +272,7 @@ def run(
             home_row, away_row = home.iloc[0], away.iloc[0]
             card = _card(
                 home_row, away_row, pace, ypp, drive_model, banks, rates, use_ypp, clock, lengths, late,
+                playoff=str(getattr(game, "game_type", "REG")) not in {"REG", "nan", "None"},
             )
             if tally is not None:
                 card["diagnose"] = tally
@@ -291,6 +294,7 @@ def run(
             summary["sim_p_margin_7"] = float(np.mean(np.isin(result["margin"], [-7.0, 7.0])))
             summary["game_id"] = gid
             summary["week"] = int(week)
+            summary["game_type"] = str(getattr(game, "game_type", "REG"))
             summary["home_team"] = game.home_team
             summary["away_team"] = game.away_team
             actual_home = float(home_row["plays"])
@@ -342,6 +346,8 @@ def run(
                "A later game that week still sees earlier kickoffs from that week in its features.",
         "eval_season": cfg.DEV_EVAL_SEASON,
         "n_games": len(table),
+        "n_reg": int(table["game_type"].eq("REG").sum()) if "game_type" in table.columns else len(table),
+        "n_playoff": int((~table["game_type"].eq("REG")).sum()) if "game_type" in table.columns else 0,
         "n_sims": sims,
         "ypp_layer": use_ypp,
         "runtime_sec_per_game": float(np.mean(runtime)),
@@ -395,7 +401,12 @@ def _report_md(report: dict) -> str:
         "",
         f"Fit: {report['fit']}",
         "",
-        f"Games: {report['n_games']}. Sims per game: {report['n_sims']}. YPP layer: {report['ypp_layer']}.",
+        (
+            f"Games: {report['n_games']} "
+            f"({report.get('n_reg', report['n_games'])} regular season + "
+            f"{report.get('n_playoff', 0)} playoffs). "
+            f"Sims per game: {report['n_sims']}. YPP layer: {report['ypp_layer']}."
+        ),
         f"Runtime per game: {report['runtime_sec_per_game']:.3f} seconds (predicted-pace sim only).",
         "",
         note,
@@ -431,20 +442,23 @@ def _report_md(report: dict) -> str:
         f"Home-win Brier: {report['brier_home_win']:.3f}.",
         *(
             [
-                f"Total CRPS with oracle play counts: {report['crps_total_oracle_pace']:.3f}.",
-                f"Total CRPS difference (predicted pace minus oracle pace): {report['crps_total_pace_gap']:.3f}.",
+                f"Total CRPS with the game-average pace oracle: {report['crps_total_oracle_pace']:.3f}.",
+                f"Gap, predicted pace minus that oracle: {report['crps_total_pace_gap']:.3f}.",
             ]
             if "crps_total_oracle_pace" in report else []
         ),
-        "The oracle uses this game's scrimmage plays per drive and seconds per play,",
-        "scaled across outcomes so a touchdown drive stays longer than a punt.",
-        "It does not look at each drive's own length.",
+        "The oracle is a handicapped benchmark: it uses this game's average",
+        "scrimmage pace, scaled across outcomes, and not each drive's own length.",
+        "On the previous run the gap was -0.253 with a week-cluster 95% interval",
+        "[-0.644, +0.112], so it is not evidence that the predicted pace is better.",
         "",
-        "These scores are for 2018 only. There is no comparison to the served rating model.",
+        "These scores are for the 2018 sample only. There is no comparison to the served rating model.",
         "",
+        *_before_after_lines(report),
         "Deviations:",
         "- Coefficients are fit once per week on kickoffs before that week's first game.",
-        "- 2018 overtime is one 10-minute period. A touchdown on the first possession wins immediately. Otherwise both teams possess, and the next score wins. A tie stands if the clock expires. A playoff game that is still tied gets one more sudden-death period and then stops.",
+        "- 2018 overtime is 10 minutes. A first-possession touchdown or safety ends it. After both teams have possessed, the next score wins. A regular-season tie stands. A tied playoff starts another period.",
+        "- Two-minute endings come from a training table of score, yardline, time left, and timeouts, shrunk toward coarser cells.",
         "- Timeouts are a drive-model feature. The sim does not spend them.",
         "- Pressure is qb_hit from play-by-play. Next Gen Stats are not used.",
         "- Scrimmage plays are passes, runs, kneels, and spikes. Punts, kicks, field goals, and extra points take their own runoff.",
@@ -457,6 +471,54 @@ def _report_md(report: dict) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _before_after_lines(report: dict) -> list[str]:
+    """36884a2 versus this run. The earlier numbers are that commit's yards-on report."""
+    previous = {
+        "margin-3 share": 0.076249,
+        "margin-7 share": 0.076437,
+        "overtime rate": 0.036936,
+        "total sd": 13.304,
+        "drives per game": 23.457,
+        "plays per team MAE": 6.858,
+        "plays per game MAE": 6.828,
+        "drives per team MAE": 1.353,
+        "seconds per play bias": 0.763,
+        "coverage 80": 0.854,
+        "coverage 90": 0.925,
+        "margin CRPS": 7.335,
+        "total CRPS": 7.925,
+        "Brier": 0.218,
+    }
+    sim = report["sim"]
+    pace = report["pace"]
+    current = {
+        "margin-3 share": sim["sim_share_margin_3"],
+        "margin-7 share": sim["sim_share_margin_7"],
+        "overtime rate": sim["sim_ot_rate"],
+        "total sd": sim["sim_total_sd_mean"],
+        "drives per game": sim["sim_drives_mean"],
+        "plays per team MAE": pace["plays_per_team_model"]["mae"],
+        "plays per game MAE": pace["plays_per_game_model"]["mae"],
+        "drives per team MAE": pace["drives_per_team_model"]["mae"],
+        "seconds per play bias": pace["seconds_per_play_model"]["bias"],
+        "coverage 80": pace["game_plays_interval_80"],
+        "coverage 90": pace["game_plays_interval_90"],
+        "margin CRPS": report["crps_margin"],
+        "total CRPS": report["crps_total"],
+        "Brier": report["brier_home_win"],
+    }
+    lines = [
+        "Before (36884a2) versus this run, yards layer as in this file:",
+        "",
+        "| metric | 36884a2 | this run |",
+        "| --- | ---: | ---: |",
+    ]
+    for name, old in previous.items():
+        lines.append(f"| {name} | {old:.3f} | {current[name]:.3f} |")
+    lines.append("")
+    return lines
 
 
 def _write_manifest(directory: Path, config_hash: str) -> None:

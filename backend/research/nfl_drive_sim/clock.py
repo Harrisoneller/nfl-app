@@ -199,34 +199,57 @@ def fit_scrimmage_lengths(drives: pd.DataFrame, plays: pd.DataFrame) -> dict:
     return {"length": lengths, "league_ppd": league, "phi": max(phi, 1.0)}
 
 
-def fit_late_table(drives: pd.DataFrame) -> dict:
-    """How two-minute drives end, by starting field position.
+def _shrink(counts: np.ndarray, parent: np.ndarray, k: float) -> np.ndarray:
+    """Dirichlet shrinkage of outcome counts toward a coarser probability."""
+    n = counts.sum(axis=-1, keepdims=True)
+    return (counts + k * parent) / np.maximum(n + k, 1e-9)
 
-    Fit only on drives already in ``drives`` (kickoffs before the target).
-    A thin bin falls back to the two-minute total.
+
+def fit_late_table(drives: pd.DataFrame) -> dict:
+    """How a two-minute drive ends, given the score and the field position.
+
+    The table is score bin x yardline bin x time bin x timeout bin.
+    Each cell shrinks toward the next coarser table: drop timeouts, then
+    time, then yardline, then the two-minute total. Fit only on drives
+    already in ``drives``.
     """
-    edges = np.asarray(cfg.LATE_YARD_EDGES, dtype=float)
-    n_bins = len(edges) - 1
+    yard_edges = np.asarray(cfg.LATE_YARD_EDGES, dtype=float)
+    score_edges = np.asarray(cfg.LATE_SCORE_EDGES, dtype=float)
+    n_score = len(score_edges) - 1
+    n_yard = len(yard_edges) - 1
+    n_time = 2
+    n_timeout = 2
     n_out = len(cfg.DRIVE_OUTCOMES)
-    counts = np.zeros((n_bins, n_out))
-    if drives is None or len(drives) == 0:
-        counts[:, cfg.DRIVE_OUTCOMES.index("PUNT")] = 1.0
-        return {"edges": edges, "probs": counts / counts.sum(axis=1, keepdims=True)}
-    half = pd.to_numeric(drives["start_half_seconds_remaining"], errors="coerce").fillna(1800)
-    late = drives.loc[half <= cfg.TWO_MINUTE_SECONDS].copy()
-    late = late[late["outcome"].isin(cfg.DRIVE_OUTCOMES)]
-    if len(late) == 0:
-        counts[:, cfg.DRIVE_OUTCOMES.index("END_OF_HALF")] = 1.0
-        return {"edges": edges, "probs": counts}
+    shape = (n_score, n_yard, n_time, n_timeout, n_out)
+    counts = np.zeros(shape)
     labels = {name: index for index, name in enumerate(cfg.DRIVE_OUTCOMES)}
-    yards = pd.to_numeric(late["start_yardline_100"], errors="coerce").fillna(75).to_numpy()
-    bins = np.clip(np.searchsorted(edges, yards, side="right") - 1, 0, n_bins - 1)
-    outcomes = late["outcome"].map(labels).to_numpy(dtype=int)
-    for bin_id, outcome in zip(bins, outcomes, strict=False):
-        counts[int(bin_id), int(outcome)] += 1.0
-    total = counts.sum(axis=0, keepdims=True)
-    for index in range(n_bins):
-        if counts[index].sum() < 30:
-            counts[index] = total[0]
-    probs = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1.0)
-    return {"edges": edges, "probs": probs}
+    if drives is not None and len(drives):
+        half = pd.to_numeric(drives["start_half_seconds_remaining"], errors="coerce").fillna(1800)
+        late = drives.loc[half.to_numpy() <= cfg.TWO_MINUTE_SECONDS].copy()
+        late = late[late["outcome"].isin(cfg.DRIVE_OUTCOMES)]
+        if len(late):
+            diff = pd.to_numeric(late["start_score_diff"], errors="coerce").fillna(0).to_numpy()
+            yards = pd.to_numeric(late["start_yardline_100"], errors="coerce").fillna(75).to_numpy()
+            left = pd.to_numeric(late["start_half_seconds_remaining"], errors="coerce").fillna(60).to_numpy()
+            timeouts = pd.to_numeric(late.get("start_posteam_timeouts"), errors="coerce").fillna(3).to_numpy()
+            sbin = np.clip(np.searchsorted(score_edges, diff, side="right") - 1, 0, n_score - 1)
+            ybin = np.clip(np.searchsorted(yard_edges, yards, side="right") - 1, 0, n_yard - 1)
+            tbin = (left > cfg.LATE_TIME_SPLIT).astype(int)
+            obin = (timeouts >= 1).astype(int)
+            outcomes = late["outcome"].map(labels).to_numpy(dtype=int)
+            for a, b, c, d, e in zip(sbin, ybin, tbin, obin, outcomes, strict=False):
+                counts[int(a), int(b), int(c), int(d), int(e)] += 1.0
+    if counts.sum() == 0:
+        counts[..., cfg.DRIVE_OUTCOMES.index("END_OF_HALF")] = 1.0
+    k = float(cfg.LATE_SHRINK_K)
+    overall = counts.sum(axis=(0, 1, 2, 3))
+    p_overall = overall / np.maximum(overall.sum(), 1e-9)
+    p_score = _shrink(counts.sum(axis=(1, 2, 3)), p_overall, k)
+    p_yard = _shrink(counts.sum(axis=(2, 3)), p_score[:, None, :], k)
+    p_time = _shrink(counts.sum(axis=3), p_yard[:, :, None, :], k)
+    probs = _shrink(counts, p_time[:, :, :, None, :], k)
+    return {
+        "yard_edges": yard_edges,
+        "score_edges": score_edges,
+        "probs": probs,
+    }

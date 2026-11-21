@@ -342,6 +342,101 @@ def test_oracle_scales_lengths_instead_of_flattening_them():
     assert drawn[outcome == cfg.DRIVE_OUTCOMES.index("PUNT")].mean() < 4.0
 
 
+def _ot_card(script: list[int], *, playoff: bool = False) -> dict:
+    card = _card()
+    card["fixed_plays"] = 1
+    card["fixed_sec"] = 60.0
+    card["max_drives"] = 80
+    card["pat_rate"] = 0.0
+    card["p_punt_return_td"] = 0.0
+    card["p_to_return_td"] = 0.0
+    card["receive_home"] = True
+    card["ot_receive_home"] = True
+    card["playoff"] = playoff
+    card["scripted_outcomes"] = script
+    card.pop("forced_outcome", None)
+    return card
+
+
+def test_first_possession_touchdown_wins_overtime():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    td = cfg.DRIVE_OUTCOMES.index("TD")
+    result = simulate_game(_ot_card([punt] * 60 + [td]), 1, np.random.default_rng(1))
+    assert result["home_points"][0] == 6.0
+    assert result["away_points"][0] == 0.0
+    assert result["home_drives"][0] + result["away_drives"][0] == 61
+
+
+def test_a_score_after_both_teams_have_possessed_ends_overtime():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    fg = cfg.DRIVE_OUTCOMES.index("FG_MADE")
+    td = cfg.DRIVE_OUTCOMES.index("TD")
+    result = simulate_game(_ot_card([punt] * 60 + [fg, td]), 1, np.random.default_rng(1))
+    assert result["home_points"][0] == 3.0
+    assert result["away_points"][0] == 6.0
+    assert result["home_drives"][0] + result["away_drives"][0] == 62
+
+
+def test_a_safety_on_the_first_overtime_possession_ends_the_game():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    safety = cfg.DRIVE_OUTCOMES.index("SAFETY")
+    result = simulate_game(_ot_card([punt] * 60 + [safety]), 1, np.random.default_rng(1))
+    assert result["home_points"][0] == 0.0
+    assert result["away_points"][0] == 2.0
+    assert result["home_drives"][0] + result["away_drives"][0] == 61
+
+
+def test_a_regular_season_overtime_can_end_tied():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    result = simulate_game(_ot_card([punt] * 200, playoff=False), 1, np.random.default_rng(1))
+    assert result["home_points"][0] == 0.0
+    assert result["away_points"][0] == 0.0
+    assert result["ot"][0] == 1.0
+    assert result["home_drives"][0] + result["away_drives"][0] == 70
+
+
+def test_a_tied_playoff_starts_another_overtime_period():
+    punt = cfg.DRIVE_OUTCOMES.index("PUNT")
+    result = simulate_game(_ot_card([punt] * 200, playoff=True), 1, np.random.default_rng(1))
+    assert result["home_points"][0] == 0.0
+    assert result["away_points"][0] == 0.0
+    assert result["ot"][0] == 1.0
+    assert result["home_drives"][0] + result["away_drives"][0] == 80
+
+
+def test_two_minute_table_depends_on_the_score():
+    from research.nfl_drive_sim.clock import fit_late_table
+    from research.nfl_drive_sim.simulate import _sample_late
+    rows = []
+    for diff, outcome, yard in (
+        (0, "FG_MADE", 30),
+        (10, "END_OF_HALF", 30),
+    ):
+        rows.extend(
+            {
+                "start_half_seconds_remaining": 90,
+                "start_score_diff": diff,
+                "start_yardline_100": yard,
+                "start_posteam_timeouts": 2,
+                "outcome": outcome,
+            }
+            for _ in range(40)
+        )
+    table = fit_late_table(pd.DataFrame(rows))
+    tied = _sample_late(
+        np.full(200, 30.0), np.zeros(200), np.full(200, 90.0), np.full(200, 2.0),
+        np.random.default_rng(2), table,
+    )
+    leading = _sample_late(
+        np.full(200, 30.0), np.full(200, 10.0), np.full(200, 90.0), np.full(200, 2.0),
+        np.random.default_rng(2), table,
+    )
+    fg = cfg.DRIVE_OUTCOMES.index("FG_MADE")
+    eoh = cfg.DRIVE_OUTCOMES.index("END_OF_HALF")
+    assert (tied == fg).mean() > (leading == fg).mean()
+    assert (leading == eoh).mean() > (tied == eoh).mean()
+
+
 def test_softmax_recovers_a_state_that_ends_the_half():
     from research.nfl_drive_sim.models import fit_softmax, softmax
     rng = np.random.default_rng(0)
