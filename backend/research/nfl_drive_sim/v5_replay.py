@@ -63,12 +63,13 @@ def strip_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
-def rows_before(frame: pd.DataFrame, kickoff_before: object | None) -> pd.DataFrame:
-    """Keep rows whose Eastern kickoff is before both cutoffs.
+def rows_before(frame: pd.DataFrame, kickoff_before: object | None, *, screen: bool = True) -> pd.DataFrame:
+    """Keep rows whose Eastern kickoff is strictly before the week cutoff.
 
-    ``kickoff_before`` is the scoring week's first kickoff. Rows on or after
-    2027-01-01 ET are always removed. A frame with no kickoff column is
-    returned stripped, which is how a synthetic design is passed in.
+    ``kickoff_before`` is the scoring week's first kickoff. With ``screen``
+    left on, rows on or after 2027-01-01 ET are removed. The totals freeze
+    turns the screen off so a 2027 week can see earlier 2027 kickoffs. A
+    frame with no kickoff column is returned stripped.
     """
     cleaned = strip_frame(frame)
     if "kickoff_et" not in cleaned.columns:
@@ -76,7 +77,7 @@ def rows_before(frame: pd.DataFrame, kickoff_before: object | None) -> pd.DataFr
     stamps = [eastern_kickoff(value) for value in cleaned["kickoff_et"]]
     keep = []
     for stamp in stamps:
-        if stamp is None or stamp >= SCREEN_CUTOFF:
+        if stamp is None or (screen and stamp >= SCREEN_CUTOFF):
             keep.append(False)
             continue
         keep.append(kickoff_before is None or stamp < eastern_kickoff(kickoff_before))
@@ -270,9 +271,17 @@ def webb_mean_interval(
     return center, float(low), float(high)
 
 
-def ratings_as_of(rows: pd.DataFrame, season: int, week: int, teams: list[str], kickoff_before: object | None):
+def ratings_as_of(
+    rows: pd.DataFrame,
+    season: int,
+    week: int,
+    teams: list[str],
+    kickoff_before: object | None,
+    *,
+    screen: bool = True,
+):
     """Team ratings and the QB book. Market ratings are not built."""
-    kept = rows_before(rows, kickoff_before)
+    kept = rows_before(rows, kickoff_before, screen=screen)
     params = frozen_params()
     ratings = fit_ratings(kept, season, week, teams, params)
     book = build_qb_book(kept, season, week, teams, params)
