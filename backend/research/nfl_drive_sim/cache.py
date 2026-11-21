@@ -85,6 +85,17 @@ PBP_COLUMNS = (
     "drive_time_of_possession",
 )
 
+# Extra play columns for the research sim. Cached separately from the P1 extract.
+P2_PBP_COLUMNS = PBP_COLUMNS + (
+    "no_huddle",
+    "epa",
+    "cpoe",
+    "success",
+    "sack",
+    "qb_hit",
+    "complete_pass",
+)
+
 SCHEDULE_COLUMNS = (
     "game_id",
     "season",
@@ -112,6 +123,7 @@ SCHEDULE_COLUMNS = (
 
 SOURCE_URLS = {
     "pbp": RELEASE + "/pbp/play_by_play_{season}.parquet",
+    "pbp_model": RELEASE + "/pbp/play_by_play_{season}.parquet",
     "rosters": RELEASE + "/rosters/roster_{season}.parquet",
     "depth_charts": RELEASE + "/depth_charts/depth_charts_{season}.parquet",
     "injuries": RELEASE + "/injuries/injuries_{season}.parquet",
@@ -277,6 +289,19 @@ class NflverseCache:
         _, removed = strip_market_columns(frame)
         if removed:
             raise RuntimeError(f"cached schedule still has market columns: {removed}")
+        return frame
+
+    def load_pbp_model(self, season: int) -> pd.DataFrame:
+        """Play-by-play with the extra columns the pace and yards models use."""
+        row = self.ensure_season_file("pbp_model", season, columns=P2_PBP_COLUMNS)
+        if row.get("status") != "ok":
+            return pd.DataFrame()
+        frame = pd.read_parquet(self.root / row["path"])
+        frame, removed = strip_market_columns(frame)
+        if removed:
+            raise RuntimeError(f"cached pbp_model still has market columns: {removed}")
+        if "season" not in frame.columns:
+            frame["season"] = season
         return frame
 
     def load_pbp(self, season: int) -> pd.DataFrame:

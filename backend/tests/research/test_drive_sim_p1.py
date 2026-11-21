@@ -505,6 +505,32 @@ def test_mixed_depth_chart_uses_week_rows_and_snapshot_rows():
     assert by_team["KC"] == snap_id
 
 
+def test_snapshot_dt_equal_to_kickoff_is_excluded():
+    """A snapshot stamped exactly at kickoff is not pre-game.
+
+    An earlier snapshot remains usable. This fails if the comparison
+    changes from strict < to <=.
+    """
+    kick = datetime(2025, 9, 7, 13, 0, tzinfo=EASTERN)
+    exact = pd.Timestamp(kick).tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+    earlier = "2025-09-01T16:00:00Z"
+    both = pd.DataFrame([
+        {"dt": earlier, "team": "BUF", "pos_abb": "QB", "pos_rank": 1, "gsis_id": "QB_EARLY"},
+        {"dt": exact, "team": "BUF", "pos_abb": "QB", "pos_rank": 1, "gsis_id": "QB_EXACT"},
+    ])
+    only_exact = both.iloc[1:].copy()
+    qb_id, asof = pregame_quarterback(
+        both, season=2025, week=1, team="BUF", game_type="REG", kickoff=kick,
+    )
+    assert qb_id == "QB_EARLY"
+    assert asof is not None and asof < kick
+    qb_exact, asof_exact = pregame_quarterback(
+        only_exact, season=2025, week=1, team="BUF", game_type="REG", kickoff=kick,
+    )
+    assert qb_exact is None
+    assert asof_exact is None
+
+
 def test_snapshot_depth_chart_after_kickoff_is_not_the_pregame_qb():
     kick = datetime(2025, 9, 7, 13, 0, tzinfo=EASTERN)
     charts = pd.DataFrame([

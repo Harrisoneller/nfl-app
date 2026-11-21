@@ -176,6 +176,7 @@ def prepare_schedule(frame: pd.DataFrame) -> ScheduleSplit:
     keep_cols = [
         "game_id", "season", "week", "game_type", "kickoff_et",
         "home_team", "away_team", "home_score", "away_score",
+        "roof", "temp", "wind", "overtime",
     ]
     for column in keep_cols:
         if column not in work.columns:
