@@ -1,7 +1,7 @@
 # PREREG: market-blind player-opp refit
 
 ```text
-status: draft
+Status: locked
 locked: false
 eligible_set_sha256: ccfbb2bee685f3f4e6f3bfb416ed9dd71b195716a63f2c2cc2eb66927c688d23
 eligible_set_n: 70094
