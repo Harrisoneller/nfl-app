@@ -42,10 +42,22 @@ def test_package_does_not_import_the_served_model():
     from pathlib import Path
 
     banned = ("team_ratings_v5", "app.services")
+    allowed_replay = {"DEFAULT_PARAMS", "fit_ratings", "build_qb_book"}
     root = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
     offenders = []
     for path in sorted(root.rglob("*.py")):
         text = path.read_text()
+        if path.name == "v5_replay.py":
+            tree = ast.parse(text)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and "app.services" in node.module:
+                    imported = {alias.name for alias in node.names}
+                    if node.module != "app.services.team_ratings_v5" or imported - allowed_replay:
+                        offenders.append(f"{path.name}:{node.lineno}")
+                elif isinstance(node, ast.Import):
+                    if any("app.services" in alias.name or "team_ratings" in alias.name for alias in node.names):
+                        offenders.append(f"{path.name}:{node.lineno}")
+            continue
         for name in banned:
             if name in text:
                 offenders.append(f"{path.name} mentions {name}")

@@ -531,7 +531,7 @@ def _before_after_lines(report: dict) -> list[str]:
         "- Margin-3 and margin-7 key-number mass is low. There is no fourth-quarter endgame model yet. Later work covers clock-killing on one-score leads, playing for a field goal before the two-minute mark, score-dependent late outcomes, and spending timeouts. That work is accepted on a later season against pre-registered checks.",
         "- Safeties are about 0.87% of drives against 0.17% actual.",
         "- Two-minute drives are short. The causes are truncation, a slow runoff, and timeouts that are never spent.",
-        "- Seconds per play bias is about +1.07.",
+        "- Seconds per play bias is about +1.29.",
         "- The overtime gap comes from how often regulation ends tied.",
         "- Predicted pace versus the game-average oracle is not significant. The oracle is a handicapped benchmark.",
         "- P3 must not be used as a fair ATS or key-number comparison against v5 until an endgame model is accepted.",
