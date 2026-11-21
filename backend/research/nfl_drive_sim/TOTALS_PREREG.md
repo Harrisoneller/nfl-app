@@ -69,18 +69,60 @@ The MDE is not a second decision rule. The calls above do not depend on it.
 
 Each week, `freeze_week.py` writes the sim total distribution and the v5 total mean and sigma for that week's pinned games. The inputs are games whose kickoff is strictly before the cutoff. The cutoff is the first kickoff among the games being frozen, except for the week-11 remainder: that cutoff is the first kickoff on 2026-11-22 (13:00 America/New_York). Thursday's completed game may sit in that history. It is not a projected game.
 
-Commit the projection file, the input-hash file, and the manifest. The commit timestamp has to be strictly before the first kickoff of the games in that file. A game whose projection was not committed before its own kickoff is `late_freeze` and is dropped from both models.
+Commit the projection file, the input-hash file, and the manifest. `inputs.json` records `freeze_timestamp_utc` at the moment the files are written. `manifest.sha256` records the sha256 of `projections.csv`. The commit timestamp and `freeze_timestamp_utc` both have to be strictly before the first kickoff of the games in that file. A game whose projection was not committed before its own kickoff is `late_freeze` and is dropped from both models. Anything published from that week, including a website copy, has to come after that commit.
 
 Do not run `freeze_week.py` for any week until this document says `Status: locked`.
 
 The week-11 remainder is fully identified from the locked schedule and the locked derived plays. Every game before 2026-11-22 13:00 America/New_York has a score and plays. A later freeze aborts if any scheduled game before its cutoff lacks a score or lacks plays. The missing week is supplied with `--update`, a directory of `games.parquet` and `pbp.parquet`. That directory is hashed in the freeze inputs. It is not written into `.cache` or `outputs/p3`. Feature rows for those games are the rows the earlier freeze committed, not a refit after they were played. The 2027-01-01 screen used by the cache study is off for this protocol. The only cutoff is the week's own.
+
+## Scoring source
+
+Score a window only from the `projections.csv` files whose sha256 lines are in the freeze manifests committed on this branch. Do not score from a website, a published copy, or any other checkout. That includes `games.json` on nfl-app pull request 54. A file that is not the committed bytes is not the freeze, even if the numbers look the same.
+
+## Publishing
+
+A week is published all or none. The published set is every row in that week's `projections.csv`, including rows with a drop reason. No game is added, removed, or swapped after the freeze. This rule binds the publisher. It does not change the scoring set, which remains the committed file.
+
+## Freeze file format `totals-freeze-v1`
+
+`projections.csv` has these columns, in this order, and no others. The website importer matches this version exactly. A new column or a new unit is a new version string, not a silent edit.
+
+| column | unit | definition |
+| --- | --- | --- |
+| format_version | text | `totals-freeze-v1` on every row |
+| game_id | text | schedule game id |
+| season | season | integer |
+| week | week | integer NFL week |
+| kickoff_et | timestamp | ISO 8601 with the America/New_York offset |
+| home_team | text | canonical team abbreviation |
+| away_team | text | canonical team abbreviation |
+| home_qb | text | pre-game quarterback id, or empty |
+| away_qb | text | pre-game quarterback id, or empty |
+| drop_reason | text | empty, `missing_qb`, or `model_failure` |
+| sim_margin_mean | points | mean of the 10,000 draws, home minus away |
+| sim_total_mean | points | mean of the 10,000 draws, home plus away |
+| sim_margin_pmf | probability | 161 masses on integers −80 through 80, index 0 is −80, space-separated |
+| sim_total_pmf | probability | same grid and index as the margin pmf |
+| v5_margin | points | no-market v5 mean, home minus away |
+| v5_total | points | no-market v5 mean, home plus away |
+| v5_sigma_margin | points | walk-forward sample standard deviation |
+| v5_sigma_total | points | walk-forward sample standard deviation |
+| n_sims | count | 10000 |
+| seed | integer | the per-game seed |
+| ypp_on | boolean | false |
+
+Margin is home minus away. A positive margin means the home team is ahead. Total is home plus away. Both are in NFL points. The integer grid is the same grid the score uses.
+
+## Publishing and the market
+
+Publishing the sim's numbers could, in theory, move a market line. This test does not score against a line. If a later report ever scores these freezes against closing lines or closing line value, that report has to say so in its first paragraph.
 
 ## Drops and voids
 
 Both models are scored on the intersection.
 
 - `missing_qb`: either side has no depth-chart QB1 and no prior-start quarterback. The depth-chart QB1 is the pre-game chart. The prior start is that team's charted quarterback on the most recent completed game whose kickoff is strictly before this kickoff. Do not use `passer_player_id` or any other in-game passer.
-- `model_failure`: either model raises, or returns a non-finite total, a non-finite sigma, or a probability vector that does not sum to 1.
+- `model_failure`: either model raises, or returns a non-finite margin, total, or sigma, or a probability vector that does not sum to 1.
 - `late_freeze`: the projection commit is not strictly before that game's kickoff.
 - `not_completed`: at the single scoring time, the pinned game still has no finite pair of scores.
 

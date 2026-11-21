@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,31 @@ OUT = ROOT / "outputs" / "totals" / "freezes"
 SIM_CONFIG_SHA256 = "f60cd566e06e87f66d000f8ec8f3afc4bd4e3b8ed91711374c005fe0e3be7ecb"
 P3_PREREG_SHA256 = "bb114c35ab5158a8b19223daf61af2213f783cee40fe6da4f160b697a2bab506"
 BANNED_OUTPUT = ("crps", "actual", "spread", "odds", "moneyline", "price", "kalshi")
+# The website importer matches this version exactly. A column change is a new version.
+FORMAT_VERSION = "totals-freeze-v1"
+FREEZE_COLUMNS = (
+    "format_version",
+    "game_id",
+    "season",
+    "week",
+    "kickoff_et",
+    "home_team",
+    "away_team",
+    "home_qb",
+    "away_qb",
+    "drop_reason",
+    "sim_margin_mean",
+    "sim_total_mean",
+    "sim_margin_pmf",
+    "sim_total_pmf",
+    "v5_margin",
+    "v5_total",
+    "v5_sigma_margin",
+    "v5_sigma_total",
+    "n_sims",
+    "seed",
+    "ypp_on",
+)
 
 
 class FreezeLocked(RuntimeError):
@@ -157,24 +183,36 @@ def _placeholders(games: pd.DataFrame, quarterbacks: pd.DataFrame) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
-def _sigma_and_fit(history: pd.DataFrame, test: pd.DataFrame, cutoff) -> tuple[np.ndarray | None, float | None]:
-    """Walk-forward total sigma from games strictly before ``cutoff``, then the new week."""
+def _sigma_and_fit(history: pd.DataFrame, test: pd.DataFrame, cutoff):
+    """Walk-forward margin and total sigma, then this week's means.
+
+    Margin is home minus away, in points. The returned means use that sign.
+    """
     rows = rows_before_cutoff(history, cutoff)
     rows = rows[rows["game_type"].astype(str).eq("REG")].sort_values(["kickoff_et", "game_id"])
-    residuals: list[float] = []
+    residual_m: list[float] = []
+    residual_t: list[float] = []
     if ols_is_identified(len(rows)):
         for (_season, _week), group in rows.groupby(["season", "week"], sort=False):
             group_cut = group["kickoff_et"].min()
             earlier = rows_before_cutoff(rows, group_cut)
             fit = replay_week(earlier, group) if ols_is_identified(len(earlier)) else {"ok": False}
             if fit.get("ok"):
-                actual = group["total"].to_numpy(dtype=float)
-                residuals.extend((actual - np.asarray(fit["total"], dtype=float)).tolist())
-    sigma_now = sample_sd(np.asarray(residuals, dtype=float))
+                actual_m = group["margin"].to_numpy(dtype=float)
+                actual_t = group["total"].to_numpy(dtype=float)
+                residual_m.extend((actual_m - np.asarray(fit["margin"], dtype=float)).tolist())
+                residual_t.extend((actual_t - np.asarray(fit["total"], dtype=float)).tolist())
+    sigma_m = sample_sd(np.asarray(residual_m, dtype=float))
+    sigma_t = sample_sd(np.asarray(residual_t, dtype=float))
     fit_now = replay_week(rows, test) if ols_is_identified(len(rows)) else {"ok": False}
     if not fit_now.get("ok"):
-        return None, sigma_now
-    return np.asarray(fit_now["total"], dtype=float), sigma_now
+        return None, None, sigma_m, sigma_t
+    return (
+        np.asarray(fit_now["margin"], dtype=float),
+        np.asarray(fit_now["total"], dtype=float),
+        sigma_m,
+        sigma_t,
+    )
 
 
 def assert_history_covers(schedule: pd.DataFrame, plays: pd.DataFrame, cutoff) -> None:
@@ -276,6 +314,26 @@ def _fit_card(train_teams: pd.DataFrame, train_drives: pd.DataFrame, train_plays
     }
 
 
+def _pmf_text(samples: np.ndarray) -> str | None:
+    """Space-separated masses on integers −80 through 80. Index 0 is −80."""
+    pmf = empirical_pmf(samples)
+    if pmf is None or len(pmf) != 161 or abs(float(pmf.sum()) - 1.0) > 1e-8:
+        return None
+    return " ".join(f"{value:.8f}" for value in pmf)
+
+
+def ordered_projection(rows: list[dict]) -> pd.DataFrame:
+    """The versioned freeze table. Every pinned game is a row, including drops."""
+    frame = projection_frame(rows)
+    missing = [column for column in FREEZE_COLUMNS if column not in frame.columns]
+    extra = [column for column in frame.columns if column not in FREEZE_COLUMNS]
+    if missing or extra:
+        raise FreezeError(f"freeze columns missing {missing} extra {extra}")
+    if not frame["format_version"].eq(FORMAT_VERSION).all():
+        raise FreezeError(f"format_version must be {FORMAT_VERSION}")
+    return frame.loc[:, list(FREEZE_COLUMNS)]
+
+
 def projection_frame(rows: list[dict]) -> pd.DataFrame:
     """Tabular projections. A score, a CRPS, or a market column is refused."""
     frame = pd.DataFrame(rows)
@@ -292,7 +350,7 @@ def projection_frame(rows: list[dict]) -> pd.DataFrame:
 def write_freeze(directory: Path, rows: list[dict], features: pd.DataFrame, inputs: dict) -> Path:
     """Hash the projection and the input list. Does not score."""
     directory.mkdir(parents=True, exist_ok=True)
-    frame = projection_frame(rows)
+    frame = ordered_projection(rows)
     feature_frame = projection_frame(features.to_dict(orient="records"))
     proj = directory / "projections.csv"
     feat = directory / "feature_rows.csv"
@@ -381,7 +439,7 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
         values["week"] = int(week)
         test_rows.append(values)
     test = pd.DataFrame(test_rows)
-    totals, sigma = _sigma_and_fit(history, test, cutoff)
+    margins, totals, sigma_m, sigma_t = _sigma_and_fit(history, test, cutoff)
     rows = []
     for index, game in enumerate(slate.itertuples(index=False)):
         gid = str(game.game_id)
@@ -390,12 +448,17 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
         away_id = None if info is None else info["away_qb"]
         home = featured[(featured["game_id"].eq(gid)) & (featured["is_home"].eq(1.0))]
         away = featured[(featured["game_id"].eq(gid)) & (featured["is_home"].eq(0.0))]
-        sim_mean = np.nan
-        pmf_text = ""
+        sim_margin = np.nan
+        sim_total = np.nan
+        margin_pmf = ""
+        total_pmf = ""
+        v5_margin = np.nan if margins is None else float(margins[index])
         v5_total = np.nan if totals is None else float(totals[index])
         model_ok = (
-            packed is not None and totals is not None and sigma is not None
-            and np.isfinite(v5_total) and len(home) == 1 and len(away) == 1
+            packed is not None and margins is not None and totals is not None
+            and sigma_m is not None and sigma_t is not None
+            and np.isfinite(v5_margin) and np.isfinite(v5_total)
+            and len(home) == 1 and len(away) == 1
         )
         reason = game_dropped(
             home_id if isinstance(home_id, str) else None,
@@ -410,12 +473,15 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
                     packed["late"], playoff=False,
                 )
                 draw = simulate_game(card, cfg.N_SIMS, np.random.default_rng(sim_seed(gid)))
-                pmf = empirical_pmf(draw["total"])
-                sim_mean = float(np.mean(draw["total"]))
-                if pmf is None or not np.isfinite(sim_mean) or abs(float(pmf.sum()) - 1.0) > 1e-8:
+                sim_margin = float(np.mean(draw["margin"]))
+                sim_total = float(np.mean(draw["total"]))
+                margin_text = _pmf_text(draw["margin"])
+                total_text = _pmf_text(draw["total"])
+                if margin_text is None or total_text is None or not np.isfinite(sim_margin) or not np.isfinite(sim_total):
                     reason = "model_failure"
                 else:
-                    pmf_text = " ".join(f"{value:.8f}" for value in pmf)
+                    margin_pmf = margin_text
+                    total_pmf = total_text
             except (RuntimeError, ValueError, KeyError, IndexError):
                 reason = "model_failure"
         rows.append({
@@ -427,11 +493,16 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
             "away_team": canon(game.away_team),
             "home_qb": home_id if isinstance(home_id, str) else "",
             "away_qb": away_id if isinstance(away_id, str) else "",
+            "format_version": FORMAT_VERSION,
             "drop_reason": reason or "",
-            "sim_total_mean": sim_mean,
-            "sim_total_pmf": pmf_text,
+            "sim_margin_mean": sim_margin,
+            "sim_total_mean": sim_total,
+            "sim_margin_pmf": margin_pmf,
+            "sim_total_pmf": total_pmf,
+            "v5_margin": v5_margin,
             "v5_total": v5_total,
-            "v5_sigma_total": float(sigma) if sigma is not None else np.nan,
+            "v5_sigma_margin": float(sigma_m) if sigma_m is not None else np.nan,
+            "v5_sigma_total": float(sigma_t) if sigma_t is not None else np.nan,
             "n_sims": int(cfg.N_SIMS),
             "seed": int(sim_seed(gid)),
             "ypp_on": False,
@@ -439,6 +510,11 @@ def freeze_week(season: int, week: int, on_or_after: object | None = None, updat
     stamp = pd.Timestamp(cutoff).tz_convert("America/New_York").strftime("%Y%m%dT%H%M")
     directory = OUT / f"{int(season)}_w{int(week)}_{stamp}"
     inputs = {
+        "format_version": FORMAT_VERSION,
+        "freeze_timestamp_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "margin_sign": "home_minus_away",
+        "publish": "all_or_none",
+        "score_from": "committed_freeze_files_on_this_branch",
         "season": int(season),
         "week": int(week),
         "cutoff_et": pd.Timestamp(cutoff).tz_convert("America/New_York").isoformat(),

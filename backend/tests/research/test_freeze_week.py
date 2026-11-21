@@ -10,6 +10,8 @@ import pandas as pd
 import pytest
 
 from research.nfl_drive_sim.freeze_week import (
+    FORMAT_VERSION,
+    FREEZE_COLUMNS,
     FreezeError,
     FreezeLocked,
     assert_history_covers,
@@ -75,6 +77,20 @@ def test_a_hole_before_the_cutoff_aborts():
     cutoff = pd.Timestamp("2026-11-22 13:00", tz="America/New_York")
     with pytest.raises(FreezeError, match="no score"):
         assert_history_covers(schedule, plays, cutoff)
+
+
+def test_format_is_versioned_and_the_prereg_names_the_scoring_source():
+    assert FORMAT_VERSION == "totals-freeze-v1"
+    assert FREEZE_COLUMNS[0] == "format_version"
+    assert FREEZE_COLUMNS.index("sim_margin_mean") < FREEZE_COLUMNS.index("sim_total_mean")
+    text = (ROOT / "TOTALS_PREREG.md").read_text()
+    assert "Status: draft" in text
+    assert "home minus away" in text
+    assert "games.json" in text
+    assert "pull request 54" in text
+    assert "all or none" in text
+    assert "freeze_timestamp_utc" in text
+    assert "closing line value" in text
 
 
 def test_freeze_source_does_not_import_the_served_model_or_a_market_path():
