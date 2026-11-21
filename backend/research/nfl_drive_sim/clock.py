@@ -124,7 +124,14 @@ def fit_clock(plays: pd.DataFrame) -> dict:
                 timed.loc[timed["situation"].eq(state) & timed["clock_class"].eq("no_play"), "clock_delta"].sum()
             ) / max(len(part), 1),
         }
-    return {"means": means, "mix": mix}
+    rates = timed.loc[timed["clock_class"].isin(SCRIMMAGE_CLASSES)].groupby(
+        ["game_id", "posteam"], sort=False,
+    )["clock_delta"].mean()
+    within = rates.groupby(level=1).std(ddof=0)
+    shock = float(within.mean()) if len(within) else 0.0
+    if not np.isfinite(shock):
+        shock = 0.0
+    return {"means": means, "mix": mix, "sec_shock_sd": shock}
 
 
 def _empty_clock() -> dict:
@@ -154,7 +161,7 @@ def fit_scrimmage_lengths(drives: pd.DataFrame, plays: pd.DataFrame) -> dict:
         for outcome in cfg.DRIVE_OUTCOMES:
             for state in cfg.SITUATIONS:
                 lengths[(outcome, state)] = league[state]
-        return {"length": lengths, "league_ppd": league}
+        return {"length": lengths, "league_ppd": league, "phi": 1.0}
     frame = drives.copy()
     frame["game_id"] = frame["game_id"].astype(str)
     frame["fixed_drive"] = pd.to_numeric(frame["drive"], errors="coerce")
@@ -186,4 +193,40 @@ def fit_scrimmage_lengths(drives: pd.DataFrame, plays: pd.DataFrame) -> dict:
         for outcome in cfg.DRIVE_OUTCOMES:
             cell = part.loc[part["outcome"].eq(outcome), "scrimmage_plays"]
             lengths[(outcome, state)] = float(cell.mean()) if len(cell) else league[state]
-    return {"length": lengths, "league_ppd": league}
+    mean = float(frame["scrimmage_plays"].mean()) if len(frame) else 0.0
+    var = float(frame["scrimmage_plays"].var(ddof=0)) if len(frame) else 0.0
+    phi = float(var / mean) if mean > 0 else 1.0
+    return {"length": lengths, "league_ppd": league, "phi": max(phi, 1.0)}
+
+
+def fit_late_table(drives: pd.DataFrame) -> dict:
+    """How two-minute drives end, by starting field position.
+
+    Fit only on drives already in ``drives`` (kickoffs before the target).
+    A thin bin falls back to the two-minute total.
+    """
+    edges = np.asarray(cfg.LATE_YARD_EDGES, dtype=float)
+    n_bins = len(edges) - 1
+    n_out = len(cfg.DRIVE_OUTCOMES)
+    counts = np.zeros((n_bins, n_out))
+    if drives is None or len(drives) == 0:
+        counts[:, cfg.DRIVE_OUTCOMES.index("PUNT")] = 1.0
+        return {"edges": edges, "probs": counts / counts.sum(axis=1, keepdims=True)}
+    half = pd.to_numeric(drives["start_half_seconds_remaining"], errors="coerce").fillna(1800)
+    late = drives.loc[half <= cfg.TWO_MINUTE_SECONDS].copy()
+    late = late[late["outcome"].isin(cfg.DRIVE_OUTCOMES)]
+    if len(late) == 0:
+        counts[:, cfg.DRIVE_OUTCOMES.index("END_OF_HALF")] = 1.0
+        return {"edges": edges, "probs": counts}
+    labels = {name: index for index, name in enumerate(cfg.DRIVE_OUTCOMES)}
+    yards = pd.to_numeric(late["start_yardline_100"], errors="coerce").fillna(75).to_numpy()
+    bins = np.clip(np.searchsorted(edges, yards, side="right") - 1, 0, n_bins - 1)
+    outcomes = late["outcome"].map(labels).to_numpy(dtype=int)
+    for bin_id, outcome in zip(bins, outcomes, strict=False):
+        counts[int(bin_id), int(outcome)] += 1.0
+    total = counts.sum(axis=0, keepdims=True)
+    for index in range(n_bins):
+        if counts[index].sum() < 30:
+            counts[index] = total[0]
+    probs = counts / np.maximum(counts.sum(axis=1, keepdims=True), 1.0)
+    return {"edges": edges, "probs": probs}

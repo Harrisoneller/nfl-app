@@ -25,9 +25,9 @@ def pace_report(table: pd.DataFrame) -> dict:
     base_plays = _pair(table, "base_home_plays", "base_away_plays", "actual_home_plays", "actual_away_plays")
     model_drives = _pair(table, "home_drives_mean", "away_drives_mean", "actual_home_drives", "actual_away_drives")
     base_drives = _pair(table, "base_home_drives", "base_away_drives", "actual_home_drives", "actual_away_drives")
-    model_sec = _pair(table, "pred_home_sec", "pred_away_sec", "actual_home_sec", "actual_away_sec")
+    model_sec = _pair(table, "sim_home_sec", "sim_away_sec", "actual_home_sec", "actual_away_sec")
     base_sec = _pair(table, "base_home_sec", "base_away_sec", "actual_home_sec", "actual_away_sec")
-    model_ppd = _pair(table, "pred_home_ppd", "pred_away_ppd", "actual_home_ppd", "actual_away_ppd")
+    model_ppd = _pair(table, "sim_home_ppd", "sim_away_ppd", "actual_home_ppd", "actual_away_ppd")
     base_ppd = _pair(table, "base_home_ppd", "base_away_ppd", "actual_home_ppd", "actual_away_ppd")
     game_pred = table["home_plays_mean"] + table["away_plays_mean"]
     game_base = table["base_home_plays"] + table["base_away_plays"]

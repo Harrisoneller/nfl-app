@@ -63,7 +63,40 @@ def actual_diagnostic(drives: pd.DataFrame, plays: pd.DataFrame) -> pd.DataFrame
     )
     qtr = pd.to_numeric(frame["start_qtr"], errors="coerce").fillna(1)
     frame["half_name"] = np.where(qtr <= 2, "half_1", np.where(qtr <= 4, "half_2", "ot"))
-    return _summarize_drives(frame, "actual")
+    summary = _summarize_drives(frame, "actual")
+    return pd.concat([summary, _play_class_rows(timed, frame)], ignore_index=True)
+
+
+def _play_class_rows(timed: pd.DataFrame, drives: pd.DataFrame) -> pd.DataFrame:
+    """How many of each play class the actual drive table contains.
+
+    The sim's play total is scrimmage only: pass, run, kneel, and spike.
+    Punts, kicks, field goals, extra points, and penalties are clock, not plays.
+    """
+    n = max(len(drives), 1)
+    play_type = timed["play_type"].astype(str)
+    classes = {
+        "scrimmage": play_type.isin(["pass", "run", "qb_kneel", "qb_spike"]),
+        "kneel": play_type.eq("qb_kneel"),
+        "spike": play_type.eq("qb_spike"),
+        "no_play": play_type.eq("no_play"),
+        "two_point": pd.to_numeric(timed.get("two_point_attempt"), errors="coerce").fillna(0).eq(1)
+        if "two_point_attempt" in timed.columns else pd.Series(False, index=timed.index),
+        "punt": play_type.eq("punt"),
+        "field_goal": play_type.eq("field_goal"),
+        "extra_point": play_type.eq("extra_point"),
+    }
+    rows = []
+    for name, mask in classes.items():
+        rows.append({
+            "side": "actual", "state": "overall",
+            "metric": f"{name}_per_drive", "value": float(mask.sum()) / n,
+        })
+    rows.append({
+        "side": "sim", "state": "overall", "metric": "counted_play_definition",
+        "value": 1.0,
+    })
+    return pd.DataFrame(rows)
 
 
 def sim_diagnostic(tally: dict[str, np.ndarray], *, n_games: int, n_sims: int) -> pd.DataFrame:
@@ -78,7 +111,8 @@ def sim_diagnostic(tally: dict[str, np.ndarray], *, n_games: int, n_sims: int) -
         "yard_sum": float(tally["yard"].sum()),
         "n": float(overall_n),
         "shares": tally["n"].sum(axis=0),
-        "scrimmage_seconds": float(tally["sec"].sum()),
+        "scrimmage_seconds": float(tally["scr_sec"].sum()) if "scr_sec" in tally else float(tally["sec"].sum()),
+        "points_by_outcome": tally["points"].sum(axis=0),
     }
     rows.extend(_metric_rows("sim", "overall", overall, tally["half"] / scale, scale))
     for index, state in enumerate(cfg.SITUATIONS):
@@ -111,6 +145,9 @@ def _summarize_drives(frame: pd.DataFrame, side: str) -> pd.DataFrame:
 
 def _block(frame: pd.DataFrame) -> dict:
     shares = np.array([(frame["outcome"] == label).sum() for label in cfg.DRIVE_OUTCOMES], dtype=float)
+    points_by = np.array([
+        float(frame.loc[frame["outcome"].eq(label), "points"].sum()) for label in cfg.DRIVE_OUTCOMES
+    ])
     return {
         "plays": float(frame["scrimmage_plays"].sum()) if "scrimmage_plays" in frame else float(frame.get("plays", pd.Series(dtype=float)).sum()),
         "sec": float(frame["seconds"].sum()),
@@ -118,6 +155,7 @@ def _block(frame: pd.DataFrame) -> dict:
         "yard_sum": float(frame["yard"].sum()),
         "n": float(len(frame)),
         "shares": shares,
+        "points_by_outcome": points_by,
         "scrimmage_seconds": float(frame["scrimmage_seconds"].sum()) if "scrimmage_seconds" in frame else float(frame["seconds"].sum()),
     }
 
@@ -136,8 +174,21 @@ def _metric_rows(side: str, state: str, block: dict, halves: np.ndarray | None, 
     rows.append(_row(side, state, "plays_per_drive", block["plays"] / n if n else np.nan))
     rows.append(_row(side, state, "seconds_per_drive", block["sec"] / n if n else np.nan))
     play_seconds = block.get("scrimmage_seconds", block["sec"])
-    rows.append(_row(side, state, "seconds_per_play", play_seconds / block["plays"] if block["plays"] else np.nan))
+    rows.append(_row(side, state, "scrimmage_seconds_per_play", play_seconds / block["plays"] if block["plays"] else np.nan))
+    rows.append(_row(side, state, "possession_seconds_per_play", block["sec"] / block["plays"] if block["plays"] else np.nan))
     rows.append(_row(side, state, "start_yardline", block["yard_sum"] / n if n else np.nan))
+    if shares is not None:
+        made = float(shares[cfg.DRIVE_OUTCOMES.index("FG_MADE")])
+        missed = float(shares[cfg.DRIVE_OUTCOMES.index("FG_MISSED")])
+        rows.append(_row(side, state, "fg_attempt_rate", (made + missed) / n if n else np.nan))
+        rows.append(_row(side, state, "fg_make_rate", made / (made + missed) if (made + missed) else np.nan))
+        by_outcome = block.get("points_by_outcome")
+        if by_outcome is not None:
+            for label, count, pts in zip(cfg.DRIVE_OUTCOMES, shares, by_outcome, strict=True):
+                rows.append(_row(
+                    side, state, f"points_per_{label}",
+                    float(pts) / float(count) if count else np.nan,
+                ))
     rows.append(_row(side, state, "drives_per_game", n / games if games else np.nan))
     if halves is not None:
         rows.append(_row(side, state, "drives_per_game_half_1", float(halves[0])))

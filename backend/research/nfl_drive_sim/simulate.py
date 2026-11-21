@@ -48,7 +48,13 @@ def _pace(card: dict, offense_home: np.ndarray, state: np.ndarray, half_left: np
         plays = np.full(n, float(card["fixed_plays"]))
         sec = plays * float(card["fixed_sec"])
     elif card.get("clock") is not None and outcome is not None:
-        plays, sec = _class_clock(card, offense_home, state, outcome, kickoff, rng, n)
+        drawn, body, start, terminal = _class_clock(
+            card, offense_home, state, outcome, kickoff, rng, n,
+        )
+        plays, sec, scrimmage, outcome = _apply_truncation(
+            drawn, body, start, terminal, half_left, outcome, rng,
+        )
+        return plays, sec, scrimmage, outcome
     elif card.get("oracle"):
         plays = np.where(offense_home, card["oracle_home_plays"], card["oracle_away_plays"])
         sec = plays * np.where(offense_home, card["oracle_home_sec"], card["oracle_away_sec"])
@@ -67,8 +73,12 @@ def _pace(card: dict, offense_home: np.ndarray, state: np.ndarray, half_left: np
             drawn = rng.poisson(np.maximum(mu, 0.5))
             plays = np.where(mask, np.clip(drawn, 1, cfg.MAX_PLAYS_PER_DRIVE), plays)
             sec = np.where(mask, plays * np.where(offense_home, sec_h, sec_a), sec)
-    sec = np.minimum(sec, np.maximum(half_left, 0))
-    return plays, sec
+    full = sec
+    sec = np.minimum(full, np.maximum(half_left, 0.0))
+    ratio = np.ones(n)
+    np.divide(sec, np.maximum(full, 1e-6), out=ratio, where=full > 1e-6)
+    plays = plays * np.clip(ratio, 0.0, 1.0)
+    return plays, sec, sec, outcome
 
 
 def _class_clock(card, offense_home, state, outcome, kickoff, rng, n):
@@ -80,6 +90,7 @@ def _class_clock(card, offense_home, state, outcome, kickoff, rng, n):
     state_code = np.zeros(n, dtype=int)
     pred_plays = np.zeros(n)
     pred_sec = np.zeros(n)
+    pen_rate = np.zeros(n)
     league = np.zeros(n)
     base = np.zeros(n)
     kick_sec = np.zeros(n)
@@ -102,6 +113,7 @@ def _class_clock(card, offense_home, state, outcome, kickoff, rng, n):
             sec_s = np.where(offense_home, card["oracle_home_sec"], card["oracle_away_sec"])
         pred_plays = np.where(smask, plays_s, pred_plays)
         pred_sec = np.where(smask, sec_s, pred_sec)
+        pen_rate = np.where(smask, float(clock["mix"][sname].get("penalty_per_play", 0.0)), pen_rate)
         league_s = float(lengths["league_ppd"].get(sname, 5.5))
         league = np.where(smask, league_s, league)
         cell = np.array([
@@ -112,9 +124,24 @@ def _class_clock(card, offense_home, state, outcome, kickoff, rng, n):
         punt_sec = np.where(smask, lookup(clock, "punt", sname), punt_sec)
         fg_sec = np.where(smask, lookup(clock, "field_goal", sname), fg_sec)
         xp_sec = np.where(smask, lookup(clock, "extra_point", sname), xp_sec)
-    offset = pred_plays - league
-    mu = np.clip(pred_plays if card.get("oracle") else base + offset, 1.0, cfg.MAX_PLAYS_PER_DRIVE)
-    drawn = np.clip(rng.poisson(mu), 1, cfg.MAX_PLAYS_PER_DRIVE).astype(int)
+    if card.get("oracle"):
+        # Keep a punt shorter than a scoring drive. Scale the training lengths
+        # so their level matches this game's actual scrimmage plays per drive.
+        scale = pred_plays / np.maximum(league, 1e-6)
+        mu = np.clip(base * scale, 1.0, cfg.MAX_PLAYS_PER_DRIVE)
+    else:
+        mu = np.clip(base + (pred_plays - league), 1.0, cfg.MAX_PLAYS_PER_DRIVE)
+    if card.get("oracle"):
+        # The oracle is the actual mean pace, not a new noisy draw around it.
+        drawn = np.clip(np.rint(mu), 1, cfg.MAX_PLAYS_PER_DRIVE).astype(int)
+    else:
+        phi = float(lengths.get("phi", 1.0))
+        if phi <= 1.01:
+            drawn = rng.poisson(mu)
+        else:
+            n_succ = np.maximum(mu / (phi - 1.0), 1e-3)
+            drawn = rng.negative_binomial(n_succ, 1.0 / phi)
+        drawn = np.clip(drawn, 1, cfg.MAX_PLAYS_PER_DRIVE).astype(int)
     # One mixture for the whole array. Class means vary by state, so apply per state.
     sec = np.zeros(n)
     for s_index, sname in enumerate(cfg.SITUATIONS):
@@ -125,16 +152,49 @@ def _class_clock(card, offense_home, state, outcome, kickoff, rng, n):
         pass_rate = np.where(offense_home, card.get("home_pass", mix["pass_rate"]), card.get("away_pass", mix["pass_rate"]))
         inc_rate = np.where(offense_home, card.get("home_inc", mix["inc_rate"]), card.get("away_inc", mix["inc_rate"]))
         sack_rate = np.where(offense_home, card.get("home_sack", mix["sack_rate"]), card.get("away_sack", mix["sack_rate"]))
+        shocked = pred_sec
+        if card.get("home_sec_shock") is not None and not card.get("oracle"):
+            shocked = pred_sec + np.where(offense_home, card["home_sec_shock"], card["away_sec_shock"])
+            shocked = np.clip(shocked, 8.0, cfg.SEC_CAP)
         part = _scrimmage_seconds(
-            rng, drawn, pass_rate, inc_rate, sack_rate, mix, clock, sname, pred_sec,
+            rng, drawn, pass_rate, inc_rate, sack_rate, mix, clock, sname, shocked,
         )
         sec = np.where(smask, part, sec)
     kick = kickoff if kickoff is not None else np.zeros(n, dtype=bool)
-    sec = sec + np.where(kick, kick_sec, 0.0)
-    sec = sec + np.where(outcome == PUNT, punt_sec, 0.0)
-    sec = sec + np.where((outcome == FG) | (outcome == FG_MISSED), fg_sec, 0.0)
-    sec = sec + np.where(outcome == TD, xp_sec, 0.0)
-    return drawn.astype(float), sec
+    start = np.where(kick, kick_sec, 0.0)
+    terminal = np.zeros(n)
+    terminal = np.where(outcome == PUNT, punt_sec, terminal)
+    terminal = np.where((outcome == FG) | (outcome == FG_MISSED), fg_sec, terminal)
+    terminal = np.where(outcome == TD, xp_sec, terminal)
+    terminal = terminal + drawn.astype(float) * pen_rate
+    return drawn.astype(float), sec, start, terminal
+
+
+def _apply_truncation(drawn, body, special_start, terminal, half_left, outcome, rng):
+    """Drop plays that do not fit, and drop the ending if the clock wins.
+
+    ``half_left`` may be NaN when the caller still has to pass the live clock.
+    A finite clock caps the drive. The sampled ending is kept only when it
+    falls in the part of the drive that actually ran.
+    """
+    body = np.asarray(body, dtype=float)
+    drawn = np.asarray(drawn, dtype=float)
+    if half_left is None or np.all(~np.isfinite(half_left)):
+        return drawn, body + special_start + terminal, body, outcome
+    half_left = np.asarray(half_left, dtype=float)
+    remain = np.maximum(0.0, half_left - special_start)
+    ratio = np.ones(drawn.shape, dtype=float)
+    np.divide(remain, np.maximum(body, 1e-6), out=ratio, where=body > 1e-6)
+    ratio = np.clip(np.where(np.isfinite(half_left), ratio, 1.0), 0.0, 1.0)
+    plays = drawn * ratio
+    scrimmage = body * ratio
+    # The sampled ending is kept. Two-minute endings already come from the
+    # training frequencies, which include clock expiration. Only the snaps
+    # that fit are counted.
+    total = special_start + scrimmage + terminal
+    new_outcome = outcome
+    total = np.minimum(total, np.where(np.isfinite(half_left), np.maximum(half_left, 0.0), total))
+    return plays, total, scrimmage, new_outcome
 
 
 def _scrimmage_seconds(rng, n_plays, pass_rate, inc_rate, sack_rate, mix, clock, state, pred_sec):
@@ -172,7 +232,6 @@ def _scrimmage_seconds(rng, n_plays, pass_rate, inc_rate, sack_rate, mix, clock,
         + n_run * sec_run
         + n_run_oob * means["run_oob"]
         + n_sack * means["sack"]
-        + n_plays * float(mix.get("penalty_per_play", 0.0))
     )
 
 
@@ -197,6 +256,11 @@ def _expected_scrimmage_seconds(pass_rate, inc_rate, sack_rate, mix, means) -> n
 def _outcomes(card, n, rng, offense_home, yard, diff, half_left, home_to, away_to, active):
     if card.get("forced_outcome") is not None:
         return np.full(n, int(card["forced_outcome"]))
+    late = card.get("late_table")
+    if late is not None and np.any(half_left <= cfg.TWO_MINUTE_SECONDS):
+        late_draw = _sample_late(yard, rng, late)
+    else:
+        late_draw = None
     model = card["drive_model"]
     ypp_on = bool(card.get("ypp_layer", cfg.YPP_LAYER))
     names = model["names"]
@@ -234,7 +298,19 @@ def _outcomes(card, n, rng, offense_home, yard, diff, half_left, home_to, away_t
     probs = outcome_probabilities(features, model)
     draw = rng.random(n)
     cdf = np.cumsum(probs, axis=1)
-    return (draw[:, None] > cdf).sum(axis=1).astype(int)
+    chosen = (draw[:, None] > cdf).sum(axis=1).astype(int)
+    if late_draw is not None:
+        chosen = np.where(half_left <= cfg.TWO_MINUTE_SECONDS, late_draw, chosen)
+    return chosen
+
+
+def _sample_late(yard: np.ndarray, rng, table: dict) -> np.ndarray:
+    edges = np.asarray(table["edges"], dtype=float)
+    probs = np.asarray(table["probs"], dtype=float)
+    bins = np.clip(np.searchsorted(edges, yard, side="right") - 1, 0, probs.shape[0] - 1)
+    cdf = np.cumsum(probs, axis=1)
+    draw = rng.random(yard.shape[0])
+    return (draw[:, None] > cdf[bins]).sum(axis=1).astype(int)
 
 
 def _points(card, outcome, n, rng):
@@ -256,6 +332,8 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
     away_pts = np.zeros(n)
     home_plays = np.zeros(n)
     away_plays = np.zeros(n)
+    home_scr_sec = np.zeros(n)
+    away_scr_sec = np.zeros(n)
     home_drives = np.zeros(n)
     away_drives = np.zeros(n)
     ot_flag = np.zeros(n, dtype=bool)
@@ -270,6 +348,10 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
     yard = _draw(rng, card.get("banks", {}).get("KICKOFF", np.array([75.0])), n)
     home_to = np.full(n, 3.0)
     away_to = np.full(n, 3.0)
+    shock_sd = float(card.get("clock", {}).get("sec_shock_sd") or 0.0) if card.get("clock") else 0.0
+    if shock_sd > 0:
+        card["home_sec_shock"] = rng.normal(0.0, shock_sd, n)
+        card["away_sec_shock"] = rng.normal(0.0, shock_sd, n)
     alive = np.ones(n, dtype=bool)
     ot_poss = np.zeros(n, dtype=int)
     trace = []
@@ -307,7 +389,7 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         outcome = _outcomes(
             card, n, rng, offense_home, yard, diff, half_left, home_to, away_to, active,
         )
-        plays, sec = _pace(
+        plays, sec, scrimmage_sec, outcome = _pace(
             card, offense_home, state, half_left, rng, n, outcome=outcome, kickoff=starts_with_kick,
         )
         off_pts, def_pts = _points(card, outcome, n, rng)
@@ -319,10 +401,14 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         away_pts = away_pts + np.where(offense_home, def_pts, off_pts)
         home_plays = home_plays + np.where(offense_home, plays, 0.0)
         away_plays = away_plays + np.where(~offense_home, plays, 0.0)
+        home_scr_sec = home_scr_sec + np.where(offense_home, scrimmage_sec, 0.0)
+        away_scr_sec = away_scr_sec + np.where(~offense_home, scrimmage_sec, 0.0)
         home_drives = home_drives + np.where(offense_home & active, 1.0, 0.0)
         away_drives = away_drives + np.where(~offense_home & active, 1.0, 0.0)
         half_left = np.maximum(0.0, half_left - sec)
-        _tally(card, active, state, outcome, plays, sec, off_pts + def_pts, yard, half_id)
+        _tally(
+            card, active, state, outcome, plays, sec, off_pts + def_pts, yard, half_id, scrimmage_sec,
+        )
         first_td = (half_id >= 3) & active & (ot_poss == 0) & (outcome == TD)
         ot_poss = ot_poss + np.where((half_id >= 3) & active, 1, 0)
         alive = alive & ~first_td
@@ -337,6 +423,8 @@ def simulate_game(card: dict, n: int, rng: np.random.Generator) -> dict[str, np.
         "total": home_pts + away_pts,
         "home_plays": home_plays,
         "away_plays": away_plays,
+        "home_scr_sec": home_scr_sec,
+        "away_scr_sec": away_scr_sec,
         "home_drives": home_drives,
         "away_drives": away_drives,
         "ot": ot_flag.astype(float),
@@ -352,13 +440,14 @@ def new_tally() -> dict[str, np.ndarray]:
         "n": np.zeros((n_state, n_out)),
         "plays": np.zeros((n_state, n_out)),
         "sec": np.zeros((n_state, n_out)),
+        "scr_sec": np.zeros((n_state, n_out)),
         "points": np.zeros((n_state, n_out)),
         "yard": np.zeros((n_state, n_out)),
         "half": np.zeros(3),
     }
 
 
-def _tally(card, active, state, outcome, plays, sec, points, yard, half_id) -> None:
+def _tally(card, active, state, outcome, plays, sec, points, yard, half_id, scrimmage_sec=None) -> None:
     bucket = card.get("diagnose")
     if bucket is None or not np.any(active):
         return
@@ -369,7 +458,10 @@ def _tally(card, active, state, outcome, plays, sec, points, yard, half_id) -> N
     weight = active.astype(float)
     counts = np.bincount(flat, weights=weight, minlength=bucket["n"].size)
     bucket["n"] += counts.reshape(bucket["n"].shape)
-    for key, values in (("plays", plays), ("sec", sec), ("points", points), ("yard", yard)):
+    fields = [("plays", plays), ("sec", sec), ("points", points), ("yard", yard)]
+    if scrimmage_sec is not None and "scr_sec" in bucket:
+        fields.append(("scr_sec", scrimmage_sec))
+    for key, values in fields:
         summed = np.bincount(flat, weights=values * weight, minlength=bucket["n"].size)
         bucket[key] += summed.reshape(bucket["n"].shape)
     half_code = np.clip(half_id.astype(int), 1, 3) - 1

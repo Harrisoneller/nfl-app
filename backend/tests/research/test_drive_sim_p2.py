@@ -283,6 +283,65 @@ def test_second_half_starts_over_and_the_other_team_receives():
     assert result["half_trace"][1][0] == cfg.REGULATION_HALF_SECONDS
 
 
+def test_a_drive_cut_off_by_the_clock_does_not_keep_the_unplayed_snaps():
+    from research.nfl_drive_sim.simulate import _apply_truncation
+    drawn = np.array([8.0, 8.0])
+    body = np.array([200.0, 40.0])
+    start = np.zeros(2)
+    terminal = np.zeros(2)
+    half = np.array([50.0, 180.0])
+    outcome = np.array([
+        cfg.DRIVE_OUTCOMES.index("TD"),
+        cfg.DRIVE_OUTCOMES.index("PUNT"),
+    ])
+    plays, sec, scrimmage, new_outcome = _apply_truncation(
+        drawn, body, start, terminal, half, outcome, np.random.default_rng(0),
+    )
+    assert plays[0] == pytest.approx(8.0 * 50.0 / 200.0)
+    assert sec[0] <= 50.0 + 1e-6
+    assert plays[1] == pytest.approx(8.0)
+    assert scrimmage[1] == pytest.approx(40.0)
+    assert new_outcome[1] == cfg.DRIVE_OUTCOMES.index("PUNT")
+
+
+def test_oracle_scales_lengths_instead_of_flattening_them():
+    from research.nfl_drive_sim.clock import _empty_clock
+    from research.nfl_drive_sim.simulate import _class_clock
+    n = 400
+    card = {
+        "clock": _empty_clock(),
+        "lengths": {
+            "length": {
+                (outcome, state): (8.0 if outcome == "TD" else 2.0)
+                for outcome in cfg.DRIVE_OUTCOMES for state in cfg.SITUATIONS
+            },
+            "league_ppd": {state: 4.0 for state in cfg.SITUATIONS},
+            "phi": 1.0,
+        },
+        "home_pace": {state: {"plays": 4.0, "sec": 25.0} for state in cfg.SITUATIONS},
+        "away_pace": {state: {"plays": 4.0, "sec": 25.0} for state in cfg.SITUATIONS},
+        "home_pass": 0.5, "away_pass": 0.5, "home_inc": 0.3, "away_inc": 0.3,
+        "home_sack": 0.0, "away_sack": 0.0,
+        "oracle": True,
+        "oracle_home_plays": 4.0,
+        "oracle_away_plays": 4.0,
+        "oracle_home_sec": 25.0,
+        "oracle_away_sec": 25.0,
+    }
+    state = np.array(["neutral"] * n)
+    outcome = np.resize(
+        np.array([cfg.DRIVE_OUTCOMES.index("TD"), cfg.DRIVE_OUTCOMES.index("PUNT")]),
+        n,
+    )
+    offense = np.ones(n, dtype=bool)
+    drawn, _, _, _ = _class_clock(
+        card, offense, state, outcome, np.zeros(n, dtype=bool), np.random.default_rng(1), n,
+    )
+    # Oracle volume equals the league mean, so a touchdown drive stays longer than a punt.
+    assert drawn[outcome == cfg.DRIVE_OUTCOMES.index("TD")].mean() > 5.0
+    assert drawn[outcome == cfg.DRIVE_OUTCOMES.index("PUNT")].mean() < 4.0
+
+
 def test_softmax_recovers_a_state_that_ends_the_half():
     from research.nfl_drive_sim.models import fit_softmax, softmax
     rng = np.random.default_rng(0)

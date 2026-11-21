@@ -41,6 +41,10 @@ YPP_RIDGE_ALPHA = 5.0
 DRIVE_LOGIT_L2 = 0.05
 DRIVE_LOGIT_ITERS = 80
 
+# Two-minute decisions use the training frequency in these yardline bins.
+# The edges are the definition of the table, not a fit to 2018 scores.
+LATE_YARD_EDGES = (0.0, 20.0, 35.0, 50.0, 65.0, 80.0, 101.0)
+
 # Ablation flag. Off uses team drive efficiency only. The 2018 dev report
 # is fit with the layer on. P3 turns it off for the comparison.
 YPP_LAYER = True

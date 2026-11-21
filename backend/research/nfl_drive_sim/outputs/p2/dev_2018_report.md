@@ -3,38 +3,41 @@
 Fit: walk-forward by week. Coefficients use kickoffs before the week's first game. A later game that week still sees earlier kickoffs from that week in its features.
 
 Games: 267. Sims per game: 10000. YPP layer: True.
-Runtime per game: 0.509 seconds (predicted-pace sim only).
+Runtime per game: 0.586 seconds (predicted-pace sim only).
 
-Seconds per play and plays per drive are the neutral-situation forecast. Plays per team and drives per team are the mean of the simulations. The baseline is an equal-weight team mean shrunk to the league mean, with no opponent.
+Seconds per play and plays per drive are the simulated scrimmage means. Plays per team and drives per team are the mean of the simulations. The baseline is an equal-weight team mean shrunk to the league mean, with no opponent.
 
 | metric | model MAE | model bias | baseline MAE | baseline bias |
 | --- | ---: | ---: | ---: | ---: |
-| plays per team | 7.123 | 2.423 | 6.927 | 0.881 |
-| plays per game | 8.316 | 4.845 | 7.168 | 1.761 |
-| drives per team | 1.271 | 0.187 | 1.305 | 0.314 |
-| seconds per play | 2.480 | 1.930 | 2.022 | -0.386 |
-| plays per drive | 0.760 | 0.160 | 0.737 | -0.067 |
+| plays per team | 6.858 | 0.331 | 6.927 | 0.881 |
+| plays per game | 6.828 | 0.662 | 7.168 | 1.761 |
+| drives per team | 1.353 | 0.545 | 1.305 | 0.314 |
+| seconds per play | 2.002 | 0.763 | 2.022 | -0.386 |
+| plays per drive | 0.772 | -0.307 | 0.737 | -0.067 |
 
-Game-play interval coverage: 80% 0.584, 90% 0.708.
+Game-play interval coverage: 80% 0.854, 90% 0.925.
 
 | check | actual | simulated |
 | --- | ---: | ---: |
-| total mean | 46.551 | 46.292 |
-| total sd | 14.753 | 12.703 |
-| margin mean | 2.139 | 2.331 |
-| margin sd | 14.197 | 13.536 |
-| home win rate | 0.592 | 0.564 |
-| overtime rate | 0.064 | 0.036 |
-| drives per game | 22.367 | 22.742 |
-| drives sd | 3.208 | 2.655 |
-| share of margin 3 | 0.169 | 0.075 |
-| share of margin 7 | 0.094 | 0.074 |
+| total mean | 46.551 | 45.896 |
+| total sd | 14.753 | 13.304 |
+| margin mean | 2.139 | 2.212 |
+| margin sd | 14.197 | 13.569 |
+| home win rate | 0.592 | 0.560 |
+| overtime rate | 0.064 | 0.037 |
+| drives per game | 22.367 | 23.457 |
+| drives sd | 3.208 | 3.486 |
+| share of margin 3 | 0.169 | 0.076 |
+| share of margin 7 | 0.094 | 0.076 |
 
-Margin CRPS: 7.326.
+Margin CRPS: 7.335.
 Total CRPS: 7.925.
-Home-win Brier: 0.217.
-Total CRPS with oracle play counts: 8.171.
-Total CRPS difference (predicted pace minus oracle pace): -0.247.
+Home-win Brier: 0.218.
+Total CRPS with oracle play counts: 8.178.
+Total CRPS difference (predicted pace minus oracle pace): -0.253.
+The oracle uses this game's scrimmage plays per drive and seconds per play,
+scaled across outcomes so a touchdown drive stays longer than a punt.
+It does not look at each drive's own length.
 
 These scores are for 2018 only. There is no comparison to the served rating model.
 

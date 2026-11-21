@@ -15,7 +15,7 @@ import pandas as pd
 from . import sim_config as cfg
 from .cache import NflverseCache
 from .calendar import prepare_schedule
-from .clock import fit_clock, fit_scrimmage_lengths
+from .clock import fit_clock, fit_late_table, fit_scrimmage_lengths
 from .diagnostics import actual_diagnostic, sim_diagnostic, write_diagnostic
 from .drives import build_drive_table
 from .market import assert_no_market_columns
@@ -78,7 +78,7 @@ def _rate(row, name: str, fallback: float) -> float:
 
 
 def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates, ypp_on: bool,
-          clock: dict | None = None, lengths: dict | None = None) -> dict:
+          clock: dict | None = None, lengths: dict | None = None, late: dict | None = None) -> dict:
     def pace_for(row):
         return predict_pace(row, pace_models)
 
@@ -116,6 +116,7 @@ def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates,
         "ypp_layer": ypp_on,
         "clock": clock,
         "lengths": lengths,
+        "late_table": late,
         "home_pass": _rate(home_row, "off_pass_rate", 0.55),
         "away_pass": _rate(away_row, "off_pass_rate", 0.55),
         "home_inc": _rate(home_row, "off_incomplete", 0.35),
@@ -257,6 +258,7 @@ def run(
         train_plays = plays[plays["game_id"].astype(str).isin(train_ids)]
         clock = fit_clock(train_plays)
         lengths = fit_scrimmage_lengths(train_drives, train_plays)
+        late = fit_late_table(train_drives)
         banks_cache[week] = (pace, ypp, drive_model, banks, rates)
         print(f"week {week} train drives {len(train_drives)}", flush=True)
         for game in group.itertuples(index=False):
@@ -267,7 +269,7 @@ def run(
                 continue
             home_row, away_row = home.iloc[0], away.iloc[0]
             card = _card(
-                home_row, away_row, pace, ypp, drive_model, banks, rates, use_ypp, clock, lengths,
+                home_row, away_row, pace, ypp, drive_model, banks, rates, use_ypp, clock, lengths, late,
             )
             if tally is not None:
                 card["diagnose"] = tally
@@ -281,6 +283,10 @@ def run(
             summary["pred_away_sec"] = card["away_pace"]["neutral"]["sec"]
             summary["pred_home_ppd"] = card["home_pace"]["neutral"]["plays"]
             summary["pred_away_ppd"] = card["away_pace"]["neutral"]["plays"]
+            summary["sim_home_sec"] = float(result["home_scr_sec"].mean() / max(result["home_plays"].mean(), 1e-6))
+            summary["sim_away_sec"] = float(result["away_scr_sec"].mean() / max(result["away_plays"].mean(), 1e-6))
+            summary["sim_home_ppd"] = float(result["home_plays"].mean() / max(result["home_drives"].mean(), 1e-6))
+            summary["sim_away_ppd"] = float(result["away_plays"].mean() / max(result["away_drives"].mean(), 1e-6))
             summary["sim_p_margin_3"] = float(np.mean(np.isin(result["margin"], [-3.0, 3.0])))
             summary["sim_p_margin_7"] = float(np.mean(np.isin(result["margin"], [-7.0, 7.0])))
             summary["game_id"] = gid
@@ -380,7 +386,7 @@ def _report_md(report: dict) -> str:
     pace = report["pace"]
     sim = report["sim"]
     note = (
-        "Seconds per play and plays per drive are the neutral-situation forecast. "
+        "Seconds per play and plays per drive are the simulated scrimmage means. "
         "Plays per team and drives per team are the mean of the simulations. "
         "The baseline is an equal-weight team mean shrunk to the league mean, with no opponent."
     )
@@ -430,6 +436,9 @@ def _report_md(report: dict) -> str:
             ]
             if "crps_total_oracle_pace" in report else []
         ),
+        "The oracle uses this game's scrimmage plays per drive and seconds per play,",
+        "scaled across outcomes so a touchdown drive stays longer than a punt.",
+        "It does not look at each drive's own length.",
         "",
         "These scores are for 2018 only. There is no comparison to the served rating model.",
         "",
