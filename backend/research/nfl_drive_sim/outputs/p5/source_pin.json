@@ -1,0 +1,14 @@
+{
+  "player_stats.parquet": {
+    "bytes": 5621855,
+    "sha256": "4f05a9c5c6df6cc91647365c569c04707ce8c54b547b2ffdb7fe60647e0751df"
+  },
+  "stats_player_week_2025.parquet": {
+    "bytes": 855077,
+    "sha256": "2a461becaa9adb3c93a3074a3a31f1e960162a50163371a2d34e28393b5fff10"
+  },
+  "stats_player_week_2026.parquet": {
+    "bytes": 537345,
+    "sha256": "3568803029fcb57997e6e75a4779113b15269dbbd48a021d4efa3da9fcdd60b2"
+  }
+}
