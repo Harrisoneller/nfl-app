@@ -10,12 +10,14 @@ The cache is not refreshed here. Parquet hashes live in the manifest stub.
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from . import sim_config as cfg
+from .models import crps_ensemble
 from .pregame import pregame_quarterback_table
 from .v5_replay import (
     DROP_RATE_LIMIT,
@@ -182,6 +184,16 @@ def walk_forward_predictions(features: pd.DataFrame) -> dict[str, tuple[float, f
     return predicted
 
 
+def _crps_normal(mean: float, sigma: float, actual: float) -> float:
+    """Closed-form normal CRPS. Sensitivity only; it does not change the call."""
+    if not np.isfinite(sigma) or sigma <= 0:
+        return abs(actual - mean)
+    z = (actual - mean) / sigma
+    cdf = 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    pdf = math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+    return float(sigma * (z * (2.0 * cdf - 1.0) + 2.0 * pdf - 1.0 / math.sqrt(math.pi)))
+
+
 def _finite_mean(values: np.ndarray) -> float:
     sample = np.asarray(values, dtype=float)
     sample = sample[np.isfinite(sample)]
@@ -252,6 +264,12 @@ def _score_one(game: pd.Series, pred: tuple[float, float, float, float] | None, 
         "d_brier": (sim_p - row["actual_home_win"]) ** 2 - (v5_p - row["actual_home_win"]) ** 2,
         "sim_margin_crps": sim_crps_m,
         "sim_total_crps": sim_crps_t,
+        "sim_margin_crps_sample": crps_ensemble(sim["margin"], actual_m),
+        "v5_margin_crps_normal": _crps_normal(v5_m, sigma_m, actual_m),
+        "sim_total_crps_sample": crps_ensemble(sim["total"], actual_t),
+        "v5_total_crps_normal": _crps_normal(v5_t, sigma_t, actual_t),
+        "sim_p_margin_3": float(np.mean(np.rint(np.abs(sim["margin"])) == 3)),
+        "sim_p_margin_7": float(np.mean(np.rint(np.abs(sim["margin"])) == 7)),
         "flag_margin": float(abs(sim_m - v5_m) >= FLAG_MARGIN),
         "flag_total": float(abs(sim_t - v5_t) >= FLAG_TOTAL),
         "flag_wp": float(abs(sim_p - v5_p) >= FLAG_WP),
@@ -259,8 +277,15 @@ def _score_one(game: pd.Series, pred: tuple[float, float, float, float] | None, 
         "sim_ot": float(np.mean(sim["ot"])),
         "sim_plays": plays,
         "sim_seconds_per_play": seconds / plays if plays else np.nan,
+        "actual_seconds_per_play": (
+            float(game["actual_seconds_per_play"])
+            if "actual_seconds_per_play" in game and pd.notna(game["actual_seconds_per_play"])
+            else np.nan
+        ),
         "sim_drives": float(np.mean(sim["home_drives"] + sim["away_drives"])),
     })
+    if np.isfinite(row["actual_seconds_per_play"]) and np.isfinite(row["sim_seconds_per_play"]):
+        row["sec_per_play_bias"] = row["sim_seconds_per_play"] - row["actual_seconds_per_play"]
     return row
 
 
@@ -389,8 +414,12 @@ def render_report(result: dict) -> str:
         "",
         "The game-average pace oracle is a handicapped benchmark.",
         "A gap whose interval covers zero is not a win for the predicted pace.",
+        "Continuous CRPS is a sensitivity check. It does not change the primary call.",
         "",
     ])
+    lines.extend(result.get("notes") or [])
+    if result.get("notes"):
+        lines.append("")
     return "\n".join(lines)
 
 

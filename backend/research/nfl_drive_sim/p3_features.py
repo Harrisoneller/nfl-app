@@ -105,6 +105,31 @@ def _cover_games() -> pd.DataFrame:
     return frame.drop_duplicates("game_id")
 
 
+def prepare_team_context() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Team rows and pre-game quarterbacks. Does not fit or score."""
+    print("loading derived plays", flush=True)
+    plays = pd.concat(
+        [pd.read_parquet(path) for path in sorted((DERIVED / "pbp_model").glob("*.parquet"))],
+        ignore_index=True,
+    )
+    games = _schedule()
+    print("building drives", flush=True)
+    built = build_drive_table(plays, games)
+    print("assigning quarterbacks", flush=True)
+    identified = assign_quarterbacks(games, _depth_charts())
+    team_rows = team_game_table(plays, built.drives, games)
+    home_qb = identified[["game_id", "home_qb"]].rename(columns={"home_qb": "qb_id"})
+    home_qb["is_home"] = 1.0
+    away_qb = identified[["game_id", "away_qb"]].rename(columns={"away_qb": "qb_id"})
+    away_qb["is_home"] = 0.0
+    team_rows = team_rows.merge(
+        pd.concat([home_qb, away_qb], ignore_index=True), on=["game_id", "is_home"], how="left",
+    )
+    print("attaching priors", flush=True)
+    featured = _attach_opponent_defense(with_priors(team_rows, qb_game_table(plays, games)))
+    return featured, identified
+
+
 def build_coverage() -> dict:
     """Count games that have a v5 feature row and both sim cards. No scores."""
     plays = pd.concat(
