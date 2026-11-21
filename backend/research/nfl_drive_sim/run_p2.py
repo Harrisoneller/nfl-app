@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import pickle
 import time
 from pathlib import Path
 
@@ -13,6 +15,8 @@ import pandas as pd
 from . import sim_config as cfg
 from .cache import NflverseCache
 from .calendar import prepare_schedule
+from .clock import fit_clock, fit_scrimmage_lengths
+from .diagnostics import actual_diagnostic, sim_diagnostic, write_diagnostic
 from .drives import build_drive_table
 from .market import assert_no_market_columns
 from .metrics_p2 import pace_report, sim_report
@@ -21,7 +25,7 @@ from .p2_data import qb_game_table, team_game_table
 from .p2_fit import fit_drive_model, fit_pace, fit_ypp, predict_pace, predict_ypp
 from .pregame import pregame_quarterback_table
 from .priors import with_priors
-from .simulate import simulate_game, summarize_sims
+from .simulate import new_tally, simulate_game, summarize_sims
 
 OUTPUT = Path(__file__).resolve().parent / "outputs" / "p2"
 
@@ -64,7 +68,17 @@ def _rates(drives: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates, ypp_on: bool) -> dict:
+def _rate(row, name: str, fallback: float) -> float:
+    value = row.get(name, fallback) if hasattr(row, "get") else fallback
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if np.isfinite(number) else fallback
+
+
+def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates, ypp_on: bool,
+          clock: dict | None = None, lengths: dict | None = None) -> dict:
     def pace_for(row):
         return predict_pace(row, pace_models)
 
@@ -100,6 +114,14 @@ def _card(home_row, away_row, pace_models, ypp_model, drive_model, banks, rates,
         "banks": banks,
         "dome": float(home_row.get("dome", 0.0) or 0.0),
         "ypp_layer": ypp_on,
+        "clock": clock,
+        "lengths": lengths,
+        "home_pass": _rate(home_row, "off_pass_rate", 0.55),
+        "away_pass": _rate(away_row, "off_pass_rate", 0.55),
+        "home_inc": _rate(home_row, "off_incomplete", 0.35),
+        "away_inc": _rate(away_row, "off_incomplete", 0.35),
+        "home_sack": _rate(home_row, "off_sack", 0.06),
+        "away_sack": _rate(away_row, "off_sack", 0.06),
         **rates,
     }
 
@@ -110,24 +132,64 @@ def _actual_side(team_games: pd.DataFrame, game_id: str, home: bool) -> pd.Serie
     return side.iloc[0]
 
 
-def run(cache: NflverseCache | None = None) -> dict:
-    assert_dev_season(cfg.DEV_EVAL_SEASON)
-    store = cache or NflverseCache()
+def _attach_opponent_defense(featured: pd.DataFrame) -> pd.DataFrame:
+    """Put the other team's allowed pace on this row.
+
+    ``def_*`` on a row is what that team allows when it plays defense.
+    The pace model needs the opponent's version of that, not its own.
+    """
+    defense = [column for column in featured.columns if column.startswith("def_")]
+    if not defense:
+        return featured
+    side = featured[["game_id", "team", *defense]].copy()
+    side = side.rename(columns={"team": "opponent", **{column: f"opp_{column}" for column in defense}})
+    return featured.merge(side, on=["game_id", "opponent"], how="left")
+
+
+def _load_dev_frames(store: NflverseCache):
     schedule = prepare_schedule(store.load_schedules()).games
     schedule = schedule[schedule["season"].isin([*cfg.DEV_FIT_SEASONS, cfg.DEV_EVAL_SEASON])].copy()
     assert_no_market_columns(schedule, "p2 schedule")
     pieces = []
     play_pieces = []
     for season in (*cfg.DEV_FIT_SEASONS, cfg.DEV_EVAL_SEASON):
-        plays = store.load_pbp_model(int(season))
-        plays = plays[plays["game_id"].astype(str).isin(set(schedule["game_id"]))].copy()
-        built = build_drive_table(plays, schedule)
+        season_plays = store.load_pbp_model(int(season))
+        season_plays = season_plays[season_plays["game_id"].astype(str).isin(set(schedule["game_id"]))].copy()
+        built = build_drive_table(season_plays, schedule)
         pieces.append(built.drives)
-        play_pieces.append(plays)
+        play_pieces.append(season_plays)
         print(f"season {season} drives {len(built.drives)}", flush=True)
     drives = pd.concat(pieces, ignore_index=True)
     plays = pd.concat(play_pieces, ignore_index=True)
     games = schedule[schedule["game_id"].isin(set(drives["game_id"]))].copy()
+    return schedule, drives, plays, games
+
+
+def run(
+    cache: NflverseCache | None = None,
+    *,
+    n_sims: int | None = None,
+    with_oracle: bool = True,
+    ypp_layer: bool | None = None,
+    diagnostic_label: str | None = None,
+    output_suffix: str = "",
+) -> dict:
+    assert_dev_season(cfg.DEV_EVAL_SEASON)
+    store = cache or NflverseCache()
+    bundle_path = Path("/tmp/p2_prepared.pkl")
+    if os.environ.get("P2_REUSE") == "1" and bundle_path.exists():
+        print("reusing prepared 2015-2018 plays and drives", flush=True)
+        bundle = pickle.load(bundle_path.open("rb"))
+        schedule = bundle["schedule"]
+        drives = bundle["drives"]
+        plays = bundle["plays"]
+        games = bundle["games"]
+    else:
+        schedule, drives, plays, games = _load_dev_frames(store)
+        pickle.dump(
+            {"schedule": schedule, "drives": drives, "plays": plays, "games": games},
+            bundle_path.open("wb"),
+        )
     charts = pd.concat(
         [store.load_table("depth_charts", int(season)) for season in (*cfg.DEV_FIT_SEASONS, cfg.DEV_EVAL_SEASON)],
         ignore_index=True,
@@ -149,6 +211,7 @@ def run(cache: NflverseCache | None = None) -> dict:
     qb_rows = qb_game_table(plays, games)
     print("attaching priors", flush=True)
     featured = with_priors(team_rows, qb_rows)
+    featured = _attach_opponent_defense(featured)
     assert_no_market_columns(featured, "team games")
     eval_games = games[games["season"].astype(int).eq(cfg.DEV_EVAL_SEASON)].copy()
     eval_games = eval_games.sort_values(["kickoff_et", "game_id"])
@@ -160,6 +223,10 @@ def run(cache: NflverseCache | None = None) -> dict:
     per_game = []
     runtime = []
     banks_cache = {}
+    sims = cfg.N_SIMS if n_sims is None else int(n_sims)
+    use_ypp = cfg.YPP_LAYER if ypp_layer is None else bool(ypp_layer)
+    tally = new_tally() if diagnostic_label else None
+    pace_coefs = None
     for cutoff, week, group in weeks:
         train_teams = featured[featured["kickoff_et"] < cutoff]
         train_drives = drives.merge(
@@ -168,19 +235,28 @@ def run(cache: NflverseCache | None = None) -> dict:
         # Priors on the training drives come from the featured rows of those games.
         train_teams = train_teams.copy()
         pace = fit_pace(train_teams)
-        ypp = fit_ypp(train_teams, cfg.YPP_LAYER)
+        if pace_coefs is None:
+            pace_coefs = {
+                f"{state}_{target}": None if model is None else [float(v) for v in model["coef"]]
+                for (state, target), model in pace.items()
+            }
+        ypp = fit_ypp(train_teams, use_ypp)
         train_teams["ypp_pass_hat"] = [
-            predict_ypp(row, ypp, cfg.YPP_LAYER)[0] for _, row in train_teams.iterrows()
+            predict_ypp(row, ypp, use_ypp)[0] for _, row in train_teams.iterrows()
         ]
         train_teams["ypp_run_hat"] = [
-            predict_ypp(row, ypp, cfg.YPP_LAYER)[1] for _, row in train_teams.iterrows()
+            predict_ypp(row, ypp, use_ypp)[1] for _, row in train_teams.iterrows()
         ]
-        drive_model = fit_drive_model(train_drives, train_teams, cfg.YPP_LAYER)
+        drive_model = fit_drive_model(train_drives, train_teams, use_ypp)
         if drive_model is None:
             print(f"week {week} skipped, no drive model", flush=True)
             continue
         rates = _rates(train_drives)
         banks = _banks(train_drives)
+        train_ids = set(train_teams["game_id"].astype(str))
+        train_plays = plays[plays["game_id"].astype(str).isin(train_ids)]
+        clock = fit_clock(train_plays)
+        lengths = fit_scrimmage_lengths(train_drives, train_plays)
         banks_cache[week] = (pace, ypp, drive_model, banks, rates)
         print(f"week {week} train drives {len(train_drives)}", flush=True)
         for game in group.itertuples(index=False):
@@ -190,11 +266,15 @@ def run(cache: NflverseCache | None = None) -> dict:
             if len(home) == 0 or len(away) == 0:
                 continue
             home_row, away_row = home.iloc[0], away.iloc[0]
-            card = _card(home_row, away_row, pace, ypp, drive_model, banks, rates, cfg.YPP_LAYER)
+            card = _card(
+                home_row, away_row, pace, ypp, drive_model, banks, rates, use_ypp, clock, lengths,
+            )
+            if tally is not None:
+                card["diagnose"] = tally
             seed = cfg.SEED + int(hashlib.sha256(gid.encode()).hexdigest()[:6], 16)
             rng = np.random.default_rng(seed)
             started = time.perf_counter()
-            result = simulate_game(card, cfg.N_SIMS, rng)
+            result = simulate_game(card, sims, rng)
             runtime.append(time.perf_counter() - started)
             summary = summarize_sims(result)
             summary["pred_home_sec"] = card["home_pace"]["neutral"]["sec"]
@@ -234,14 +314,15 @@ def run(cache: NflverseCache | None = None) -> dict:
             summary["actual_ot"] = float(game.overtime) if pd.notna(game.overtime) else 0.0
             summary["crps_margin"] = crps_ensemble(result["margin"], summary["actual_margin"])
             summary["crps_total"] = crps_ensemble(result["total"], summary["actual_total"])
-            card["oracle"] = True
-            card["oracle_home_plays"] = max(actual_home / max(float(home_row["drives"]), 1.0), 1.0)
-            card["oracle_away_plays"] = max(actual_away / max(float(away_row["drives"]), 1.0), 1.0)
-            card["oracle_home_sec"] = _positive(home_row["sec_per_play"], 25.0)
-            card["oracle_away_sec"] = _positive(away_row["sec_per_play"], 25.0)
-            oracle_rng = np.random.default_rng(seed)
-            oracle = simulate_game(card, cfg.N_SIMS, oracle_rng)
-            summary["oracle_crps_total"] = crps_ensemble(oracle["total"], summary["actual_total"])
+            if with_oracle:
+                card["oracle"] = True
+                card["oracle_home_plays"] = max(actual_home / max(float(home_row["drives"]), 1.0), 1.0)
+                card["oracle_away_plays"] = max(actual_away / max(float(away_row["drives"]), 1.0), 1.0)
+                card["oracle_home_sec"] = _positive(home_row["sec_per_play"], 25.0)
+                card["oracle_away_sec"] = _positive(away_row["sec_per_play"], 25.0)
+                card.pop("diagnose", None)
+                oracle = simulate_game(card, sims, np.random.default_rng(seed))
+                summary["oracle_crps_total"] = crps_ensemble(oracle["total"], summary["actual_total"])
             per_game.append(summary)
             print(f"sim {gid} {runtime[-1]:.2f}s", flush=True)
 
@@ -255,28 +336,39 @@ def run(cache: NflverseCache | None = None) -> dict:
                "A later game that week still sees earlier kickoffs from that week in its features.",
         "eval_season": cfg.DEV_EVAL_SEASON,
         "n_games": len(table),
-        "n_sims": cfg.N_SIMS,
-        "ypp_layer": cfg.YPP_LAYER,
+        "n_sims": sims,
+        "ypp_layer": use_ypp,
         "runtime_sec_per_game": float(np.mean(runtime)),
         "pace": pace_report(table),
         "sim": sim_report(table),
         "crps_margin": float(table["crps_margin"].mean()),
         "crps_total": float(table["crps_total"].mean()),
-        "crps_total_oracle_pace": float(table["oracle_crps_total"].mean()),
-        "crps_total_pace_gap": float((table["crps_total"] - table["oracle_crps_total"]).mean()),
         "brier_home_win": float(np.mean((table["p_home_win"] - table["actual_home_win"]) ** 2)),
     }
+    if "oracle_crps_total" in table.columns:
+        report["crps_total_oracle_pace"] = float(table["oracle_crps_total"].mean())
+        report["crps_total_pace_gap"] = float((table["crps_total"] - table["oracle_crps_total"]).mean())
+    if pace_coefs is not None:
+        report["pace_coefficients_first_week"] = pace_coefs
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    game_path = OUTPUT / "dev_2018_games.csv"
+    if diagnostic_label and tally is not None:
+        eval_ids = set(table["game_id"].astype(str))
+        actual = actual_diagnostic(
+            drives[drives["game_id"].astype(str).isin(eval_ids)].copy(),
+            plays[plays["game_id"].astype(str).isin(eval_ids)].copy(),
+        )
+        simulated = sim_diagnostic(tally, n_games=len(table), n_sims=sims)
+        write_diagnostic(OUTPUT / f"diagnostic_{diagnostic_label}.csv", actual, simulated)
+    game_path = OUTPUT / f"dev_2018_games{output_suffix}.csv"
     table.to_csv(game_path, index=False)
-    report_path = OUTPUT / "dev_2018_report.json"
+    report_path = OUTPUT / f"dev_2018_report{output_suffix}.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n")
-    (OUTPUT / "dev_2018_report.md").write_text(_report_md(report))
+    (OUTPUT / f"dev_2018_report{output_suffix}.md").write_text(_report_md(report))
     config_path = Path(cfg.__file__)
     config_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
     (OUTPUT / "sim_config.sha256").write_text(f"{config_hash}  sim_config.py\n")
     _write_manifest(OUTPUT, config_hash)
-    print(json.dumps(report, indent=2), flush=True)
+    print(json.dumps({k: v for k, v in report.items() if k != "pace_coefficients_first_week"}, indent=2), flush=True)
     return report
 
 
@@ -331,8 +423,13 @@ def _report_md(report: dict) -> str:
         f"Margin CRPS: {report['crps_margin']:.3f}.",
         f"Total CRPS: {report['crps_total']:.3f}.",
         f"Home-win Brier: {report['brier_home_win']:.3f}.",
-        f"Total CRPS with oracle play counts: {report['crps_total_oracle_pace']:.3f}.",
-        f"Total CRPS difference (predicted pace minus oracle pace): {report['crps_total_pace_gap']:.3f}.",
+        *(
+            [
+                f"Total CRPS with oracle play counts: {report['crps_total_oracle_pace']:.3f}.",
+                f"Total CRPS difference (predicted pace minus oracle pace): {report['crps_total_pace_gap']:.3f}.",
+            ]
+            if "crps_total_oracle_pace" in report else []
+        ),
         "",
         "These scores are for 2018 only. There is no comparison to the served rating model.",
         "",
@@ -341,7 +438,11 @@ def _report_md(report: dict) -> str:
         "- 2018 overtime is one 10-minute period. A touchdown on the first possession wins immediately. Otherwise both teams possess, and the next score wins. A tie stands if the clock expires. A playoff game that is still tied gets one more sudden-death period and then stops.",
         "- Timeouts are a drive-model feature. The sim does not spend them.",
         "- Pressure is qb_hit from play-by-play. Next Gen Stats are not used.",
-        "- The ridge and softmax fits are numpy. Seconds per play is the game-clock span of a drive's scrimmage plays divided by plays minus one, then applied to every play.",
+        "- Scrimmage plays are passes, runs, kneels, and spikes. Punts, kicks, field goals, and extra points take their own runoff.",
+        "- Incompletions, spikes, and out-of-bounds plays use the stopped-clock mean. Running-clock plays are shifted so the mixture matches the pace model's seconds per scrimmage play.",
+        "- Plays per drive follow the training length of that outcome, plus the team's pace-model offset. The offset uses the opponent's allowed pace, not the offense's own defense.",
+        "- The drive-outcome fit is gradient ascent. The previous one-class Newton step, with a penalty of 1, could not reproduce the 2015-17 two-minute end-of-half rate.",
+        "- The ridge and softmax fits are numpy.",
         "- Schedule abbreviations are canonicalized to the play-by-play codes (OAK to LV, STL to LA, SD to LAC) for the team join. The drive table keeps the abbreviation on the play.",
         "- The quarterback prior is the pre-game depth-chart quarterback's dropback EPA and CPOE, shrunk to the mean of earlier dropbacks.",
         "",
@@ -360,4 +461,11 @@ def _write_manifest(directory: Path, config_hash: str) -> None:
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "diagnose-before":
+        run(n_sims=1500, with_oracle=False, diagnostic_label="before")
+    else:
+        run(diagnostic_label="after")
+        run(
+            ypp_layer=False, with_oracle=False, diagnostic_label="ypp_off", output_suffix="_ypp_off",
+        )

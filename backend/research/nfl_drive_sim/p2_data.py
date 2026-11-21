@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from . import sim_config as cfg
+from .diagnostics import play_clock_deltas
 from .teams import canon
 
 
@@ -31,7 +32,7 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     """One offense row per team-game. Weather and the dome flag come from the schedule."""
     if len(plays) == 0:
         return pd.DataFrame()
-    work = plays.copy()
+    work = play_clock_deltas(plays)
     work["game_id"] = work["game_id"].astype(str)
     scrimmage = work["play_type"].isin(["pass", "run", "qb_kneel", "qb_spike"])
     scrimmage = scrimmage & ~_num(work, "extra_point_attempt").eq(1) & ~_num(work, "two_point_attempt").eq(1)
@@ -39,11 +40,7 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     if len(snap) == 0:
         return pd.DataFrame()
     snap = snap.sort_values(["game_id", "play_id"], kind="mergesort")
-    snap["prev_clock"] = snap.groupby("game_id", sort=False)["game_seconds_remaining"].shift(1)
-    snap["prev_team"] = snap.groupby("game_id", sort=False)["posteam"].shift(1)
-    delta = _num(snap, "prev_clock") - _num(snap, "game_seconds_remaining")
-    same = snap["posteam"].astype(str) == snap["prev_team"].astype(str)
-    snap["snap_sec"] = delta.where(same & delta.gt(0) & delta.le(cfg.SEC_CAP), 0.0)
+    snap["snap_sec"] = snap["clock_delta"]
     snap["score"] = _num(snap, "score_differential")
     snap["half_left"] = _num(snap, "half_seconds_remaining")
     snap["situation"] = _situation(snap["score"], snap["half_left"])
@@ -97,12 +94,22 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     ):
         part = snap.loc[snap["situation"].eq(state)]
         n_plays = part.groupby(["game_id", "posteam"]).size()
+        sec = part.groupby(["game_id", "posteam"])["snap_sec"].sum()
         rows = rows.merge(n_plays.rename(f"plays_{key}"), on=["game_id", "posteam"], how="left")
+        rows = rows.merge(sec.rename(f"sec_{key}"), on=["game_id", "posteam"], how="left")
     rows = rows.fillna(0.0)
     rows = rows.rename(columns={"posteam": "team"})
     rows["team"] = rows["team"].map(canon)
 
-    drive_rows = _drive_side(drives)
+    if "fixed_drive" in snap.columns:
+        snap["drive"] = pd.to_numeric(snap["fixed_drive"], errors="coerce")
+    scrimmage_counts = (
+        snap.groupby(["game_id", "posteam", "drive"], sort=False)
+        .size()
+        .rename("scr_plays")
+        .reset_index()
+    )
+    drive_rows = _drive_side(drives, scrimmage_counts)
     rows = rows.merge(drive_rows, on=["game_id", "team"], how="left").fillna(0.0)
     meta = games.copy()
     meta["game_id"] = meta["game_id"].astype(str)
@@ -127,13 +134,9 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     rows["wind"] = pd.to_numeric(rows["wind"], errors="coerce").fillna(0.0)
     rows.loc[rows["dome"].eq(1), "wind"] = 0.0
     plays_n = rows["plays"].clip(lower=1)
-    clock = _drive_clock(snap)
-    rows["team"] = rows["team"].map(canon)
     rows["game_id"] = rows["game_id"].astype(str)
-    rows = rows.merge(clock, on=["game_id", "team"], how="left")
-    gaps = rows["clock_gaps"].fillna(0)
-    rows["sec_per_play"] = rows["clock_span"] / gaps.clip(lower=1)
-    rows.loc[gaps.lt(1), "sec_per_play"] = np.nan
+    rows["sec_per_play"] = rows["snap_sec"] / plays_n
+    rows.loc[rows["plays"].fillna(0).lt(1), "sec_per_play"] = np.nan
     rows["plays_per_drive"] = rows["plays"] / rows["drives"].clip(lower=1)
     rows["no_huddle"] = rows["no_huddle_n"] / plays_n
     rows["incomplete"] = rows["incompletions"] / rows["pass_plays"].clip(lower=1)
@@ -148,9 +151,9 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     rows["ypp_pass"] = rows["pass_yards"] / rows["pass_plays"].clip(lower=1)
     rows["ypp_run"] = rows["rush_yards"] / rows["rush_plays"].clip(lower=1)
     for key in ("neutral", "leading", "trailing", "two_minute"):
-        gaps = rows[f"clock_gaps_{key}"].fillna(0)
-        rows[f"sec_{key}"] = rows[f"clock_span_{key}"] / gaps.clip(lower=1)
-        rows.loc[gaps.lt(1), f"sec_{key}"] = np.nan
+        counted = rows[f"plays_{key}"].fillna(0)
+        rows[f"sec_{key}"] = rows[f"sec_{key}"] / counted.clip(lower=1)
+        rows.loc[counted.lt(cfg.MIN_STATE_PLAYS), f"sec_{key}"] = np.nan
         drive_plays = rows[f"drive_plays_{key}"] if f"drive_plays_{key}" in rows.columns else 0.0
         drive_n = rows[f"drive_n_{key}"] if f"drive_n_{key}" in rows.columns else 0.0
         drive_n = pd.Series(drive_n, index=rows.index).fillna(0)
@@ -163,53 +166,22 @@ def team_game_table(plays: pd.DataFrame, drives: pd.DataFrame, games: pd.DataFra
     return rows
 
 
-def _drive_clock(snap: pd.DataFrame) -> pd.DataFrame:
-    """Game-clock seconds per play.
-
-    The span is the clock at the first scrimmage play minus the clock at the
-    last. Dividing by plays-minus-one estimates one play. Charging that rate
-    on every play, including the first, also covers the kick or punt that
-    the span does not include.
-    """
-    if "drive" not in snap.columns or len(snap) == 0:
-        return pd.DataFrame(columns=["game_id", "team"])
-    pieces = []
-    for (game_id, team, _drive), part in snap.groupby(["game_id", "posteam", "drive"], sort=False):
-        clocks = pd.to_numeric(part["game_seconds_remaining"], errors="coerce")
-        start = clocks.iloc[0]
-        end = clocks.iloc[-1]
-        span = float(start - end) if pd.notna(start) and pd.notna(end) and end <= start else 0.0
-        pieces.append({
-            "game_id": str(game_id),
-            "team": str(team),
-            "span": span,
-            "gaps": max(len(part) - 1, 0),
-            "situation": part["situation"].iloc[0],
-        })
-    clock = pd.DataFrame(pieces)
-    team = clock.groupby(["game_id", "team"], sort=False).agg(
-        clock_span=("span", "sum"), clock_gaps=("gaps", "sum"),
-    ).reset_index()
-    for state, key in (
-        ("neutral", "neutral"),
-        ("leading", "leading"),
-        ("trailing", "trailing"),
-        ("two_minute", "two_minute"),
-    ):
-        part = clock.loc[clock["situation"].eq(state)]
-        agg = part.groupby(["game_id", "team"], sort=False).agg(
-            span=("span", "sum"), gaps=("gaps", "sum"),
-        ).reset_index()
-        agg = agg.rename(columns={"span": f"clock_span_{key}", "gaps": f"clock_gaps_{key}"})
-        team = team.merge(agg, on=["game_id", "team"], how="left")
-    return team
-
-
-def _drive_side(drives: pd.DataFrame) -> pd.DataFrame:
+def _drive_side(drives: pd.DataFrame, scrimmage_counts: pd.DataFrame | None = None) -> pd.DataFrame:
     if drives is None or len(drives) == 0:
         return pd.DataFrame(columns=["game_id", "team", "drives"])
     frame = drives.copy()
     frame["game_id"] = frame["game_id"].astype(str)
+    frame["drive"] = pd.to_numeric(frame["drive"], errors="coerce")
+    if scrimmage_counts is not None and len(scrimmage_counts):
+        counts = scrimmage_counts.copy()
+        counts["game_id"] = counts["game_id"].astype(str)
+        counts["drive"] = pd.to_numeric(counts["drive"], errors="coerce")
+        counts["posteam"] = counts["posteam"].astype(str)
+        frame["posteam"] = frame["posteam"].astype(str)
+        frame = frame.merge(counts, on=["game_id", "posteam", "drive"], how="left")
+    else:
+        frame["scr_plays"] = pd.to_numeric(frame["plays"], errors="coerce")
+    frame["scr_plays"] = frame["scr_plays"].fillna(0.0)
     frame["team"] = frame["posteam"].map(canon)
     frame["situation"] = _situation(
         pd.to_numeric(frame["start_score_diff"], errors="coerce").fillna(0),
@@ -217,7 +189,7 @@ def _drive_side(drives: pd.DataFrame) -> pd.DataFrame:
     )
     totals = frame.groupby(["game_id", "team"], sort=False).agg(
         drives=("drive", "size"),
-        drive_plays=("plays", "sum"),
+        drive_plays=("scr_plays", "sum"),
         td_drives=("outcome", lambda s: int(s.eq("TD").sum())),
         fg_drives=("outcome", lambda s: int(s.eq("FG_MADE").sum())),
         punt_drives=("outcome", lambda s: int(s.eq("PUNT").sum())),
@@ -232,7 +204,7 @@ def _drive_side(drives: pd.DataFrame) -> pd.DataFrame:
         part = frame.loc[frame["situation"].eq(state)]
         counts = part.groupby(["game_id", "team"]).agg(
             n=("drive", "size"),
-            play_sum=("plays", "sum"),
+            play_sum=("scr_plays", "sum"),
         ).reset_index()
         counts = counts.rename(columns={"n": f"drive_n_{key}", "play_sum": f"drive_plays_{key}"})
         totals = totals.merge(counts, on=["game_id", "team"], how="left")

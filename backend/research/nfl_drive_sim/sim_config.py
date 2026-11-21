@@ -27,12 +27,19 @@ EXPLOSIVE_PASS_YARDS = 20.0
 EXPLOSIVE_RUN_YARDS = 10.0
 FG_RANGE_YARDLINE = 38.0
 RED_ZONE_YARDLINE = 20.0
+# A single play cannot burn more game clock than this. Larger gaps are
+# quarter breaks or missing rows and are left out of the runoff means.
+# Play-class means and scrimmage lengths are estimated from prior games.
+# They are not hyperparameters and they are not scaled to 2018.
 SEC_CAP = 40.0
 
 PACE_RIDGE_ALPHA = 10.0
 YPP_RIDGE_ALPHA = 5.0
-DRIVE_LOGIT_L2 = 1.0
-DRIVE_LOGIT_ITERS = 15
+# L2 is on standardized features. A penalty of 1 held the 2015-17
+# two-minute end-of-half rate near 0.10 against a training rate of 0.49.
+# 0.05 lets that training contrast through. It was not chosen on 2018.
+DRIVE_LOGIT_L2 = 0.05
+DRIVE_LOGIT_ITERS = 80
 
 # Ablation flag. Off uses team drive efficiency only. The 2018 dev report
 # is fit with the layer on. P3 turns it off for the comparison.

@@ -51,23 +51,20 @@ def softmax(logits: np.ndarray) -> np.ndarray:
 
 
 def fit_softmax(x: np.ndarray, y: np.ndarray, n_classes: int, l2: float, n_iter: int) -> np.ndarray:
-    """L2-penalized softmax. Returns weights shaped (n_features, n_classes)."""
+    """L2-penalized softmax. Returns weights shaped (n_features, n_classes).
+
+    Full gradient steps. A one-class Newton step stalled and could not
+    reproduce a training rate that lives on one binary feature.
+    """
     n_rows, n_features = x.shape
     weights = np.zeros((n_features, n_classes))
-    targets = np.eye(n_classes)[y]
+    targets = np.eye(n_classes)[np.asarray(y, dtype=int)]
+    step = 1.0
     for _ in range(n_iter):
         probs = softmax(x @ weights)
-        for cls in range(n_classes):
-            resid = targets[:, cls] - probs[:, cls]
-            grad = x.T @ resid / n_rows
-            scale = probs[:, cls] * (1.0 - probs[:, cls])
-            hess = (x.T * scale) @ x / n_rows
-            penalty = l2 * np.eye(n_features)
-            penalty[0, 0] = 0.0
-            hess = hess + penalty
-            grad[1:] = grad[1:] - l2 * weights[1:, cls]
-            step = np.linalg.lstsq(hess, grad, rcond=None)[0]
-            weights[:, cls] = weights[:, cls] + step
+        grad = x.T @ (targets - probs) / n_rows
+        grad[1:] -= l2 * weights[1:]
+        weights += step * grad
         weights -= weights.mean(axis=1, keepdims=True)
     return weights
 

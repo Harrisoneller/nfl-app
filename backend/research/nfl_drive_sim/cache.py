@@ -94,6 +94,7 @@ P2_PBP_COLUMNS = PBP_COLUMNS + (
     "sack",
     "qb_hit",
     "complete_pass",
+    "out_of_bounds",
 )
 
 SCHEDULE_COLUMNS = (

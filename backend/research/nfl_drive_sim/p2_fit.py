@@ -49,7 +49,8 @@ def _pace_columns(state: str, target: str) -> dict[str, str]:
     rate = sec_name if target == "sec" else ppd_name
     return {
         "off_rate": f"off_{rate}",
-        "def_rate": f"def_{rate}",
+        # The opponent's defense, not this team's own defense.
+        "def_rate": f"opp_def_{rate}",
         "no_huddle": "off_no_huddle",
         "incomplete": "off_incomplete",
         "pass_rate": "off_pass_rate",

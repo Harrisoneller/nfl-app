@@ -198,6 +198,108 @@ def test_ypp_flag_off_ignores_the_yards_input():
     assert np.array_equal(a["total"], b["total"])
 
 
+def _clock_card() -> dict:
+    from research.nfl_drive_sim.clock import _empty_clock, fit_scrimmage_lengths
+    card = _card()
+    card.pop("forced_outcome")
+    card["clock"] = _empty_clock()
+    card["clock"]["means"] = {
+        (play_class, state): {
+            "pass_incomplete": 8.0,
+            "pass_complete": 30.0,
+            "kickoff": 3.0,
+            "punt": 10.0,
+            "field_goal": 4.0,
+            "extra_point": 0.0,
+        }.get(play_class, 20.0)
+        for play_class in (
+            "pass_complete", "pass_incomplete", "pass_oob", "run", "run_oob", "sack",
+            "spike", "kneel", "punt", "kickoff", "field_goal", "extra_point", "no_play",
+        )
+        for state in cfg.SITUATIONS
+    }
+    card["lengths"] = fit_scrimmage_lengths(pd.DataFrame(), pd.DataFrame())
+    card["home_pace"] = {state: {"plays": 4.0, "sec": 8.0} for state in cfg.SITUATIONS}
+    card["away_pace"] = {state: {"plays": 4.0, "sec": 8.0} for state in cfg.SITUATIONS}
+    card["home_pass"] = 1.0
+    card["away_pass"] = 1.0
+    card["home_inc"] = 1.0
+    card["away_inc"] = 1.0
+    card["home_sack"] = 0.0
+    card["away_sack"] = 0.0
+    card["forced_outcome"] = cfg.DRIVE_OUTCOMES.index("PUNT")
+    card.pop("fixed_plays")
+    card.pop("fixed_sec")
+    return card
+
+
+def test_incomplete_passes_stop_the_clock_and_special_teams_are_separate():
+    """Incompletions use the stopped-clock mean. The kick and the punt are extra."""
+    card = _clock_card()
+    card["home_pace"] = {state: {"plays": 3.0, "sec": 8.0} for state in cfg.SITUATIONS}
+    card["away_pace"] = card["home_pace"]
+    card["lengths"]["length"] = {
+        (outcome, state): 3.0 for outcome in cfg.DRIVE_OUTCOMES for state in cfg.SITUATIONS
+    }
+    card["lengths"]["league_ppd"] = {state: 3.0 for state in cfg.SITUATIONS}
+    card["max_drives"] = 2
+    result = simulate_game(card, 300, np.random.default_rng(1))
+    used = result["half_trace"][0] - result["half_trace"][1]
+    # Kick 3 + about three incompletes at 8 + punt 10. A running-clock pass is 30.
+    assert used.mean() < 50
+    assert used.mean() > 25
+    assert result["home_plays"].mean() == pytest.approx(3.0, abs=0.4)
+
+
+def test_points_cover_scores_returns_and_safeties():
+    def one(outcome: str, **rates) -> tuple[float, float]:
+        card = _card()
+        card["forced_outcome"] = cfg.DRIVE_OUTCOMES.index(outcome)
+        card["max_drives"] = 1
+        card["fixed_plays"] = 1
+        card["fixed_sec"] = 1.0
+        card.update(rates)
+        result = simulate_game(card, 1, np.random.default_rng(1))
+        return float(result["home_points"][0]), float(result["away_points"][0])
+
+    assert one("TD", pat_rate=1.0) == (7.0, 0.0)
+    assert one("TD", pat_rate=0.0) == (6.0, 0.0)
+    assert one("FG_MADE") == (3.0, 0.0)
+    assert one("FG_MISSED") == (0.0, 0.0)
+    assert one("SAFETY") == (0.0, 2.0)
+    assert one("PUNT", p_punt_return_td=1.0) == (0.0, 7.0)
+    assert one("TURNOVER", p_to_return_td=1.0) == (0.0, 7.0)
+
+
+def test_second_half_starts_over_and_the_other_team_receives():
+    card = _card()
+    card["fixed_plays"] = 1
+    card["fixed_sec"] = cfg.REGULATION_HALF_SECONDS
+    card["max_drives"] = 2
+    result = simulate_game(card, 1, np.random.default_rng(1))
+    assert result["home_drives"][0] == 1
+    assert result["away_drives"][0] == 1
+    assert result["half_trace"][0][0] == cfg.REGULATION_HALF_SECONDS
+    assert result["half_trace"][1][0] == cfg.REGULATION_HALF_SECONDS
+
+
+def test_softmax_recovers_a_state_that_ends_the_half():
+    from research.nfl_drive_sim.models import fit_softmax, softmax
+    rng = np.random.default_rng(0)
+    two = rng.random(3000) < 0.15
+    outcome = np.where(two, cfg.DRIVE_OUTCOMES.index("END_OF_HALF"), cfg.DRIVE_OUTCOMES.index("PUNT"))
+    x = np.column_stack([np.ones(len(two)), two.astype(float)])
+    sd = x.std(axis=0)
+    sd[sd < 1e-6] = 1.0
+    sd[0] = 1.0
+    xs = x / sd
+    weights = fit_softmax(xs, outcome, len(cfg.DRIVE_OUTCOMES), cfg.DRIVE_LOGIT_L2, cfg.DRIVE_LOGIT_ITERS)
+    probs = softmax(xs @ weights)
+    end = cfg.DRIVE_OUTCOMES.index("END_OF_HALF")
+    assert probs[two, end].mean() > 0.7
+    assert probs[~two, end].mean() < 0.15
+
+
 def test_package_source_has_no_market_or_served_model_import():
     banned = ("team_ratings_v5", "app.services")
     root = Path(__file__).resolve().parents[2] / "research" / "nfl_drive_sim"
